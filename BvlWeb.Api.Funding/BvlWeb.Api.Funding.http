@@ -1,0 +1,6 @@
+@BvlWeb.Api.Funding_HostAddress = http://localhost:5103
+
+GET {{BvlWeb.Api.Funding_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
