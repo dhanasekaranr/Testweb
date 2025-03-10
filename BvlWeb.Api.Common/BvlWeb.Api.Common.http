@@ -1,0 +1,6 @@
+@BvlWeb.Api.Common_HostAddress = http://localhost:5002
+
+GET {{BvlWeb.Api.Common_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
