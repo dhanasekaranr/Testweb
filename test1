@@ -1,0 +1,427 @@
+Below is a starter kit for an Angular 19.2 project with:
+
+MD3‑compliant Material theme (light mode + CSS‑variable support)
+
+Mobile‑first, responsive utilities (containers, grid, spacing, breakpoints)
+
+Flexible folder structure under src/styles/
+
+A CoreModule/LayoutComponent that handles header, sidenav, content wrapper
+
+A sample DashboardComponent showing horizontal/vertical alignment
+
+Feel free to drop this into a fresh CLI project (ng new my-app --style=scss --routing) and adjust paths as needed.
+
+1. Folder structure
+vbnet
+Copy
+Edit
+my-app/
+├── angular.json
+├── package.json
+└── src/
+    ├── app/
+    │   ├── core/               ← Core module & layout
+    │   │   ├── layout/
+    │   │   │   ├── layout.component.ts
+    │   │   │   ├── layout.component.html
+    │   │   │   └── layout.component.scss
+    │   │   └── core.module.ts
+    │   ├── dashboard/          ← Sample feature module
+    │   │   ├── dashboard.component.ts
+    │   │   ├── dashboard.component.html
+    │   │   └── dashboard.component.scss
+    │   ├── app-routing.module.ts
+    │   └── app.module.ts
+    └── styles/                 ← all global styles
+        ├── tokens/
+        │   ├── _colors.scss
+        │   ├── _spacing.scss
+        │   └── _typography.scss
+        ├── maps/
+        │   └── _breakpoints.scss
+        ├── mixins/
+        │   ├── _respond.scss
+        │   └── _layout.scss
+        ├── theme/
+        │   ├── _core.scss
+        │   ├── _system.scss
+        │   └── _components.scss
+        ├── overrides/
+        │   ├── _toolbar.scss
+        │   ├── _button.scss
+        │   ├── _form-field.scss
+        │   └── _grid-list.scss
+        ├── utilities/
+        │   └── _utilities.scss
+        └── styles.scss         ← single entry point
+2. Global styles
+2.1 angular.json
+Under your project’s build options, point to only styles/styles.scss:
+
+jsonc
+Copy
+Edit
+"build": {
+  "options": {
+    "styles": [
+      "src/styles/styles.scss"
+    ],
+    // …
+  }
+}
+2.2 src/styles/styles.scss
+scss
+Copy
+Edit
+// 1. Design tokens
+@import 'tokens/colors';
+@import 'tokens/spacing';
+@import 'tokens/typography';
+
+// 2. Maps & functions
+@import 'maps/breakpoints';
+
+// 3. Utility mixins
+@import 'mixins/respond';
+@import 'mixins/layout';
+
+// 4. Material theming
+@import 'theme/core';
+@import 'theme/system';
+@import 'theme/components';
+
+// 5. Component overrides
+@import 'overrides/toolbar';
+@import 'overrides/button';
+@import 'overrides/form-field';
+@import 'overrides/grid-list';
+
+// 6. Global utility classes
+@import 'utilities/utilities';
+2.3 Tokens
+tokens/_colors.scss
+scss
+Copy
+Edit
+@use '@angular/material' as mat;
+
+$primary-palette : mat.define-palette(mat.$indigo-palette, 500);
+$accent-palette  : mat.define-palette(mat.$pink-palette, A200);
+$warn-palette    : mat.define-palette(mat.$red-palette);
+
+$color-surface       : mat.get-color-from-palette($primary-palette, 50);
+$color-on-surface    : mat.get-color-from-palette($primary-palette, 900);
+$color-background    : #fafafa;
+$color-on-background : #212121;
+tokens/_spacing.scss
+scss
+Copy
+Edit
+$spacing-unit: 8px !default;
+$space: (
+  xs: $spacing-unit * 0.5,
+  sm: $spacing-unit,
+  md: $spacing-unit * 2,
+  lg: $spacing-unit * 3,
+  xl: $spacing-unit * 4
+);
+
+@function space($key) {
+  @return map-get($space, $key);
+}
+tokens/_typography.scss
+scss
+Copy
+Edit
+@use '@angular/material' as mat;
+
+$font-family-base: 'Roboto, sans-serif' !default;
+$type-scale: (
+  display-large:  mat.define-typography-level(57px, 64px, 400),
+  headline-small: mat.define-typography-level(24px, 32px, 400),
+  title-medium:   mat.define-typography-level(20px, 28px, 500),
+  body-large:     mat.define-typography-level(16px, 24px, 400),
+  label-small:    mat.define-typography-level(11px, 16px, 500)
+);
+
+@function type-level($key) {
+  @return map-get($type-scale, $key);
+}
+2.4 Maps & mixins
+maps/_breakpoints.scss
+scss
+Copy
+Edit
+$breakpoints: (
+  xs: 0,
+  sm: 600px,
+  md: 960px,
+  lg: 1280px,
+  xl: 1920px
+);
+
+@function bp($key) {
+  @return map-get($breakpoints, $key);
+}
+mixins/_respond.scss
+scss
+Copy
+Edit
+@import '../maps/breakpoints';
+
+@mixin respond-to($break) {
+  $p: bp($break);
+  @if $p != null {
+    @media (min-width: $p) { @content; }
+  }
+}
+mixins/_layout.scss
+scss
+Copy
+Edit
+@import '../tokens/spacing';
+@import '../maps/breakpoints';
+
+@mixin container($max-key) {
+  width: 100%;
+  margin: 0 auto;
+  padding: space(sm);
+
+  @include respond-to($max-key) {
+    max-width: bp($max-key);
+  }
+}
+
+.grid-auto {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: space(md);
+}
+2.5 Material theme
+theme/_core.scss
+scss
+Copy
+Edit
+@use '@angular/material' as mat;
+@include mat.core();
+theme/_system.scss
+scss
+Copy
+Edit
+@use '@angular/material' as mat;
+@import '../tokens/colors';
+@import '../tokens/typography';
+
+$my-light-theme: mat.define-light-theme((
+  color: (
+    primary: $primary-palette,
+    accent:  $accent-palette,
+    warn:    $warn-palette
+  ),
+  typography: mat.define-typography-config((
+    font-family: $font-family-base,
+    body-large:  map-get($type-scale, body-large),
+    title-medium: map-get($type-scale, title-medium)
+  )),
+  density: 0,
+  use-system-variables: true
+));
+
+@include mat.theme($my-light-theme);
+theme/_components.scss
+scss
+Copy
+Edit
+@use '@angular/material' as mat;
+@import 'system';
+
+@include mat.all-component-themes(mat.get-theme());
+2.6 Component overrides (examples)
+overrides/_toolbar.scss
+scss
+Copy
+Edit
+@use '@angular/material' as mat;
+@include mat.toolbar-overrides((
+  toolbar-height: 64px,
+  toolbar-dense-height: 56px
+));
+overrides/_button.scss
+scss
+Copy
+Edit
+@use '@angular/material' as mat;
+@include mat.button-overrides((
+  filled-container-color: mat.get-color-from-palette($primary-palette, 500),
+  text-label-text-transform: none,
+  text-label-font-size: 16px
+));
+(Repeat for _form-field.scss, _grid-list.scss, etc.)
+
+2.7 Utilities
+utilities/_utilities.scss
+scss
+Copy
+Edit
+@import '../tokens/spacing';
+@import '../tokens/typography';
+
+.u-mt-sm { margin-top: space(sm) !important; }
+.u-px-md { padding-left: space(md) !important; padding-right: space(md) !important; }
+
+.header {
+  background-color: $color-surface;
+  padding: space(md);
+  font-family: $font-family-base;
+  font-size: type-level(body-large).font-size;
+  line-height: type-level(body-large).line-height;
+}
+3. CoreModule & LayoutComponent
+app/core/core.module.ts
+ts
+Copy
+Edit
+import { NgModule } from '@angular/core';
+import { LayoutComponent } from './layout/layout.component';
+import { CommonModule } from '@angular/common';
+import { RouterModule } from '@angular/router';
+import { MatToolbarModule } from '@angular/material/toolbar';
+import { MatSidenavModule } from '@angular/material/sidenav';
+import { MatIconModule } from '@angular/material/icon';
+import { MatListModule } from '@angular/material/list';
+
+@NgModule({
+  declarations: [LayoutComponent],
+  imports: [
+    CommonModule,
+    RouterModule,
+    MatToolbarModule,
+    MatSidenavModule,
+    MatIconModule,
+    MatListModule
+  ],
+  exports: [LayoutComponent]
+})
+export class CoreModule {}
+app/core/layout/layout.component.html
+html
+Copy
+Edit
+<mat-sidenav-container class="app-shell">
+  <mat-sidenav mode="side" opened class="u-mt-sm">
+    <mat-nav-list>
+      <a mat-list-item routerLink="/dashboard">Dashboard</a>
+      <!-- add more nav links -->
+    </mat-nav-list>
+  </mat-sidenav>
+  <mat-sidenav-content class="u-px-md">
+    <mat-toolbar color="primary">
+      <button mat-icon-button (click)="drawer.toggle()">
+        <mat-icon>menu</mat-icon>
+      </button>
+      <span>Enterprise App</span>
+    </mat-toolbar>
+
+    <div class="container-md u-mt-sm">
+      <router-outlet></router-outlet>
+    </div>
+  </mat-sidenav-content>
+</mat-sidenav-container>
+app/core/layout/layout.component.scss
+scss
+Copy
+Edit
+/* empty – all styles come from global utilities */
+4. Sample DashboardComponent
+app/dashboard/dashboard.component.ts
+ts
+Copy
+Edit
+import { Component } from '@angular/core';
+
+@Component({
+  selector: 'app-dashboard',
+  templateUrl: './dashboard.component.html',
+  styleUrls: ['./dashboard.component.scss']
+})
+export class DashboardComponent {}
+app/dashboard/dashboard.component.html
+html
+Copy
+Edit
+<h2 class="header">Dashboard</h2>
+
+<!-- horizontal flex -->
+<div class="row" style="display:flex; gap:16px;">
+  <mat-card class="flex-1">Card A</mat-card>
+  <mat-card class="flex-1">Card B</mat-card>
+  <mat-card class="flex-1">Card C</mat-card>
+</div>
+
+<!-- responsive grid -->
+<div class="grid-auto u-mt-sm">
+  <mat-card *ngFor="let i of [1,2,3,4,5,6]">Item {{i}}</mat-card>
+</div>
+app/dashboard/dashboard.component.scss
+scss
+Copy
+Edit
+/* empty or one‑offs; global utilities handle layout */
+5. AppModule & Routing
+app/app-routing.module.ts
+ts
+Copy
+Edit
+import { NgModule } from '@angular/core';
+import { RouterModule, Routes } from '@angular/router';
+import { LayoutComponent } from './core/layout/layout.component';
+import { DashboardComponent } from './dashboard/dashboard.component';
+
+const routes: Routes = [
+  {
+    path: '',
+    component: LayoutComponent,
+    children: [
+      { path: 'dashboard', component: DashboardComponent },
+      { path: '', redirectTo: 'dashboard', pathMatch: 'full' }
+    ]
+  }
+];
+
+@NgModule({
+  imports: [RouterModule.forRoot(routes, { scrollPositionRestoration: 'enabled' })],
+  exports: [RouterModule]
+})
+export class AppRoutingModule {}
+app/app.module.ts
+ts
+Copy
+Edit
+import { NgModule } from '@angular/core';
+import { BrowserModule } from '@angular/platform-browser';
+import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
+import { CoreModule } from './core/core.module';
+import { DashboardComponent } from './dashboard/dashboard.component';
+import { AppComponent } from './app.component';
+import { AppRoutingModule } from './app-routing.module';
+
+@NgModule({
+  declarations: [AppComponent, DashboardComponent],
+  imports: [
+    BrowserModule,
+    BrowserAnimationsModule,
+    CoreModule,
+    AppRoutingModule
+  ],
+  bootstrap: [AppComponent]
+})
+export class AppModule {}
+Final words
+All styling lives under src/styles/ and is compiled from one styles.scss.
+
+No component needs to import SCSS partials—just use the global utility classes and Material components.
+
+Layout & responsiveness are handled by your mixins/utilities plus Angular CDK’s breakpoints if you need to react in TS.
+
+You now have an end‑to‑end boilerplate to build out 200+ screens with consistent theming, responsive layouts, and clear separation of concerns.
