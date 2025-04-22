@@ -1,0 +1,221 @@
+Skip to content
+You said:
+Angular 19 material snack bar + i want to create a snack bar service and reusable snackbar component, that will service will be ingested in the basecomponent which will be used by all user component. give me complete end to end code for this
+ChatGPT said:
+
+Thought for 12 seconds
+Here’s a no‑BS, end‑to‑end Angular 19 + Material snack‑bar setup that you can drop into your project. You’ll have:
+
+A reusable SnackBarComponent that takes a message (and optional icon/action).
+
+A SnackBarService wrapper around MatSnackBar.
+
+An abstract BaseComponent that injects the service so all your feature components can simply extend BaseComponent.
+
+A UserComponent example showing how to call it.
+
+The AppModule wiring.
+
+1. Install & import Angular Material
+ng add @angular/material
+In your app.module.ts (or a shared “MaterialModule”), import the snack‐bar and button modules:
+
+// src/app/material.module.ts
+import { NgModule } from '@angular/core';
+import { MatSnackBarModule } from '@angular/material/snack-bar';
+import { MatButtonModule }   from '@angular/material/button';
+
+@NgModule({
+  exports: [ MatSnackBarModule, MatButtonModule ]
+})
+export class MaterialModule {}
+2. Reusable SnackBarComponent
+This is the content that shows inside the pop‐up.
+
+// src/app/shared/snack-bar/snack-bar.component.ts
+import { Component, Inject } from '@angular/core';
+import { MAT_SNACK_BAR_DATA } from '@angular/material/snack-bar';
+
+export interface SnackBarData {
+  message: string;
+  icon?: string;          // e.g. 'check_circle', 'error'
+  actionText?: string;    // e.g. 'UNDO'
+}
+
+@Component({
+  selector: 'app-snack-bar',
+  templateUrl: './snack-bar.component.html',
+  styleUrls: ['./snack-bar.component.scss']
+})
+export class SnackBarComponent {
+  constructor(@Inject(MAT_SNACK_BAR_DATA) public data: SnackBarData) {}
+}
+<!-- src/app/shared/snack-bar/snack-bar.component.html -->
+<div class="snack-container">
+  <mat-icon *ngIf="data.icon">{{ data.icon }}</mat-icon>
+  <span class="message">{{ data.message }}</span>
+  <button *ngIf="data.actionText"
+          mat-button
+          class="action"
+          (click)="0 /* optional: close logic */">
+    {{ data.actionText }}
+  </button>
+</div>
+/* src/app/shared/snack-bar/snack-bar.component.scss */
+.snack-container {
+  display: flex;
+  align-items: center;
+}
+.snack-container mat-icon {
+  margin-right: 8px;
+}
+.snack-container .message {
+  flex: 1;
+}
+.snack-container .action {
+  font-weight: 600;
+}
+3. SnackBarService
+A simple façade for opening different flavors of snacks.
+
+// src/app/shared/services/snack-bar.service.ts
+import { Injectable } from '@angular/core';
+import { MatSnackBar, MatSnackBarConfig } from '@angular/material/snack-bar';
+import { SnackBarComponent, SnackBarData } from '../snack-bar/snack-bar.component';
+
+@Injectable({ providedIn: 'root' })
+export class SnackBarService {
+  private defaultConfig: MatSnackBarConfig = {
+    duration:    3000,
+    horizontalPosition: 'center',
+    verticalPosition:   'bottom',
+    panelClass: ['app-snackbar']
+  };
+
+  constructor(private snackBar: MatSnackBar) {}
+
+  open(message: string,
+       icon?: string,
+       actionText?: string,
+       config?: Partial<MatSnackBarConfig>) {
+    const data: SnackBarData = { message, icon, actionText };
+    this.snackBar.openFromComponent(SnackBarComponent, {
+      ...this.defaultConfig,
+      ...config,
+      data
+    });
+  }
+
+  success(message: string) {
+    this.open(message, 'check_circle', undefined, { panelClass: ['success-snack'] });
+  }
+
+  error(message: string) {
+    this.open(message, 'error',   undefined, { panelClass: ['error-snack'] });
+  }
+}
+Add some global styles for your custom panels:
+
+/* src/styles.scss */
+.app-snackbar { color: #fff; }
+.success-snack { background: #4caf50; }
+.error-snack   { background: #f44336; }
+4. Abstract BaseComponent
+All your feature components extend this to get showSuccess(), showError(), etc.
+
+// src/app/shared/base/base.component.ts
+import { SnackBarService } from '../services/snack-bar.service';
+
+export abstract class BaseComponent {
+  constructor(protected snackBarService: SnackBarService) {}
+
+  protected showSuccess(msg: string): void {
+    this.snackBarService.success(msg);
+  }
+
+  protected showError(msg: string): void {
+    this.snackBarService.error(msg);
+  }
+
+  protected notify(msg: string): void {
+    this.snackBarService.open(msg);
+  }
+}
+5. UserComponent Example
+// src/app/user/user.component.ts
+import { Component } from '@angular/core';
+import { BaseComponent } from '../shared/base/base.component';
+import { SnackBarService } from '../shared/services/snack-bar.service';
+
+@Component({
+  selector: 'app-user',
+  template: `
+    <button mat-raised-button (click)="doWork()">Do Work</button>
+  `
+})
+export class UserComponent extends BaseComponent {
+  constructor(sb: SnackBarService) {
+    super(sb);
+  }
+
+  doWork() {
+    // ... your logic here
+    const success = true; // or false
+    if (success) {
+      this.showSuccess('Everything went fine!');
+    } else {
+      this.showError('Something broke!');
+    }
+  }
+}
+6. AppModule wiring
+// src/app/app.module.ts
+import { NgModule } from '@angular/core';
+import { BrowserModule } from '@angular/platform-browser';
+import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
+
+import { MaterialModule } from './material.module';
+import { AppComponent } from './app.component';
+
+import { SnackBarComponent }   from './shared/snack-bar/snack-bar.component';
+import { UserComponent }       from './user/user.component';
+
+@NgModule({
+  declarations: [
+    AppComponent,
+    SnackBarComponent,
+    UserComponent
+  ],
+  imports: [
+    BrowserModule,
+    BrowserAnimationsModule,
+    MaterialModule
+  ],
+  providers: [],
+  bootstrap: [AppComponent],
+  // necessary for dynamic component in snack-bar
+  entryComponents: [SnackBarComponent]
+})
+export class AppModule {}
+That’s it.
+Drop these files into your folders.
+
+Extend BaseComponent anywhere.
+
+Call showSuccess(), showError(), or raw notify().
+
+No fluff, no extra overhead—just a reusable, injectable snack‑bar solution.
+
+
+
+
+
+
+Search
+
+Deep research
+
+
+
+ChatGPT can make mistakes. Check important info.
+?
