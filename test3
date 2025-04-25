@@ -1,0 +1,117 @@
+@startuml
+'--------------------------------------------------
+' Title
+'--------------------------------------------------
+title Enterprise Angular 19 + .NET Core API Architecture (Logging Inside API)
+
+'--------------------------------------------------
+' Styles
+'--------------------------------------------------
+skinparam componentStyle rectangle
+skinparam rectangle {
+  BackgroundColor<<Frontend>> #D6E8FC
+  BackgroundColor<<Backend>>  #D5E8D4
+  BackgroundColor<<Infra>>    #F5F5F5
+  BackgroundColor<<Auth>>     #F8CECC
+  BackgroundColor<<CI>>       #E1D5E7
+  BackgroundColor<<Common>>   #FFF2CC
+  BorderColor #333333
+}
+skinparam shadowing false
+skinparam note {
+  BackgroundColor #FFFFCC
+  BorderColor #999999
+}
+
+'--------------------------------------------------
+' Frontend Container
+'--------------------------------------------------
+package "Frontend: Angular 19 SPA\n(200+ screens)" <<Frontend>> {
+  component "Angular 19 App" as FE_App
+  component "Material Theme\nResponsive Layout"      as FE_UI
+  component "Prettier & ESLint"                    as FE_Std
+  component "NgRx Store\nJest & Cypress Tests"     as FE_Tech
+  component "Monorepo Libraries:\ncore, shared,\nfeature, theme" as FE_Libs
+  component "Future: NX Workspace\n(build caching)"  as FE_Future <<note>>
+
+  FE_App --> FE_UI
+  FE_App --> FE_Std
+  FE_App --> FE_Tech
+  FE_App --> FE_Libs
+  FE_App ..> FE_Future : plan
+}
+
+'--------------------------------------------------
+' Authentication
+'--------------------------------------------------
+component "PingAccess\nOAuth2 / OIDC" <<Auth>> as Auth
+FE_App --> Auth : authenticate
+
+'--------------------------------------------------
+' CI/CD Pipeline
+'--------------------------------------------------
+component "Jenkins CI/CD" <<CI>> as CI
+FE_App --> CI : push & build
+' Removed previous Auth → CI link
+' Added link from Backend API to CI
+package ".NET Core 8 Web API" {
+  component "Controllers\n- Funding, Underwriting,\n  Origination, Admin Endpoints" as BE_Ctrl
+}
+BE_Ctrl --> CI : push & build
+
+note right of CI
+  • Code scanning
+  • Multi-environment
+end note
+
+'--------------------------------------------------
+' Backend API Container
+'--------------------------------------------------
+package ".NET Core 8 Web API" <<Backend>> {
+  component "Controllers\n- Funding, Underwriting,\n  Origination, Admin Endpoints" as BE_Ctrl
+  component "Service Layer\n- DTO Transform & AutoMapper\n- Validation Service" as BE_Service
+  component "Data Layer\n(EF Core + Dapper Hybrid)\n- Oracle DB Access" as BE_Data
+  component "Redis Cache\n(static data)" as BE_Redis
+  component "Kafka Integration" as BE_Kafka
+  component "WorkItem Processor\n(separate service)" as BE_WorkItem
+  component "Logging & Error Handling\n(common across layers)" <<Common>> as BE_Logging
+
+  ' Internal flows
+  BE_Ctrl --> BE_Service
+  BE_Service --> BE_Data
+  BE_Service --> BE_Redis
+  BE_Service --> BE_Kafka
+  BE_Service --> BE_WorkItem : enqueue jobs
+
+  ' Cross-cutting
+  BE_Ctrl --> BE_Logging
+  BE_Service --> BE_Logging
+  BE_Data --> BE_Logging
+}
+
+' Auth interaction
+Auth --> BE_Ctrl : validate token
+
+'--------------------------------------------------
+' Infrastructure
+'--------------------------------------------------
+database "Oracle DB"       <<Infra>> as DB
+queue    "Kafka Broker"    <<Infra>> as KafkaBroker
+cloud    "VMware VMs\n(current)" <<Infra>> as Infra_VM
+cloud    "OpenShift\n(future)"    <<Infra>> as Infra_OS <<note>>
+
+BE_Data --> DB : read/write
+BE_Kafka --> KafkaBroker : produce/consume
+CI --> Infra_VM : deploy
+CI --> Infra_OS : future deploy
+
+note right of Infra_OS
+  • Container platform
+  • Auto-scaling
+end note
+
+'--------------------------------------------------
+' Relationships Summary
+'--------------------------------------------------
+FE_App ..> BE_Ctrl : HTTP/REST (OAuth2 token)
+@enduml
