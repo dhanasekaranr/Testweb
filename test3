@@ -2,21 +2,18 @@
 '--------------------------------------------------
 ' Title
 '--------------------------------------------------
-title Enterprise Angular 19 + .NET Core API Architecture (Logging Inside API)
+title Enterprise Angular 19 + .NET Core API Architecture
 
 '--------------------------------------------------
 ' Styles
 '--------------------------------------------------
 skinparam componentStyle rectangle
-skinparam rectangle {
-  BackgroundColor<<Frontend>> #D6E8FC
-  BackgroundColor<<Backend>>  #D5E8D4
-  BackgroundColor<<Infra>>    #F5F5F5
-  BackgroundColor<<Auth>>     #F8CECC
-  BackgroundColor<<CI>>       #E1D5E7
-  BackgroundColor<<Common>>   #FFF2CC
-  BorderColor #333333
-}
+skinparam rectangle<<Frontend>> BackgroundColor #D6E8FC
+skinparam rectangle<<Backend>>  BackgroundColor #D5E8D4
+skinparam rectangle<<Infra>>    BackgroundColor #F5F5F5
+skinparam rectangle<<Auth>>     BackgroundColor #F8CECC
+skinparam rectangle<<CI>>       BackgroundColor #E1D5E7
+skinparam rectangle<<Common>>   BackgroundColor #FFF2CC
 skinparam shadowing false
 skinparam note {
   BackgroundColor #FFFFCC
@@ -26,38 +23,37 @@ skinparam note {
 '--------------------------------------------------
 ' Frontend Container
 '--------------------------------------------------
-package "Frontend: Angular 19 SPA\n(200+ screens)" <<Frontend>> {
-  component "Angular 19 App" as FE_App
-  component "Material Theme\nResponsive Layout"      as FE_UI
-  component "Prettier & ESLint"                    as FE_Std
+package "Frontend: Angular 19 SPA\" <<Frontend>> {
+  component "Angular App" as FE_App #D6E8FC
+  component "Material Theme\nResponsive Layout"      as FE_UI#D6E8FC
+  component "Prettier & ESLint"                    as FE_Std#D6E8FC
   component "NgRx Store\nJest & Cypress Tests"     as FE_Tech
-  component "Monorepo Libraries:\ncore, shared,\nfeature, theme" as FE_Libs
+  component "Monorepo Libraries:\ncore, shared,\nfeature, theme" as FE_Libs#D6E8FC
   component "Future: NX Workspace\n(build caching)"  as FE_Future <<note>>
 
   FE_App --> FE_UI
   FE_App --> FE_Std
   FE_App --> FE_Tech
   FE_App --> FE_Libs
-  FE_App ..> FE_Future : plan
+  FE_App ..> FE_Future : future plan
 }
 
 '--------------------------------------------------
 ' Authentication
 '--------------------------------------------------
-component "PingAccess\nOAuth2 / OIDC" <<Auth>> as Auth
+component "PingAccess\nOAuth2 / OIDC" <<Auth>> as Auth #D6E8FC
 FE_App --> Auth : authenticate
 
 '--------------------------------------------------
 ' CI/CD Pipeline
 '--------------------------------------------------
-component "Jenkins CI/CD" <<CI>> as CI
-FE_App --> CI : push & build
-' Removed previous Auth → CI link
-' Added link from Backend API to CI
+component "Jenkins CI/CD" <<CI>> as CI#D6E8FC
+FE_App ==> CI #FF0000: push & build
+' Link from backend API controllers to CI
 package ".NET Core 8 Web API" {
   component "Controllers\n- Funding, Underwriting,\n  Origination, Admin Endpoints" as BE_Ctrl
 }
-BE_Ctrl --> CI : push & build
+BE_Ctrl ==> CI #FF0000: push & build
 
 note right of CI
   • Code scanning
@@ -68,41 +64,41 @@ end note
 ' Backend API Container
 '--------------------------------------------------
 package ".NET Core 8 Web API" <<Backend>> {
-  component "Controllers\n- Funding, Underwriting,\n  Origination, Admin Endpoints" as BE_Ctrl
-  component "Service Layer\n- DTO Transform & AutoMapper\n- Validation Service" as BE_Service
-  component "Data Layer\n(EF Core + Dapper Hybrid)\n- Oracle DB Access" as BE_Data
+  component "Controllers\n- Funding, Underwriting,\n  Origination, Admin Endpoints" as BE_Ctrl #D6E8FC
+  component "Service Layer\n- DTO Transform & AutoMapper\n- Validation Service" as BE_Service#D6E8FC
+  component "Data Layer\n(EF Core + Dapper Hybrid)\n- Oracle DB Access" as BE_Data#D6E8FC
   component "Redis Cache\n(static data)" as BE_Redis
   component "Kafka Integration" as BE_Kafka
   component "WorkItem Processor\n(separate service)" as BE_WorkItem
-  component "Logging & Error Handling\n(common across layers)" <<Common>> as BE_Logging
+  component "Logging & Error Handling\n(common across layers)" <<Common>> as BE_Logging#D6E8FC
 
   ' Internal flows
-  BE_Ctrl --> BE_Service
-  BE_Service --> BE_Data
+  BE_Ctrl ==> BE_Service#008000
+  BE_Service ==> BE_Data#008000
   BE_Service --> BE_Redis
   BE_Service --> BE_Kafka
   BE_Service --> BE_WorkItem : enqueue jobs
 
   ' Cross-cutting
-  BE_Ctrl --> BE_Logging
-  BE_Service --> BE_Logging
-  BE_Data --> BE_Logging
+  BE_Ctrl --> BE_Logging#008000
+  BE_Service --> BE_Logging#008000
+  BE_Data --> BE_Logging#008000
 }
 
 ' Auth interaction
-Auth --> BE_Ctrl : validate token
+Auth ==> BE_Ctrl#008000 : validate token
 
 '--------------------------------------------------
 ' Infrastructure
 '--------------------------------------------------
-database "Oracle DB"       <<Infra>> as DB
+database "Oracle DB"       <<Infra>> as DB#D6E8FC
 queue    "Kafka Broker"    <<Infra>> as KafkaBroker
-cloud    "VMware VMs\n(current)" <<Infra>> as Infra_VM
-cloud    "OpenShift\n(future)"    <<Infra>> as Infra_OS <<note>>
+cloud    "VMware VMs\n(current)" <<Infra>> as Infra_VM#D6E8FC
+cloud    "OpenShift\n(future)"    <<Infra>> as Infra_OS
 
-BE_Data --> DB : read/write
+BE_Data ==> DB#008000 : read/write
 BE_Kafka --> KafkaBroker : produce/consume
-CI --> Infra_VM : deploy
+CI ==> Infra_VM #FF0000: deploy
 CI --> Infra_OS : future deploy
 
 note right of Infra_OS
@@ -110,8 +106,27 @@ note right of Infra_OS
   • Auto-scaling
 end note
 
+note left of CI #F5F5F5
+  • Module deployment
+  • Cache
+end note
+
+
 '--------------------------------------------------
 ' Relationships Summary
 '--------------------------------------------------
-FE_App ..> BE_Ctrl : HTTP/REST (OAuth2 token)
+FE_App ..> BE_Ctrl #008000: HTTP/REST (OAuth2 token)
+
+
+
+'--------------------------------------------------
+' Legend (built-in block with colored cells)
+'--------------------------------------------------
+skinparam legendBackgroundColor #F5F5F5
+skinparam legendBorderColor     #F5F5F5
+legend bottom left
+|<back:#008000>------------->   </back>| Current/Planned Flow      |
+|<back:#FF0000>------------->   </back>| Current/Planned Deployment|
+|<back:#D6E8FC>           </back>| Active Component         |
+endlegend
 @enduml
