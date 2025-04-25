@@ -128,5 +128,7 @@ legend bottom left
 |<back:#008000>------------->   </back>| Current/Planned Flow      |
 |<back:#FF0000>------------->   </back>| Current/Planned Deployment|
 |<back:#D6E8FC>           </back>| Active Component         |
+
+|<back:#C0C0C0>           </back>| Future State         |
 endlegend
 @enduml
