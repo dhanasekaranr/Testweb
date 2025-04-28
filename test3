@@ -1,134 +1,37 @@
-@startuml
-'--------------------------------------------------
-' Title
-'--------------------------------------------------
-title Enterprise Angular 19 + .NET Core API Architecture
+Objective
+To build a secure, on-prem Retrieval-Augmented Generation (RAG) assistant that consolidates fragmented vehicle-lending fulfillment knowledge—PDFs, Jira tickets, Confluence pages, databases and scanned documents—into a single, searchable source of truth, delivering fast, accurate answers while maintaining regulatory compliance and auditability.
 
-'--------------------------------------------------
-' Styles
-'--------------------------------------------------
-skinparam componentStyle rectangle
-skinparam rectangle<<Frontend>> BackgroundColor #D6E8FC
-skinparam rectangle<<Backend>>  BackgroundColor #D5E8D4
-skinparam rectangle<<Infra>>    BackgroundColor #F5F5F5
-skinparam rectangle<<Auth>>     BackgroundColor #F8CECC
-skinparam rectangle<<CI>>       BackgroundColor #E1D5E7
-skinparam rectangle<<Common>>   BackgroundColor #FFF2CC
-skinparam shadowing false
-skinparam note {
-  BackgroundColor #FFFFCC
-  BorderColor #999999
-}
+Solution Overview
 
-'--------------------------------------------------
-' Frontend Container
-'--------------------------------------------------
-package "Frontend: Angular 19 SPA\" <<Frontend>> {
-  component "Angular App" as FE_App #D6E8FC
-  component "Material Theme\nResponsive Layout"      as FE_UI#D6E8FC
-  component "Prettier & ESLint"                    as FE_Std#D6E8FC
-  component "NgRx Store\nJest & Cypress Tests"     as FE_Tech
-  component "Monorepo Libraries:\ncore, shared,\nfeature, theme" as FE_Libs#D6E8FC
-  component "Future: NX Workspace\n(build caching)"  as FE_Future <<note>>
+Apache NiFi (v2.0) – Orchestrates ingestion from files, OCR, APIs and databases.
 
-  FE_App --> FE_UI
-  FE_App --> FE_Std
-  FE_App --> FE_Tech
-  FE_App --> FE_Libs
-  FE_App ..> FE_Future : future plan
-}
+Apache Tika (v2.3.9) – Extracts text from PDFs and Office docs in bulk.
 
-'--------------------------------------------------
-' Authentication
-'--------------------------------------------------
-component "PingAccess\nOAuth2 / OIDC" <<Auth>> as Auth #D6E8FC
-FE_App --> Auth : authenticate
+Tesseract OCR (v5.3) – Converts scanned images into searchable text.
 
-'--------------------------------------------------
-' CI/CD Pipeline
-'--------------------------------------------------
-component "Jenkins CI/CD" <<CI>> as CI#D6E8FC
-FE_App ==> CI #FF0000: push & build
-' Link from backend API controllers to CI
-package ".NET Core 8 Web API" {
-  component "Controllers\n- Funding, Underwriting,\n  Origination, Admin Endpoints" as BE_Ctrl
-}
-BE_Ctrl ==> CI #FF0000: push & build
+Sentence-Transformers (v4.1.0) – Embeds document chunks & user queries into semantic vectors.
 
-note right of CI
-  • Code scanning
-  • Multi-environment
-end note
+Qdrant (v1.6.1) – High-performance on-prem vector database for approximate nearest-neighbor search.
 
-'--------------------------------------------------
-' Backend API Container
-'--------------------------------------------------
-package ".NET Core 8 Web API" <<Backend>> {
-  component "Controllers\n- Funding, Underwriting,\n  Origination, Admin Endpoints" as BE_Ctrl #D6E8FC
-  component "Service Layer\n- DTO Transform & AutoMapper\n- Validation Service" as BE_Service#D6E8FC
-  component "Data Layer\n(EF Core + Dapper Hybrid)\n- Oracle DB Access" as BE_Data#D6E8FC
-  component "Redis Cache\n(static data)" as BE_Redis
-  component "Kafka Integration" as BE_Kafka
-  component "WorkItem Processor\n(separate service)" as BE_WorkItem
-  component "Logging & Error Handling\n(common across layers)" <<Common>> as BE_Logging#D6E8FC
+LangChain (v2.0.0) – Assembles retrieved context and user prompts into LLM-ready payloads.
 
-  ' Internal flows
-  BE_Ctrl ==> BE_Service#008000
-  BE_Service ==> BE_Data#008000
-  BE_Service --> BE_Redis
-  BE_Service --> BE_Kafka
-  BE_Service --> BE_WorkItem : enqueue jobs
+Llama 3 (v3.0 on-prem) – Generates concise answers guided by system, user & assistant roles.
 
-  ' Cross-cutting
-  BE_Ctrl --> BE_Logging#008000
-  BE_Service --> BE_Logging#008000
-  BE_Data --> BE_Logging#008000
-}
+Time & Cost Benefits
 
-' Auth interaction
-Auth ==> BE_Ctrl#008000 : validate token
+~25% faster resolution: Dramatically reduces time spent hunting for information across multiple systems.
 
-'--------------------------------------------------
-' Infrastructure
-'--------------------------------------------------
-database "Oracle DB"       <<Infra>> as DB#D6E8FC
-queue    "Kafka Broker"    <<Infra>> as KafkaBroker
-cloud    "VMware VMs\n(current)" <<Infra>> as Infra_VM#D6E8FC
-cloud    "OpenShift\n(future)"    <<Infra>> as Infra_OS
+SME load reduction: Fewer escalations to experts by surfacing precise, vetted answers.
 
-BE_Data ==> DB#008000 : read/write
-BE_Kafka --> KafkaBroker : produce/consume
-CI ==> Infra_VM #FF0000: deploy
-CI --> Infra_OS : future deploy
+Lower operational expense: On-prem tooling avoids recurring cloud-compute fees and data-egress costs.
 
-note right of Infra_OS
-  • Container platform
-  • Auto-scaling
-end note
+Strategic Benefits
 
-note left of CI #F5F5F5
-  • Module deployment
-  • Cache
-end note
+Consistent quality: Single source of truth eliminates conflicting guidance and manual errors.
 
+Regulatory compliance: Full audit trail of every query, context chunk, and response for easy reporting.
 
-'--------------------------------------------------
-' Relationships Summary
-'--------------------------------------------------
-FE_App ..> BE_Ctrl #008000: HTTP/REST (OAuth2 token)
+Scalable foundation: Easily onboard new data sources—email archives, CRM systems, SharePoint—without rewriting code.
 
-
-
-'--------------------------------------------------
-' Legend (built-in block with colored cells)
-'--------------------------------------------------
-skinparam legendBackgroundColor #F5F5F5
-skinparam legendBorderColor     #F5F5F5
-legend bottom left
-|<back:#008000>------------->   </back>| Current/Planned Flow      |
-|<back:#FF0000>------------->   </back>| Current/Planned Deployment|
-|<back:#D6E8FC>           </back>| Active Component         |
-
-|<back:#C0C0C0>           </back>| Future State         |
-endlegend
-@enduml
+Summary Statements
+By automating ingestion, semantic indexing and on-prem inference, this RAG Knowledge Assistant transforms days of manual research into instant, context-aware answers. It not only accelerates business workflows and reduces support costs but also fortifies your compliance posture with end-to-end traceability.
