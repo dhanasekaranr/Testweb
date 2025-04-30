@@ -1,37 +1,215 @@
-Objective
-To build a secure, on-prem Retrieval-Augmented Generation (RAG) assistant that consolidates fragmented vehicle-lending fulfillment knowledge—PDFs, Jira tickets, Confluence pages, databases and scanned documents—into a single, searchable source of truth, delivering fast, accurate answers while maintaining regulatory compliance and auditability.
+// ===========================
+// Angular 19 (April 2025) & VB Unsaved Change Handling with Child Dirty Tracking
+// ===========================
 
-Solution Overview
+// 1️⃣ can-deactivate.interface.ts
+export interface CanComponentDeactivate {
+  isDirty(): boolean;
+}
 
-Apache NiFi (v2.0) – Orchestrates ingestion from files, OCR, APIs and databases.
+// 2️⃣ unsaved-change-guard-handler.service.ts
+import { Injectable } from '@angular/core';
+import { DirtyTrackerService } from './dirty-tracker.service';
 
-Apache Tika (v2.3.9) – Extracts text from PDFs and Office docs in bulk.
+@Injectable({ providedIn: 'root' })
+export class UnsavedChangeGuardHandler {
+  constructor(private dirtyTracker: DirtyTrackerService) {}
 
-Tesseract OCR (v5.3) – Converts scanned images into searchable text.
+  /**
+   * Returns aggregated dirty state of all tracked controls/components
+   */
+  isCurrentComponentDirty(): boolean {
+    return this.dirtyTracker.isDirty();
+  }
+}
 
-Sentence-Transformers (v4.1.0) – Embeds document chunks & user queries into semantic vectors.
+// 3️⃣ vb-communication.service.ts
+import { Injectable } from '@angular/core';
+import { Subject, Observable } from 'rxjs';
 
-Qdrant (v1.6.1) – High-performance on-prem vector database for approximate nearest-neighbor search.
+@Injectable({ providedIn: 'root' })
+export class VbCommunicationService {
+  private dirtyCheckTrigger$ = new Subject<void>();
 
-LangChain (v2.0.0) – Assembles retrieved context and user prompts into LLM-ready payloads.
+  constructor() {
+    // CEFBridge or other host will call this global when VB wants unsaved status
+    (window as any).cefBridgeNotifyUnsavedCheck = () => {
+      this.dirtyCheckTrigger$.next();
+    };
+  }
 
-Llama 3 (v3.0 on-prem) – Generates concise answers guided by system, user & assistant roles.
+  onUnsavedCheck(): Observable<void> {
+    return this.dirtyCheckTrigger$.asObservable();
+  }
 
-Time & Cost Benefits
+  sendUnsavedResultToVB(isDirty: boolean): void {
+    // Host must define this to receive results
+    (window as any).cefBridgeReceiveUnsavedResult?.(JSON.stringify({ isDirty }));
+  }
+}
 
-~25% faster resolution: Dramatically reduces time spent hunting for information across multiple systems.
+// 4️⃣ dirty-tracker.service.ts
+import { Injectable } from '@angular/core';
+import { BehaviorSubject, Observable } from 'rxjs';
 
-SME load reduction: Fewer escalations to experts by surfacing precise, vetted answers.
+@Injectable({ providedIn: 'root' })
+export class DirtyTrackerService {
+  private components = new Map<string, boolean>();
+  private dirty$ = new BehaviorSubject<boolean>(false);
 
-Lower operational expense: On-prem tooling avoids recurring cloud-compute fees and data-egress costs.
+  track(id: string): void {
+    this.components.set(id, true);
+    this.updateDirty();
+  }
 
-Strategic Benefits
+  clear(id: string): void {
+    this.components.set(id, false);
+    this.updateDirty();
+  }
 
-Consistent quality: Single source of truth eliminates conflicting guidance and manual errors.
+  isDirty(): boolean {
+    return this.dirty$.value;
+  }
 
-Regulatory compliance: Full audit trail of every query, context chunk, and response for easy reporting.
+  dirtyChanges(): Observable<boolean> {
+    return this.dirty$.asObservable();
+  }
 
-Scalable foundation: Easily onboard new data sources—email archives, CRM systems, SharePoint—without rewriting code.
+  private updateDirty(): void {
+    const anyDirty = Array.from(this.components.values()).some(v => v);
+    this.dirty$.next(anyDirty);
+  }
+}
 
-Summary Statements
-By automating ingestion, semantic indexing and on-prem inference, this RAG Knowledge Assistant transforms days of manual research into instant, context-aware answers. It not only accelerates business workflows and reduces support costs but also fortifies your compliance posture with end-to-end traceability.
+// 5️⃣ track-dirty.directive.ts (Standalone Directive, Angular 19)
+import {
+  Directive,
+  OnInit,
+  OnDestroy,
+  inject,
+  Optional,
+  Host
+} from '@angular/core';
+import { ControlContainer, ReactiveFormsModule } from '@angular/forms';
+import { DirtyTrackerService } from '../services/dirty-tracker.service';
+import { Subscription } from 'rxjs';
+
+@Directive({
+  selector: '[trackDirty]',
+  standalone: true,
+  imports: [ReactiveFormsModule]
+})
+export class TrackDirtyDirective implements OnInit, OnDestroy {
+  private readonly id = this.generateGuid();
+  private readonly service = inject(DirtyTrackerService);
+  private readonly control = this.resolveControl();
+  private readonly sub = new Subscription();
+
+  ngOnInit(): void {
+    this.sub.add(
+      this.control.valueChanges.subscribe(() => {
+        if (this.control.dirty) {
+          this.service.track(this.id);
+        }
+      })
+    );
+  }
+
+  ngOnDestroy(): void {
+    this.sub.unsubscribe();
+    this.service.clear(this.id);
+  }
+
+  private resolveControl() {
+    const lc = inject(ControlContainer, { optional: true, host: true });
+    if (!lc || !lc.control) {
+      throw new Error('trackDirty must be placed on a form element with a FormGroup or NgForm');
+    }
+    return lc.control;
+  }
+
+  private generateGuid(): string {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+      const r = (Math.random() * 16) | 0;
+      const v = c === 'x' ? r : (r & 0x3) | 0x8;
+      return v.toString(16);
+    });
+  }
+}
+
+// 6️⃣ base.component.ts (No host-deps, standalone via inject())
+import { OnDestroy, inject } from '@angular/core';
+import { CanComponentDeactivate } from '../interfaces/can-deactivate.interface';
+import { UnsavedChangeGuardHandler } from '../services/unsaved-change-guard-handler.service';
+
+export abstract class BaseComponent implements OnDestroy, CanComponentDeactivate {
+  private readonly guard = inject(UnsavedChangeGuardHandler);
+
+  constructor() {
+    // all child components auto-registered via directive
+  }
+
+  isDirty(): boolean {
+    return this.guard.isCurrentComponentDirty();
+  }
+
+  ngOnDestroy(): void {
+    // nothing to clear here
+  }
+}
+
+// 7️⃣ app.component.ts (Standalone Root Component)
+import { Component, OnInit } from '@angular/core';
+import { VbCommunicationService } from './services/vb-communication.service';
+import { UnsavedChangeGuardHandler } from './services/unsaved-change-guard-handler.service';
+import { TrackDirtyDirective } from './directives/track-dirty.directive';
+import { RouterModule } from '@angular/router';
+
+@Component({
+  selector: 'app-root',
+  standalone: true,
+  imports: [RouterModule, TrackDirtyDirective],
+  template: `<router-outlet></router-outlet>`
+})
+export class AppComponent implements OnInit {
+  constructor(
+    private readonly vb: VbCommunicationService,
+    private readonly guard: UnsavedChangeGuardHandler
+  ) {}
+
+  ngOnInit(): void {
+    this.vb.onUnsavedCheck().subscribe(() => {
+      const dirty = this.guard.isCurrentComponentDirty();
+      this.vb.sendUnsavedResultToVB(dirty);
+    });
+  }
+}
+
+// 8️⃣ customer-form.component.ts (Standalone Component)
+import { Component, OnInit } from '@angular/core';
+import { FormBuilder, ReactiveFormsModule } from '@angular/forms';
+import { BaseComponent } from '../shared/base.component';
+import { TrackDirtyDirective } from '../directives/track-dirty.directive';
+
+@Component({
+  selector: 'app-customer-form',
+  standalone: true,
+  imports: [ReactiveFormsModule, TrackDirtyDirective],
+  template: `
+    <form [formGroup]="customerForm" trackDirty>
+      <input formControlName="name" placeholder="Name" />
+      <input formControlName="email" placeholder="Email" />
+    </form>
+  `
+})
+export class CustomerFormComponent extends BaseComponent implements OnInit {
+  customerForm = this.fb.group({ name: [''], email: [''] });
+
+  constructor(private readonly fb: FormBuilder) {
+    super();
+  }
+
+  ngOnInit(): void {
+    // initialization if needed
+  }
+}
