@@ -589,6 +589,110 @@ public static class ServiceCollectionExtensions
 
 ### Data/MockDbContext.cs
 
+````csharp
+using Microsoft.EntityFrameworkCore;
+using LookupApi.Common.Models;
+using System.Text.Json;
+
+namespace LookupApi.Common.Data;
+
+public class MockDbContext : DbContext
+{
+    public MockDbContext(DbContextOptions<MockDbContext> options)
+        : base(options)
+    {
+    }
+
+    public DbSet<LookupDefinitionEntity> LookupDefinitions { get; set; }
+    public DbSet<LoanStatusCategoryEntity> LoanStatusCategories { get; set; }
+    public DbSet<LoanStatusEntity> LoanStatuses { get; set; }
+
+    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    {
+        // LookupDefinitions Table
+        modelBuilder.Entity<LookupDefinitionEntity>(entity =>
+        {
+            entity.HasKey(e => e.Key);
+            entity.Property(e => e.Key).HasMaxLength(100).IsRequired();
+            entity.Property(e => e.TableName).HasMaxLength(100);
+            entity.Property(e => e.Sql);
+            entity.Property(e => e.EntityType).HasMaxLength(200);
+            entity.Property(e => e.HandlerType).HasMaxLength(200);
+            entity.Property(e => e.FilterColumns);
+            entity.Property(e => e.SortBy).HasMaxLength(100);
+            entity.Property(e => e.CodeColumn).HasMaxLength(100);
+            entity.Property(e => e.DescColumn).HasMaxLength(100);
+            entity.Property(e => e.AdditionalColumns);
+
+            // Seed definitions
+            entity.HasData(
+                new LookupDefinitionEntity
+                {
+                    Key = "Countries",
+                    TableName = "RefCountries",
+                    FilterColumns = JsonSerializer.Serialize(new[] { "IsActive" }),
+                    SortBy = "CountryName",
+                    CodeColumn = "CountryCode",
+                    DescColumn = "CountryName",
+                    AdditionalColumns = JsonSerializer.Serialize(Array.Empty<string>())
+                },
+                new LookupDefinitionEntity
+                {
+                    Key = "ComplexRates",
+                    HandlerType = "MyApp.Lookups.MyComplexLookupHandler, MyApp"
+                },
+                new LookupDefinitionEntity
+                {
+                    Key = "LoanStatusCategory",
+                    TableName = "LoanStatusCategories",
+                    SortBy = "Name",
+                    CodeColumn = "Id",
+                    DescColumn = "Name",
+                    AdditionalColumns = JsonSerializer.Serialize(Array.Empty<string>())
+                },
+                new LookupDefinitionEntity
+                {
+                    Key = "LoanStatuses",
+                    TableName = "LoanStatuses",
+                    FilterColumns = JsonSerializer.Serialize(new[] { "LoanStatusCategoryId" }),
+                    SortBy = "Description",
+                    CodeColumn = "Id",
+                    DescColumn = "Description",
+                    AdditionalColumns = JsonSerializer.Serialize(Array.Empty<string>())
+                }
+            );
+        });
+
+        // LoanStatusCategory Table
+        modelBuilder.Entity<LoanStatusCategoryEntity>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Name).HasMaxLength(100).IsRequired();
+
+            entity.HasData(
+                new LoanStatusCategoryEntity { Id = 1, Name = "Application" },
+                new LoanStatusCategoryEntity { Id = 2, Name = "Approval" }
+            );
+        });
+
+        // LoanStatus Table
+        modelBuilder.Entity<LoanStatusEntity>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Description).HasMaxLength(200).IsRequired();
+            entity.HasOne(e => e.Category)
+                  .WithMany(c => c.LoanStatuses)
+                  .HasForeignKey(e => e.LoanStatusCategoryId);
+
+            entity.HasData(
+                new LoanStatusEntity { Id = 1, Description = "Submitted", LoanStatusCategoryId = 1 },
+                new LoanStatusEntity { Id = 2, Description = "In Review", LoanStatusCategoryId = 1 },
+                new LoanStatusEntity { Id = 3, Description = "Approved", LoanStatusCategoryId = 2 },
+                new LoanStatusEntity { Id = 4, Description = "Funded", LoanStatusCategoryId = 2 }
+            );
+        });
+    }
+}
 ```csharp
 using Microsoft.EntityFrameworkCore;
 using LookupApi.Common.Models;
@@ -597,7 +701,7 @@ using System.Text.Json;
 namespace LookupApi.Common.Data;
 
 public class MockDbContext : DbContext { ... }
-```
+````
 
 ### Models/LookupDefinitionEntity.cs
 
