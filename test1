@@ -60,6 +60,7 @@
     <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="8.0.0" />
     <PackageReference Include="Dapper" Version="2.0.123" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.0.0" />
   </ItemGroup>
 </Project>
 ```
@@ -403,253 +404,192 @@ namespace Shared.LookupService.Providers
 
 ### Providers/TableLookupProvider.cs
 
+````csharp
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Dapper;
+using Shared.LookupService.Models;
+// Replace with your actual namespace where IDapperContext is defined
+using YourApp.Data;
+
+namespace Shared.LookupService.Providers
+{
+    /// <summary>
+    /// Retrieves lookup items from a database table using Dapper.
+    /// </summary>
+    public class TableLookupProvider : ILookupProvider
+    {
+        private readonly IDapperContext _dapperContext;
+        public TableLookupProvider(IDapperContext dapperContext) => _dapperContext = dapperContext;
+
+        public async Task<IEnumerable<LookupItem>> GetAsync(
+            LookupDefinition def,
+            IDictionary<string, object>? filters = null)
+        {
+            if (def.SourceType != LookupSourceType.Table)
+                throw new ArgumentException("SourceType must be Table", nameof(def.SourceType));
+            if (string.IsNullOrWhiteSpace(def.TableName))
+                throw new ArgumentException("TableName is required", nameof(def.TableName));
+
+            var codeCol = def.CodeColumn ?? "Code";
+            var descCol = def.DescColumn ?? "Description";
+            var selectCols = new List<string>
+            {
+                $"{codeCol} AS Code",
+                $"{descCol} AS Description"
+            };
+            if (def.AdditionalColumns?.Length > 0)
+            {
+                selectCols.AddRange(def.AdditionalColumns);
+            }
+
+            var sql = $"SELECT {string.Join(", ", selectCols)} FROM {def.TableName}";
+
+            var parameters = new DynamicParameters();
+            if (filters != null && filters.Count > 0)
+            {
+                var where = new List<string>();
+                foreach (var col in def.FilterColumns)
+                {
+                    if (filters.ContainsKey(col))
+                    {
+                        where.Add($"{col}=@{col}");
+                        parameters.Add(col, filters[col]);
+                    }
+                }
+                if (where.Any())
+                    sql += " WHERE " + string.Join(" AND ", where);
+            }
+
+            if (!string.IsNullOrWhiteSpace(def.SortBy))
+                sql += $" ORDER BY {def.SortBy}";
+
+            var rows = await _dapperContext.Connection.QueryAsync<dynamic>(sql, parameters);
+            var result = new List<LookupItem>();
+
+            foreach (var row in rows)
+            {
+                var dict = (IDictionary<string, object>)row;
+                var code = dict["Code"]?.ToString() ?? string.Empty;
+                var desc = dict["Description"]?.ToString() ?? string.Empty;
+                Dictionary<string, object>? additional = null;
+                if (def.AdditionalColumns?.Length > 0)
+                {
+                    additional = new Dictionary<string, object>();
+                    foreach (var col in def.AdditionalColumns)
+                    {
+                        if (dict.ContainsKey(col))
+                            additional[col] = dict[col]!;
+                    }
+                    if (additional.Count == 0)
+                        additional = null;
+                }
+
+                result.Add(new LookupItem(code, desc, additional));
+            }
+
+            return result;
+        }
+    }
+}
+```csharp
+using System;
+using System.Collections.Generic;
+using System.Data;
+using System.Linq;
+using Dapper;
+using Shared.LookupService.Models;
+
+namespace Shared.LookupService.Providers
+{
+    /// <summary>
+    /// Retrieves lookup items from a database table using Dapper.
+    /// </summary>
+    public class TableLookupProvider : ILookupProvider
+    {
+        private readonly IDbConnection _db;
+        public TableLookupProvider(IDbConnection db) => _db = db;
+
+        public async Task<IEnumerable<LookupItem>> GetAsync(
+            LookupDefinition def,
+            IDictionary<string, object>? filters = null)
+        {
+            if (def.SourceType != LookupSourceType.Table)
+                throw new ArgumentException("SourceType must be Table", nameof(def.SourceType));
+            if (string.IsNullOrWhiteSpace(def.TableName))
+                throw new ArgumentException("TableName is required", nameof(def.TableName));
+
+            var codeCol = def.CodeColumn ?? "Code";
+            var descCol = def.DescColumn ?? "Description";
+            var selectCols = new List<string>
+            {
+                $"{codeCol} AS Code",
+                $"{descCol} AS Description"
+            };
+            if (def.AdditionalColumns?.Length > 0)
+            {
+                selectCols.AddRange(def.AdditionalColumns.Select(c => c));
+            }
+
+            var sql = $"SELECT {string.Join(", ", selectCols)} FROM {def.TableName}";
+
+            var parameters = new DynamicParameters();
+            if (filters != null && filters.Count > 0)
+            {
+                var where = new List<string>();
+                foreach (var col in def.FilterColumns)
+                {
+                    if (filters.ContainsKey(col))
+                    {
+                        where.Add($"{col}=@{col}");
+                        parameters.Add(col, filters[col]);
+                    }
+                }
+                if (where.Any())
+                    sql += " WHERE " + string.Join(" AND ", where);
+            }
+
+            if (!string.IsNullOrWhiteSpace(def.SortBy))
+            {
+                sql += $" ORDER BY {def.SortBy}";
+            }
+
+            var rows = await _db.QueryAsync<dynamic>(sql, parameters);
+            var result = new List<LookupItem>();
+            foreach (var row in rows)
+            {
+                var dict = (IDictionary<string, object>)row;
+                var code = dict["Code"]?.ToString() ?? string.Empty;
+                var desc = dict["Description"]?.ToString() ?? string.Empty;
+                Dictionary<string, object>? additional = null;
+                if (def.AdditionalColumns?.Length > 0)
+                {
+                    additional = new Dictionary<string, object>();
+                    foreach (var col in def.AdditionalColumns)
+                    {
+                        if (dict.ContainsKey(col))
+                            additional[col] = dict[col]!;
+                    }
+                    if (additional.Count == 0)
+                        additional = null;
+                }
+
+                result.Add(new LookupItem(code, desc, additional));
+            }
+
+            return result;
+        }
+    }
+}
 ```csharp
 using Dapper;
 using Shared.LookupService.Models;
-using System.Data;
-using System.Text;
-
-namespace Shared.LookupService.Providers;
-
-public class TableLookupProvider : ILookupProvider
-{
-    private readonly IDbConnection _db;
-    public TableLookupProvider(IDbConnection db) => _db = db;
-
-    public async Task<IEnumerable<LookupItem>> GetAsync(
-        LookupDefinition def,
-        IDictionary<string, object>? filters = null)
-    {
-        if (def.SourceType != LookupSourceType.Table)
-            throw new ArgumentException("SourceType must be Table");
-        if (string.IsNullOrWhiteSpace(def.TableName))
-            throw new ArgumentException("TableName required");
-
-        var codeCol = def.CodeColumn ?? "Code";
-        var descCol = def.DescColumn ?? "Description";
-        var select = new List<string> { $"{codeCol} AS Code", $"{descCol} AS Description" };
-        select.AddRange(def.AdditionalColumns.Select(c => $"{c} AS {c}"));
-
-        var sql = new StringBuilder($"SELECT {string.Join(", ", select)} FROM {def.TableName}");
-        if (filters?.Any() == true)
-        {
-            var where = string.Join(" AND ",
-                def.FilterColumns.Where(f => filters.ContainsKey(f))
-                                 .Select(f => $"{f}=@{f}"));
-            sql.Append(" WHERE ").Append(where);
-        }
-        if (!string.IsNullOrEmpty(def.SortBy))
-            sql.Append($" ORDER BY {def.SortBy}");
-
-        var rows = await _db.QueryAsync<dynamic>(sql.ToString(), filters);
-        var list = new List<LookupItem>();
-        foreach (IDictionary<string, object> row in rows)
-        {
-            var code = row["Code"].ToString()!;
-            var desc = row["Description"].ToString()!;
-            var additional = def.AdditionalColumns.ToDictionary(
-                c => c,
-                c => row.ContainsKey(c) ? row[c]! : null);
-            list.Add(new LookupItem(code, desc, additional));
-        }
-        return list;
-    }
-}
-```
-
-### Providers/HandlerLookupProvider.cs
-
-```csharp
-using Shared.LookupService.Models;
-using Shared.LookupService.Stores;
-
-namespace Shared.LookupService.Providers;
-
-public class HandlerLookupProvider : ILookupProvider
-{
-    private readonly IServiceProvider _sp;
-    public HandlerLookupProvider(IServiceProvider sp) => _sp = sp;
-
-    public async Task<IEnumerable<LookupItem>> GetAsync(
-        LookupDefinition def,
-        IDictionary<string, object>? filters = null)
-    {
-        if (def.SourceType != LookupSourceType.Handler)
-            throw new ArgumentException("SourceType must be Handler");
-        if (string.IsNullOrWhiteSpace(def.HandlerType))
-            throw new ArgumentException("HandlerType required");
-
-        var type = Type.GetType(def.HandlerType)
-                   ?? throw new InvalidOperationException($"Cannot load {def.HandlerType}");
-        var handler = (ILookupHandler)_sp.GetRequiredService(type);
-        return await handler.HandleAsync(def, filters);
-    }
-}
-```
-
-### Providers/ProductTypeLookupHandler.cs
-
-```csharp
-using Dapper;
-using Shared.LookupService.Models;
-using System.Data;
-
-namespace Shared.LookupService.Providers;
-
-public class ProductTypeLookupHandler : ILookupHandler
-{
-    private readonly IDbConnection _db;
-    public ProductTypeLookupHandler(IDbConnection db) => _db = db;
-
-    public async Task<IEnumerable<LookupItem>> HandleAsync(
-        LookupDefinition def,
-        IDictionary<string, object>? filters = null)
-    {
-        if (!filters.TryGetValue("AppId", out var appId))
-            throw new ArgumentException("AppId filter is required");
-        var id = appId.ToString();
-        if (id == "1")
-        {
-            var sql = "SELECT Code, Name AS Description FROM App1Products";
-            return (await _db.QueryAsync<(string Code, string Description)>(sql))
-                   .Select(x => new LookupItem(x.Code, x.Description));
-        }
-        // other logic...
-        return Array.Empty<LookupItem>();
-    }
-}
-```
-
----
-
-## Factory
-
-### Factory/LookupProviderFactory.cs
-
-```csharp
-using Shared.LookupService.Models;
-using Shared.LookupService.Providers;
-
-namespace Shared.LookupService.Factory;
-
-public class LookupProviderFactory
-{
-    private readonly IEnumerable<ILookupProvider> _providers;
-    public LookupProviderFactory(IEnumerable<ILookupProvider> providers)
-        => _providers = providers;
-
-    public ILookupProvider Get(LookupDefinition def)
-    {
-        return def.SourceType switch
-        {
-            LookupSourceType.Table   => _providers.OfType<TableLookupProvider>().First(),
-            LookupSourceType.Sql     => _providers.OfType<TableLookupProvider>().First(),
-            LookupSourceType.Entity  => _providers.OfType<TableLookupProvider>().First(),
-            LookupSourceType.Handler => _providers.OfType<HandlerLookupProvider>().First(),
-            _ => throw new InvalidOperationException("Unknown source type")
-        };
-    }
-}
-```
-
----
-
-## Services
-
-### Services/ILookupDataService.cs
-
-```csharp
-using Shared.LookupService.Models;
-
-namespace Shared.LookupService.Services;
-
-public interface ILookupDataService
-{
-    Task<IEnumerable<LookupItem>> GetAsync(string key, IDictionary<string, object>? filters = null);
-}
-```
-
-### Services/LookupDataService.cs
-
-```csharp
-using Shared.LookupService.Models;
-using Shared.LookupService.Stores;
-using Shared.LookupService.Factory;
-
-namespace Shared.LookupService.Services;
-
-public class LookupDataService : ILookupDataService
-{
-    private readonly IReadOnlyDictionary<string, LookupDefinition> _defs;
-    private readonly LookupProviderFactory _factory;
-
-    public LookupDataService(ILookupDefinitionStore store, LookupProviderFactory factory)
-    {
-        var list = store.GetAllAsync().GetAwaiter().GetResult();
-        _defs = list.ToDictionary(d => d.Key, StringComparer.OrdinalIgnoreCase);
-        _factory = factory;
-    }
-
-    public Task<IEnumerable<LookupItem>> GetAsync(string key, IDictionary<string, object>? filters = null)
-    {
-        if (!_defs.TryGetValue(key, out var def))
-            throw new KeyNotFoundException($"Lookup '{key}' not found");
-        var provider = _factory.Get(def);
-        return provider.GetAsync(def, filters);
-    }
-}
-```
-
-### Services/CachingLookupDataService.cs
-
-```csharp
-using Microsoft.Extensions.Caching.Memory;
-using Shared.LookupService.Models;
-
-namespace Shared.LookupService.Services;
-
-public class CachingLookupDataService : ILookupDataService
-{
-    private readonly LookupDataService _inner;
-    private readonly IMemoryCache _cache;
-    private readonly TimeSpan _ttl = TimeSpan.FromMinutes(10);
-
-    public CachingLookupDataService(LookupDataService inner, IMemoryCache cache)
-    {
-        _inner = inner;
-        _cache = cache;
-    }
-
-    public Task<IEnumerable<LookupItem>> GetAsync(string key, IDictionary<string, object>? filters = null)
-    {
-        var filterKey = filters == null
-            ? string.Empty
-            : string.Join(";", filters.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key}={kv.Value}"));
-        var cacheKey = $"LookupRes:{key}:{filterKey}";
-        return _cache.GetOrCreateAsync(cacheKey, entry =>
-        {
-            entry.SlidingExpiration = _ttl;
-            return _inner.GetAsync(key, filters)!;
-        })!;
-    }
-}
-```
-
----
-
-## Extensions
-
-### Extensions/ServiceCollectionExtensions.cs
-
-```csharp
-using Shared.LookupService.Stores;
-using Shared.LookupService.Providers;
-using Shared.LookupService.Factory;
-using Shared.LookupService.Services;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Configuration;
 using Microsoft.EntityFrameworkCore;
-using Shared.LookupService.Data;
+
+using System.Data;
+using Microsoft.Data.SqlClient;
+using Microsoft.EntityFrameworkCore;
 
 namespace Shared.LookupService.Extensions;
 
@@ -658,7 +598,7 @@ public static class ServiceCollectionExtensions
     public static IServiceCollection AddLookupDefinitions(this IServiceCollection services, IConfiguration config, string source)
     {
         services.AddMemoryCache();
-        services.AddTransient<IDbConnection>(_ => new SqlConnection(config.GetConnectionString("Default")));
+        
         services.AddSingleton<TableLookupProvider>();
         services.AddSingleton<ILookupProvider, TableLookupProvider>();
         services.AddSingleton<HandlerLookupProvider>();
@@ -684,7 +624,7 @@ public static class ServiceCollectionExtensions
         return services;
     }
 }
-```
+````
 
 ---
 
@@ -717,82 +657,20 @@ public static class ServiceCollectionExtensions
 ### Program.cs
 
 ```csharp
+using System.Data;
+using Microsoft.Data.SqlClient;
 using Shared.LookupService.Extensions;
+
 var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddLookupDefinitions(builder.Configuration, "Db");
-var app = builder.Build();
-app.MapControllers();
-app.Run();
-```
 
-### Controllers/LookupController.cs
+// Register IDbConnection for Dapper
+builder.Services.AddTransient<IDbConnection>(sp =>
+    new SqlConnection(builder.Configuration.GetConnectionString("Default"))
+);
 
-```csharp
-using Microsoft.AspNetCore.Mvc;
-using Shared.LookupService.Services;
-
-namespace LookupApi.Common.Controllers;
-
-[ApiController]
-[Route("api/[controller]")]
-public class LookupController : ControllerBase
-{
-    private readonly ILookupDataService _lookup;
-    public LookupController(ILookupDataService lookup) => _lookup = lookup;
-
-    [HttpGet("{key}")]
-    public async Task<IActionResult> Get(string key) => Ok(await _lookup.GetAsync(key));
-
-    [HttpGet("{key}/filter")]
-    public async Task<IActionResult> GetFiltered(string key, [FromQuery] Dictionary<string, object> filters)
-        => Ok(await _lookup.GetAsync(key, filters));
-}
-```
-
----
-
-# FundingModuleApi (JSON-backed API)
-
-### FundingModuleApi.csproj
-
-```xml
-<Project Sdk="Microsoft.NET.Sdk.Web">
-  <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
-    <Nullable>enable</Nullable>
-  </PropertyGroup>
-  <ItemGroup>
-    <ProjectReference Include="../Shared.LookupService/Shared.LookupService.csproj" />
-  </ItemGroup>
-</Project>
-```
-
-### appsettings.json
-
-```json
-{
-  "LookupDataSettings": [
-    {
-      "Key": "Countries",
-      "SourceType": "Table",
-      "TableName": "RefCountries",
-      "FilterColumns": ["IsActive"],
-      "SortBy": "CountryName",
-      "CodeColumn": "CountryCode",
-      "DescColumn": "CountryName"
-    }
-  ],
-  "Logging": { "LogLevel": { "Default": "Information" } },
-  "AllowedHosts": "*"
-}
-```
-
-### Program.cs
-
-```csharp
-using Shared.LookupService.Extensions;
-var builder = WebApplication.CreateBuilder(args);
+// Add lookup definitions store (JSON-backed)
 builder.Services.AddLookupDefinitions(builder.Configuration, "Json");
+
 var app = builder.Build();
 app.MapControllers();
 app.Run();
