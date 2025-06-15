@@ -15,9 +15,9 @@
     /Stores
       ILookupDefinitionStore.cs
       DbLookupDefinitionStore.cs
-      JsonLookupDefinitionStore.cs
     /Providers
       ILookupProvider.cs
+      ILookupHandler.cs
       TableLookupProvider.cs
       HandlerLookupProvider.cs
       ProductTypeLookupHandler.cs
@@ -351,6 +351,53 @@ public interface ILookupProvider
     Task<IEnumerable<LookupItem>> GetAsync(
         LookupDefinition def,
         IDictionary<string, object>? filters = null);
+}
+```
+
+### Providers/ILookupHandler.cs
+
+```csharp
+using Shared.LookupService.Models;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+
+namespace Shared.LookupService.Providers
+{
+    /// <summary>
+    /// Defines a custom handler for complex lookup logic.
+    /// </summary>
+    public interface ILookupHandler
+    {
+        /// <summary>
+        /// Execute custom logic and return code/description pairs.
+        /// </summary>
+        Task<IEnumerable<LookupItem>> HandleAsync(
+            LookupDefinition definition,
+            IDictionary<string, object>? filterValues = null
+        );
+    }
+}
+```
+
+### Providers/ILookupProvider.cs
+
+```csharp
+using Shared.LookupService.Models;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+
+namespace Shared.LookupService.Providers
+{
+    /// <summary>
+    /// Defines the lookup provider interface for table, SQL, entity, and handler sources.
+    /// </summary>
+    public interface ILookupProvider
+    {
+        Task<IEnumerable<LookupItem>> GetAsync(
+            LookupDefinition definition,
+            IDictionary<string, object>? filters = null
+        );
+    }
 }
 ```
 
