@@ -1,427 +1,665 @@
-Below is a starter kit for an Angular 19.2 project with:
+## Project Structure
 
-MD3‑compliant Material theme (light mode + CSS‑variable support)
+```
+/src
+  /Shared.LookupService
+    Shared.LookupService.csproj
+    /Models
+      LookupDefinition.cs
+      LookupItem.cs
+    /Stores
+      ILookupDefinitionStore.cs
+      DbLookupDefinitionStore.cs
+      JsonLookupDefinitionStore.cs
+    /Providers
+      ILookupProvider.cs
+      TableLookupProvider.cs
+      HandlerLookupProvider.cs
+    /Factory
+      LookupProviderFactory.cs
+    /Services
+      LookupDataService.cs
+      CachingLookupDataService.cs
+    /Extensions
+      ServiceCollectionExtensions.cs
 
-Mobile‑first, responsive utilities (containers, grid, spacing, breakpoints)
+  /LookupApi.Common
+    LookupApi.Common.csproj
+    Program.cs
+    appsettings.json
+    /Data
+      MockDbContext.cs
+    /Models
+      LookupDefinitionEntity.cs
+      LoanStatusCategoryEntity.cs
+      LoanStatusEntity.cs
+    /Controllers
+      LookupController.cs
 
-Flexible folder structure under src/styles/
+  /FundingModuleApi
+    FundingModuleApi.csproj
+    Program.cs
+    appsettings.json
+    /Controllers
+      FundingController.cs
+```
 
-A CoreModule/LayoutComponent that handles header, sidenav, content wrapper
+---
 
-A sample DashboardComponent showing horizontal/vertical alignment
+# Shared.LookupService (Class Library)
 
-Feel free to drop this into a fresh CLI project (ng new my-app --style=scss --routing) and adjust paths as needed.
+### Shared.LookupService.csproj
 
-1. Folder structure
-vbnet
-Copy
-Edit
-my-app/
-├── angular.json
-├── package.json
-└── src/
-    ├── app/
-    │   ├── core/               ← Core module & layout
-    │   │   ├── layout/
-    │   │   │   ├── layout.component.ts
-    │   │   │   ├── layout.component.html
-    │   │   │   └── layout.component.scss
-    │   │   └── core.module.ts
-    │   ├── dashboard/          ← Sample feature module
-    │   │   ├── dashboard.component.ts
-    │   │   ├── dashboard.component.html
-    │   │   └── dashboard.component.scss
-    │   ├── app-routing.module.ts
-    │   └── app.module.ts
-    └── styles/                 ← all global styles
-        ├── tokens/
-        │   ├── _colors.scss
-        │   ├── _spacing.scss
-        │   └── _typography.scss
-        ├── maps/
-        │   └── _breakpoints.scss
-        ├── mixins/
-        │   ├── _respond.scss
-        │   └── _layout.scss
-        ├── theme/
-        │   ├── _core.scss
-        │   ├── _system.scss
-        │   └── _components.scss
-        ├── overrides/
-        │   ├── _toolbar.scss
-        │   ├── _button.scss
-        │   ├── _form-field.scss
-        │   └── _grid-list.scss
-        ├── utilities/
-        │   └── _utilities.scss
-        └── styles.scss         ← single entry point
-2. Global styles
-2.1 angular.json
-Under your project’s build options, point to only styles/styles.scss:
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="8.0.0" />
+    <PackageReference Include="Dapper" Version="2.0.123" />
+  </ItemGroup>
+</Project>
+```
 
-jsonc
-Copy
-Edit
-"build": {
-  "options": {
-    "styles": [
-      "src/styles/styles.scss"
-    ],
-    // …
-  }
+### Models/LookupDefinition.cs
+
+```csharp
+namespace Shared.LookupService.Models;
+
+/// <summary>
+/// Defines a lookup and its source configuration.
+/// Only one source property should be set based on <see cref="LookupSourceType"/>.
+/// </summary>
+public class LookupDefinition
+{
+    /// <summary>Logical key for the lookup.</summary>
+    public string Key { get; set; } = null!;
+
+    /// <summary>Specifies which lookup source to use.</summary>
+    public LookupSourceType SourceType { get; set; }
+
+    /// <summary>Table-based lookup: name of the DB table.</summary>
+    public string? TableName { get; set; }
+
+    /// <summary>SQL-based lookup: raw SQL query.</summary>
+    public string? Sql { get; set; }
+
+    /// <summary>Entity-based lookup: fully qualified entity type.</summary>
+    public string? EntityType { get; set; }
+
+    /// <summary>Handler-based lookup: fully qualified handler type.</summary>
+    public string? HandlerType { get; set; }
+
+    /// <summary>List of filterable column names (for WHERE clauses).</summary>
+    public string[] FilterColumns { get; set; } = Array.Empty<string>();
+
+    /// <summary>Optional ORDER BY clause column.</summary>
+    public string? SortBy { get; set; }
+
+    /// <summary>Column for the lookup code/value.</summary>
+    public string? CodeColumn { get; set; }
+
+    /// <summary>Column for the lookup description/text.</summary>
+    public string? DescColumn { get; set; }
+
+    /// <summary>Additional columns to include in the result set.</summary>
+    public string[] AdditionalColumns { get; set; } = Array.Empty<string>();
 }
-2.2 src/styles/styles.scss
-scss
-Copy
-Edit
-// 1. Design tokens
-@import 'tokens/colors';
-@import 'tokens/spacing';
-@import 'tokens/typography';
 
-// 2. Maps & functions
-@import 'maps/breakpoints';
+/// <summary>Defines the type of lookup source to use.</summary>
+public enum LookupSourceType
+{
+    Table,
+    Sql,
+    Entity,
+    Handler
+}
+```
 
-// 3. Utility mixins
-@import 'mixins/respond';
-@import 'mixins/layout';
+csharp
+namespace Shared.LookupService.Models;
 
-// 4. Material theming
-@import 'theme/core';
-@import 'theme/system';
-@import 'theme/components';
+public class LookupDefinition
+{
+public string   Key               { get; set; } = null!;
+public string?  TableName         { get; set; }
+public string?  Sql               { get; set; }
+public string?  EntityType        { get; set; }
+public string?  HandlerType       { get; set; }
+public string\[] FilterColumns     { get; set; } = Array.Empty<string>();
+public string?  SortBy            { get; set; }
+public string?  CodeColumn        { get; set; }
+public string?  DescColumn        { get; set; }
+public string\[] AdditionalColumns { get; set; } = Array.Empty<string>();
+}
 
-// 5. Component overrides
-@import 'overrides/toolbar';
-@import 'overrides/button';
-@import 'overrides/form-field';
-@import 'overrides/grid-list';
+````
 
-// 6. Global utility classes
-@import 'utilities/utilities';
-2.3 Tokens
-tokens/_colors.scss
-scss
-Copy
-Edit
-@use '@angular/material' as mat;
+### Models/LookupItem.cs
+```csharp
+namespace Shared.LookupService.Models;
 
-$primary-palette : mat.define-palette(mat.$indigo-palette, 500);
-$accent-palette  : mat.define-palette(mat.$pink-palette, A200);
-$warn-palette    : mat.define-palette(mat.$red-palette);
-
-$color-surface       : mat.get-color-from-palette($primary-palette, 50);
-$color-on-surface    : mat.get-color-from-palette($primary-palette, 900);
-$color-background    : #fafafa;
-$color-on-background : #212121;
-tokens/_spacing.scss
-scss
-Copy
-Edit
-$spacing-unit: 8px !default;
-$space: (
-  xs: $spacing-unit * 0.5,
-  sm: $spacing-unit,
-  md: $spacing-unit * 2,
-  lg: $spacing-unit * 3,
-  xl: $spacing-unit * 4
+public record LookupItem(
+    string Code,
+    string Description,
+    IDictionary<string, object>? AdditionalData = null
 );
+````
 
-@function space($key) {
-  @return map-get($space, $key);
+### Stores/ILookupDefinitionStore.cs
+
+```csharp
+using Shared.LookupService.Models;
+
+namespace Shared.LookupService.Stores;
+
+public interface ILookupDefinitionStore
+{
+    Task<IReadOnlyList<LookupDefinition>> GetAllAsync();
+    Task RefreshAsync(string key);
+    Task RefreshAllAsync();
 }
-tokens/_typography.scss
-scss
-Copy
-Edit
-@use '@angular/material' as mat;
+```
 
-$font-family-base: 'Roboto, sans-serif' !default;
-$type-scale: (
-  display-large:  mat.define-typography-level(57px, 64px, 400),
-  headline-small: mat.define-typography-level(24px, 32px, 400),
-  title-medium:   mat.define-typography-level(20px, 28px, 500),
-  body-large:     mat.define-typography-level(16px, 24px, 400),
-  label-small:    mat.define-typography-level(11px, 16px, 500)
-);
+### Stores/DbLookupDefinitionStore.cs
 
-@function type-level($key) {
-  @return map-get($type-scale, $key);
+```csharp
+using Microsoft.EntityFrameworkCore;
+using Shared.LookupService.Models;
+using LookupApi.Common.Data;
+using System.Text.Json;
+
+namespace Shared.LookupService.Stores;
+
+public class DbLookupDefinitionStore : ILookupDefinitionStore
+{
+    private readonly MockDbContext _db;
+    public DbLookupDefinitionStore(MockDbContext db) => _db = db;
+
+    public async Task<IReadOnlyList<LookupDefinition>> GetAllAsync()
+    {
+        var rows = await _db.LookupDefinitions.AsNoTracking().ToListAsync();
+        return rows.Select(r => new LookupDefinition
+        {
+            Key               = r.Key,
+            TableName         = r.TableName,
+            Sql               = r.Sql,
+            EntityType        = r.EntityType,
+            HandlerType       = r.HandlerType,
+            FilterColumns     = JsonSerializer.Deserialize<string[]>(r.FilterColumns) ?? Array.Empty<string>(),
+            SortBy            = r.SortBy,
+            CodeColumn        = r.CodeColumn,
+            DescColumn        = r.DescColumn,
+            AdditionalColumns = JsonSerializer.Deserialize<string[]>(r.AdditionalColumns) ?? Array.Empty<string>()
+        }).ToList();
+    }
+
+    public Task RefreshAsync(string key)
+    {
+        // eviction handled in decorator
+        return Task.CompletedTask;
+    }
+
+    public Task RefreshAllAsync() => Task.CompletedTask;
 }
-2.4 Maps & mixins
-maps/_breakpoints.scss
-scss
-Copy
-Edit
-$breakpoints: (
-  xs: 0,
-  sm: 600px,
-  md: 960px,
-  lg: 1280px,
-  xl: 1920px
-);
+```
 
-@function bp($key) {
-  @return map-get($breakpoints, $key);
+### Stores/JsonLookupDefinitionStore.cs
+
+```csharp
+using Microsoft.Extensions.Options;
+using Shared.LookupService.Models;
+
+namespace Shared.LookupService.Stores;
+
+public class JsonLookupDefinitionStore : ILookupDefinitionStore
+{
+    private readonly IOptionsMonitor<List<LookupDefinition>> _monitor;
+    public JsonLookupDefinitionStore(IOptionsMonitor<List<LookupDefinition>> monitor)
+        => _monitor = monitor;
+
+    public Task<IReadOnlyList<LookupDefinition>> GetAllAsync()
+        => Task.FromResult((IReadOnlyList<LookupDefinition>)_monitor.CurrentValue);
+
+    public Task RefreshAsync(string key)    => Task.CompletedTask;
+    public Task RefreshAllAsync()           => Task.CompletedTask;
 }
-mixins/_respond.scss
-scss
-Copy
-Edit
-@import '../maps/breakpoints';
+```
 
-@mixin respond-to($break) {
-  $p: bp($break);
-  @if $p != null {
-    @media (min-width: $p) { @content; }
-  }
+### Providers/ILookupProvider.cs
+
+```csharp
+using Shared.LookupService.Models;
+
+namespace Shared.LookupService.Providers;
+
+public interface ILookupProvider
+{
+    Task<IEnumerable<LookupItem>> GetAsync(
+        LookupDefinition def,
+        IDictionary<string, object>? filters = null);
 }
-mixins/_layout.scss
-scss
-Copy
-Edit
-@import '../tokens/spacing';
-@import '../maps/breakpoints';
+```
 
-@mixin container($max-key) {
-  width: 100%;
-  margin: 0 auto;
-  padding: space(sm);
+### Providers/TableLookupProvider.cs
 
-  @include respond-to($max-key) {
-    max-width: bp($max-key);
-  }
+```csharp
+using Dapper;
+using Shared.LookupService.Models;
+using System.Data;
+using System.Text;
+
+namespace Shared.LookupService.Providers;
+
+public class TableLookupProvider : ILookupProvider
+{
+    private readonly IDbConnection _db;
+    public TableLookupProvider(IDbConnection db) => _db = db;
+
+    public async Task<IEnumerable<LookupItem>> GetAsync(
+        LookupDefinition def,
+        IDictionary<string, object>? filters = null)
+    {
+        if (string.IsNullOrWhiteSpace(def.TableName))
+            throw new ArgumentException("TableName required");
+
+        var codeCol = def.CodeColumn ?? "Code";
+        var descCol = def.DescColumn ?? "Description";
+
+        var selectCols = new List<string>
+        {
+            $"{codeCol} AS Code",
+            $"{descCol} AS Description"
+        };
+        if (def.AdditionalColumns.Any())
+            selectCols.AddRange(def.AdditionalColumns.Select(ac => $"{ac} AS {ac}"));
+
+        var sql = new StringBuilder(
+            $"SELECT {string.Join(", ", selectCols)} FROM {def.TableName}");
+
+        if (filters?.Any() == true)
+        {
+            var clauses = def.FilterColumns
+                             .Where(c => filters.ContainsKey(c))
+                             .Select(c => $"{c}=@{c}");
+            sql.Append(" WHERE ").Append(string.Join(" AND ", clauses));
+        }
+        if (!string.IsNullOrEmpty(def.SortBy))
+            sql.Append($" ORDER BY {def.SortBy}");
+
+        var rows = await _db.QueryAsync<dynamic>(sql.ToString(), filters);
+        var results = new List<LookupItem>();
+        foreach (IDictionary<string, object> row in rows)
+        {
+            var code = row["Code"].ToString()!;
+            var desc = row["Description"].ToString()!;
+            var additional = def.AdditionalColumns.ToDictionary(
+                ac => ac,
+                ac => row.ContainsKey(ac) ? row[ac]! : null
+            );
+            results.Add(new LookupItem(code, desc, additional));
+        }
+        return results;
+    }
 }
+```
 
-.grid-auto {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-  gap: space(md);
+### Providers/HandlerLookupProvider.cs
+
+```csharp
+using Shared.LookupService.Models;
+using Shared.LookupService.Stores;
+
+namespace Shared.LookupService.Providers;
+
+public class HandlerLookupProvider : ILookupProvider
+{
+    private readonly IServiceProvider _sp;
+    public HandlerLookupProvider(IServiceProvider sp) => _sp = sp;
+
+    public async Task<IEnumerable<LookupItem>> GetAsync(
+        LookupDefinition def,
+        IDictionary<string, object>? filters = null)
+    {
+        if (string.IsNullOrWhiteSpace(def.HandlerType))
+            throw new ArgumentException("HandlerType required");
+
+        var handlerType = Type.GetType(def.HandlerType)
+                           ?? throw new InvalidOperationException($"Cannot load {def.HandlerType}");
+        var handler = (ILookupHandler)_sp.GetRequiredService(handlerType);
+        return await handler.HandleAsync(def, filters);
+    }
 }
-2.5 Material theme
-theme/_core.scss
-scss
-Copy
-Edit
-@use '@angular/material' as mat;
-@include mat.core();
-theme/_system.scss
-scss
-Copy
-Edit
-@use '@angular/material' as mat;
-@import '../tokens/colors';
-@import '../tokens/typography';
+```
 
-$my-light-theme: mat.define-light-theme((
-  color: (
-    primary: $primary-palette,
-    accent:  $accent-palette,
-    warn:    $warn-palette
-  ),
-  typography: mat.define-typography-config((
-    font-family: $font-family-base,
-    body-large:  map-get($type-scale, body-large),
-    title-medium: map-get($type-scale, title-medium)
-  )),
-  density: 0,
-  use-system-variables: true
-));
+### Example: Custom Handler for Product Types
 
-@include mat.theme($my-light-theme);
-theme/_components.scss
-scss
-Copy
-Edit
-@use '@angular/material' as mat;
-@import 'system';
+Add a handler to fetch product types dynamically based on `AppId`.
 
-@include mat.all-component-themes(mat.get-theme());
-2.6 Component overrides (examples)
-overrides/_toolbar.scss
-scss
-Copy
-Edit
-@use '@angular/material' as mat;
-@include mat.toolbar-overrides((
-  toolbar-height: 64px,
-  toolbar-dense-height: 56px
-));
-overrides/_button.scss
-scss
-Copy
-Edit
-@use '@angular/material' as mat;
-@include mat.button-overrides((
-  filled-container-color: mat.get-color-from-palette($primary-palette, 500),
-  text-label-text-transform: none,
-  text-label-font-size: 16px
-));
-(Repeat for _form-field.scss, _grid-list.scss, etc.)
+#### Providers/ProductTypeLookupHandler.cs
 
-2.7 Utilities
-utilities/_utilities.scss
-scss
-Copy
-Edit
-@import '../tokens/spacing';
-@import '../tokens/typography';
+```csharp
+using Dapper;
+using Shared.LookupService.Models;
+using System.Data;
 
-.u-mt-sm { margin-top: space(sm) !important; }
-.u-px-md { padding-left: space(md) !important; padding-right: space(md) !important; }
+namespace Shared.LookupService.Providers;
 
-.header {
-  background-color: $color-surface;
-  padding: space(md);
-  font-family: $font-family-base;
-  font-size: type-level(body-large).font-size;
-  line-height: type-level(body-large).line-height;
+public class ProductTypeLookupHandler : ILookupHandler
+{
+    private readonly IDbConnection _db;
+    public ProductTypeLookupHandler(IDbConnection db) => _db = db;
+
+    public async Task<IEnumerable<LookupItem>> HandleAsync(
+        LookupDefinition def,
+        IDictionary<string, object>? filters = null)
+    {
+        if (filters == null || !filters.TryGetValue("AppId", out var appIdObj))
+            throw new ArgumentException("Filter 'AppId' is required for ProductTypes lookup.");
+        var appId = appIdObj.ToString();
+
+        // Example branching logic based on AppId
+        string sql;
+        if (appId == "1")
+        {
+            // Join table A and B for app 1
+            sql = @"SELECT pt.TypeCode AS Code, pt.TypeName AS Description, pt.IsActive
+                      FROM ProductTypes pt
+                      JOIN App1Settings a1 ON pt.TypeCode = a1.TypeCode
+                      WHERE a1.IsEnabled = 1";
+        }
+        else if (appId == "2")
+        {
+            // Hardcoded list for app 2
+            return new[] {
+                new LookupItem("X", "Type X"),
+                new LookupItem("Y", "Type Y")
+            };
+        }
+        else
+        {
+            // Default product types
+            sql = "SELECT TypeCode AS Code, TypeName AS Description FROM DefaultProductTypes";
+        }
+
+        var rows = await _db.QueryAsync<(string Code, string Description)>(sql);
+        return rows.Select(r => new LookupItem(r.Code, r.Description));
+    }
 }
-3. CoreModule & LayoutComponent
-app/core/core.module.ts
-ts
-Copy
-Edit
-import { NgModule } from '@angular/core';
-import { LayoutComponent } from './layout/layout.component';
-import { CommonModule } from '@angular/common';
-import { RouterModule } from '@angular/router';
-import { MatToolbarModule } from '@angular/material/toolbar';
-import { MatSidenavModule } from '@angular/material/sidenav';
-import { MatIconModule } from '@angular/material/icon';
-import { MatListModule } from '@angular/material/list';
+```
 
-@NgModule({
-  declarations: [LayoutComponent],
-  imports: [
-    CommonModule,
-    RouterModule,
-    MatToolbarModule,
-    MatSidenavModule,
-    MatIconModule,
-    MatListModule
-  ],
-  exports: [LayoutComponent]
-})
-export class CoreModule {}
-app/core/layout/layout.component.html
-html
-Copy
-Edit
-<mat-sidenav-container class="app-shell">
-  <mat-sidenav mode="side" opened class="u-mt-sm">
-    <mat-nav-list>
-      <a mat-list-item routerLink="/dashboard">Dashboard</a>
-      <!-- add more nav links -->
-    </mat-nav-list>
-  </mat-sidenav>
-  <mat-sidenav-content class="u-px-md">
-    <mat-toolbar color="primary">
-      <button mat-icon-button (click)="drawer.toggle()">
-        <mat-icon>menu</mat-icon>
-      </button>
-      <span>Enterprise App</span>
-    </mat-toolbar>
+#### Configuration Example (JSON)
 
-    <div class="container-md u-mt-sm">
-      <router-outlet></router-outlet>
-    </div>
-  </mat-sidenav-content>
-</mat-sidenav-container>
-app/core/layout/layout.component.scss
-scss
-Copy
-Edit
-/* empty – all styles come from global utilities */
-4. Sample DashboardComponent
-app/dashboard/dashboard.component.ts
-ts
-Copy
-Edit
-import { Component } from '@angular/core';
-
-@Component({
-  selector: 'app-dashboard',
-  templateUrl: './dashboard.component.html',
-  styleUrls: ['./dashboard.component.scss']
-})
-export class DashboardComponent {}
-app/dashboard/dashboard.component.html
-html
-Copy
-Edit
-<h2 class="header">Dashboard</h2>
-
-<!-- horizontal flex -->
-<div class="row" style="display:flex; gap:16px;">
-  <mat-card class="flex-1">Card A</mat-card>
-  <mat-card class="flex-1">Card B</mat-card>
-  <mat-card class="flex-1">Card C</mat-card>
-</div>
-
-<!-- responsive grid -->
-<div class="grid-auto u-mt-sm">
-  <mat-card *ngFor="let i of [1,2,3,4,5,6]">Item {{i}}</mat-card>
-</div>
-app/dashboard/dashboard.component.scss
-scss
-Copy
-Edit
-/* empty or one‑offs; global utilities handle layout */
-5. AppModule & Routing
-app/app-routing.module.ts
-ts
-Copy
-Edit
-import { NgModule } from '@angular/core';
-import { RouterModule, Routes } from '@angular/router';
-import { LayoutComponent } from './core/layout/layout.component';
-import { DashboardComponent } from './dashboard/dashboard.component';
-
-const routes: Routes = [
+````json
+[
   {
-    path: '',
-    component: LayoutComponent,
-    children: [
-      { path: 'dashboard', component: DashboardComponent },
-      { path: '', redirectTo: 'dashboard', pathMatch: 'full' }
-    ]
+    "Key": "ProductTypes",
+    "SourceType": "Handler",
+    "HandlerType": "Shared.LookupService.Providers.ProductTypeLookupHandler, Shared.LookupService",
+    "FilterColumns": [ "AppId" ]
   }
-];
+]
+```csharp
+using Shared.LookupService.Models;
+using Shared.LookupService.Stores;
 
-@NgModule({
-  imports: [RouterModule.forRoot(routes, { scrollPositionRestoration: 'enabled' })],
-  exports: [RouterModule]
-})
-export class AppRoutingModule {}
-app/app.module.ts
-ts
-Copy
-Edit
-import { NgModule } from '@angular/core';
-import { BrowserModule } from '@angular/platform-browser';
-import { BrowserAnimationsModule } from '@angular/platform-browser/animations';
-import { CoreModule } from './core/core.module';
-import { DashboardComponent } from './dashboard/dashboard.component';
-import { AppComponent } from './app.component';
-import { AppRoutingModule } from './app-routing.module';
+namespace Shared.LookupService.Providers;
 
-@NgModule({
-  declarations: [AppComponent, DashboardComponent],
-  imports: [
-    BrowserModule,
-    BrowserAnimationsModule,
-    CoreModule,
-    AppRoutingModule
-  ],
-  bootstrap: [AppComponent]
-})
-export class AppModule {}
-Final words
-All styling lives under src/styles/ and is compiled from one styles.scss.
+public class HandlerLookupProvider : ILookupProvider
+{
+    private readonly IServiceProvider _sp;
+    public HandlerLookupProvider(IServiceProvider sp) => _sp = sp;
 
-No component needs to import SCSS partials—just use the global utility classes and Material components.
+    public async Task<IEnumerable<LookupItem>> GetAsync(
+        LookupDefinition def,
+        IDictionary<string, object>? filters = null)
+    {
+        if (string.IsNullOrWhiteSpace(def.HandlerType))
+            throw new ArgumentException("HandlerType required");
 
-Layout & responsiveness are handled by your mixins/utilities plus Angular CDK’s breakpoints if you need to react in TS.
+        var handlerType = Type.GetType(def.HandlerType)
+                           ?? throw new InvalidOperationException($"Cannot load {def.HandlerType}");
+        var handler = (ILookupHandler)_sp.GetRequiredService(handlerType);
+        return await handler.HandleAsync(def, filters);
+    }
+}
+````
 
-You now have an end‑to‑end boilerplate to build out 200+ screens with consistent theming, responsive layouts, and clear separation of concerns.
+### Factory/LookupProviderFactory.cs
+
+```csharp
+using Shared.LookupService.Models;
+using Shared.LookupService.Providers;
+
+namespace Shared.LookupService.Factory;
+
+public class LookupProviderFactory
+{
+    private readonly IEnumerable<ILookupProvider> _providers;
+    public LookupProviderFactory(IEnumerable<ILookupProvider> providers)
+        => _providers = providers;
+
+    public ILookupProvider Get(LookupDefinition def)
+    {
+        if (!string.IsNullOrWhiteSpace(def.HandlerType)) return _providers.OfType<HandlerLookupProvider>().First();
+        return _providers.OfType<TableLookupProvider>().First();
+    }
+}
+```
+
+### Services/LookupDataService.cs
+
+```csharp
+using Shared.LookupService.Models;
+using Shared.LookupService.Stores;
+using Shared.LookupService.Factory;
+
+namespace Shared.LookupService.Services;
+
+public class LookupDataService : ILookupDataService
+{
+    private readonly IReadOnlyDictionary<string, LookupDefinition> _defs;
+    private readonly LookupProviderFactory _factory;
+
+    public LookupDataService(
+        ILookupDefinitionStore defStore,
+        LookupProviderFactory factory)
+    {
+        _defs = defStore.GetAllAsync()
+                       .GetAwaiter().GetResult()
+                       .ToDictionary(d => d.Key, StringComparer.OrdinalIgnoreCase);
+        _factory = factory;
+    }
+
+    public Task<IEnumerable<LookupItem>> GetAsync(
+        string key,
+        IDictionary<string, object>? filters = null)
+    {
+        if (!_defs.TryGetValue(key, out var def))
+            throw new KeyNotFoundException($"No lookup defined for '{key}'");
+        var provider = _factory.Get(def);
+        return provider.GetAsync(def, filters);
+    }
+}
+```
+
+### Services/CachingLookupDataService.cs
+
+```csharp
+using Microsoft.Extensions.Caching.Memory;
+using Shared.LookupService.Models;
+
+namespace Shared.LookupService.Services;
+
+public class CachingLookupDataService : ILookupDataService
+{
+    private readonly LookupDataService _inner;
+    private readonly IMemoryCache _cache;
+    private readonly TimeSpan _ttl = TimeSpan.FromMinutes(10);
+
+    public CachingLookupDataService(
+        LookupDataService inner,
+        IMemoryCache cache)
+    {
+        _inner = inner;
+        _cache = cache;
+    }
+
+    public Task<IEnumerable<LookupItem>> GetAsync(
+        string key,
+        IDictionary<string, object>? filters = null)
+    {
+        var filterKey = filters == null
+            ? string.Empty
+            : string.Join(";", filters.OrderBy(kv => kv.Key).Select(kv => $"{kv.Key}={kv.Value}"));
+        var cacheKey = $"LookupRes:{key}:{filterKey}";
+        return _cache.GetOrCreateAsync(cacheKey, entry =>
+        {
+            entry.SlidingExpiration = _ttl;
+            return _inner.GetAsync(key, filters)!;
+        })!;
+    }
+}
+```
+
+### Extensions/ServiceCollectionExtensions.cs
+
+```csharp
+using Shared.LookupService.Stores;
+using Shared.LookupService.Providers;
+using Shared.LookupService.Factory;
+using Shared.LookupService.Services;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Configuration;
+using Microsoft.EntityFrameworkCore;
+using LookupApi.Common.Data;
+
+namespace Shared.LookupService.Extensions;
+
+public static class ServiceCollectionExtensions
+{
+    public static IServiceCollection AddLookupDefinitions(
+        this IServiceCollection services,
+        IConfiguration config,
+        string source) // "Json" or "Db"
+    {
+        services.AddMemoryCache();
+        services.AddTransient<IDbConnection>(_ => new SqlConnection(config.GetConnectionString("Default")));
+        services.AddSingleton<TableLookupProvider>();
+        services.AddSingleton<ILookupProvider, TableLookupProvider>();
+        services.AddSingleton<HandlerLookupProvider>();
+        services.AddSingleton<ILookupProvider, HandlerLookupProvider>();
+        services.AddSingleton<LookupProviderFactory>();
+        services.AddSingleton<LookupDataService>();
+        services.AddScoped<CachingLookupDataService>();
+        services.AddScoped<ILookupDataService>(sp => sp.GetRequiredService<CachingLookupDataService>());
+
+        if (source == "Json")
+        {
+            services.Configure<List<LookupDefinition>>(config.GetSection("LookupDataSettings"));
+            services.AddSingleton<ILookupDefinitionStore, JsonLookupDefinitionStore>();
+        }
+        else if (source == "Db")
+        {
+            services.AddDbContext<MockDbContext>(opts => opts.UseInMemoryDatabase("LookupDb"));
+            services.AddScoped<ILookupDefinitionStore, DbLookupDefinitionStore>();
+        }
+
+        return services;
+    }
+}
+```
+
+---
+
+# LookupApi.Common (Mock DB-backed API)
+
+### LookupApi.Common.csproj
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk.Web">...
+```
+
+### appsettings.json
+
+```json
+{ "ConnectionStrings":{"Default":"InMemoryDb"}, ... }
+```
+
+### Data/MockDbContext.cs
+
+```csharp
+using Microsoft.EntityFrameworkCore;
+using LookupApi.Common.Models;
+using System.Text.Json;
+
+namespace LookupApi.Common.Data;
+
+public class MockDbContext : DbContext { ... }
+```
+
+### Models/LookupDefinitionEntity.cs
+
+```csharp
+namespace LookupApi.Common.Models;
+
+public class LookupDefinitionEntity
+{
+    public string Key { get; set; } = null!;
+    public string? TableName { get; set; }
+    public string? Sql { get; set; }
+    public string? EntityType { get; set; }
+    public string? HandlerType { get; set; }
+    public string FilterColumns { get; set; } = "[]";
+    public string? SortBy { get; set; }
+    public string? CodeColumn { get; set; }
+    public string? DescColumn { get; set; }
+    public string AdditionalColumns { get; set; } = "[]";
+}
+```
+
+### Models/LoanStatusCategoryEntity.cs
+
+```csharp
+namespace LookupApi.Common.Models; public class LoanStatusCategoryEntity { ... }
+```
+
+### Models/LoanStatusEntity.cs
+
+```csharp
+namespace LookupApi.Common.Models; public class LoanStatusEntity { ... }
+```
+
+### Controllers/LookupController.cs
+
+```csharp
+using Microsoft.AspNetCore.Mvc;
+using Shared.LookupService.Services;
+
+[ApiController]
+[Route("api/[controller]")]
+public class LookupController : ControllerBase
+{
+    private readonly ILookupDataService _lookup;
+    public LookupController(ILookupDataService lookup) => _lookup = lookup;
+
+    [HttpGet("{key}")]
+    public async Task<IActionResult> Get(string key)
+        => Ok(await _lookup.GetAsync(key));
+
+    [HttpGet("{key}/filter")]  
+    public async Task<IActionResult> GetFiltered(string key, [FromQuery] Dictionary<string, object> filters)
+        => Ok(await _lookup.GetAsync(key, filters));
+}
+```
+
+### Program.cs
+
+```csharp
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddLookupDefinitions(builder.Configuration, "Db");
+var app = builder.Build();
+app.MapControllers();
+app.Run();
+```
