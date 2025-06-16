@@ -2,45 +2,46 @@
 
 ```
 /src
-  /Shared.LookupService
+  /Shared.LookupService            # reusable lookup library
     Shared.LookupService.csproj
     /Models
       LookupDefinition.cs
+      LookupSourceType.cs
       LookupItem.cs
-    /Data
-      MockDbContext.cs
-      LookupDefinitionEntity.cs
-      LoanStatusCategoryEntity.cs
-      LoanStatusEntity.cs
-    /Stores
+    /Stores                          # definition stores
       ILookupDefinitionStore.cs
+      JsonLookupDefinitionStore.cs
       DbLookupDefinitionStore.cs
-    /Providers
+    /Providers                       # providers & handler abstractions
       ILookupProvider.cs
       ILookupHandler.cs
+      IConnectionFactory.cs
       TableLookupProvider.cs
       HandlerLookupProvider.cs
       ProductTypeLookupHandler.cs
     /Factory
       LookupProviderFactory.cs
-    /Services
+    /Services                        # lookup service and caching decorator
       ILookupDataService.cs
       LookupDataService.cs
       CachingLookupDataService.cs
     /Extensions
       ServiceCollectionExtensions.cs
 
-  /LookupApi.Common
+  /LookupApi.Common                # DB-backed API using shared lookup library
     LookupApi.Common.csproj
-    Program.cs
     appsettings.json
+    Program.cs
     /Controllers
       LookupController.cs
+    /Data
+      DapperContext.cs
+      DapperConnectionFactory.cs
 
-  /FundingModuleApi
+  /FundingModuleApi                # JSON-backed API using shared lookup library
     FundingModuleApi.csproj
-    Program.cs
     appsettings.json
+    Program.cs
     /Controllers
       FundingController.cs
 ```
@@ -55,15 +56,17 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="8.0.0" />
     <PackageReference Include="Dapper" Version="2.0.123" />
+    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="8.0.0" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="8.0.0" />
-    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.0.0" />
   </ItemGroup>
 </Project>
 ```
+
+## Models
 
 ### Models/LookupDefinition.cs
 
@@ -71,8 +74,7 @@
 namespace Shared.LookupService.Models;
 
 /// <summary>
-/// Defines a lookup and its source configuration.
-/// Only one source property should be set based on <see cref="LookupSourceType"/>.
+/// Configuration for a lookup; only one SourceType property applies.
 /// </summary>
 public class LookupDefinition
 {
@@ -88,6 +90,12 @@ public class LookupDefinition
     public string? DescColumn { get; set; }
     public string[] AdditionalColumns { get; set; } = Array.Empty<string>();
 }
+```
+
+### Models/LookupSourceType.cs
+
+```csharp
+namespace Shared.LookupService.Models;
 
 public enum LookupSourceType
 {
@@ -112,153 +120,6 @@ public record LookupItem(
 
 ---
 
-## Data (Entities & DbContext)
-
-### Data/LookupDefinitionEntity.cs
-
-```csharp
-namespace Shared.LookupService.Data;
-
-public class LookupDefinitionEntity
-{
-    public string Key { get; set; } = null!;
-    public string? TableName { get; set; }
-    public string? Sql { get; set; }
-    public string? EntityType { get; set; }
-    public string? HandlerType { get; set; }
-    public string FilterColumns { get; set; } = "[]";
-    public string? SortBy { get; set; }
-    public string? CodeColumn { get; set; }
-    public string? DescColumn { get; set; }
-    public string AdditionalColumns { get; set; } = "[]";
-}
-```
-
-### Data/LoanStatusCategoryEntity.cs
-
-```csharp
-namespace Shared.LookupService.Data;
-
-public class LoanStatusCategoryEntity
-{
-    public int Id { get; set; }
-    public string Name { get; set; } = null!;
-    public ICollection<LoanStatusEntity> LoanStatuses { get; set; } = new List<LoanStatusEntity>();
-}
-```
-
-### Data/LoanStatusEntity.cs
-
-```csharp
-namespace Shared.LookupService.Data;
-
-public class LoanStatusEntity
-{
-    public int Id { get; set; }
-    public string Description { get; set; } = null!;
-    public int LoanStatusCategoryId { get; set; }
-    public LoanStatusCategoryEntity Category { get; set; } = null!;
-}
-```
-
-### Data/MockDbContext.cs
-
-```csharp
-using Microsoft.EntityFrameworkCore;
-using System.Text.Json;
-
-namespace Shared.LookupService.Data;
-
-public class MockDbContext : DbContext
-{
-    public MockDbContext(DbContextOptions<MockDbContext> options)
-        : base(options)
-    {
-    }
-
-    public DbSet<LookupDefinitionEntity> LookupDefinitions { get; set; }
-    public DbSet<LoanStatusCategoryEntity> LoanStatusCategories { get; set; }
-    public DbSet<LoanStatusEntity> LoanStatuses { get; set; }
-
-    protected override void OnModelCreating(ModelBuilder modelBuilder)
-    {
-        // LookupDefinitions
-        modelBuilder.Entity<LookupDefinitionEntity>(entity =>
-        {
-            entity.HasKey(e => e.Key);
-            entity.Property(e => e.Key).HasMaxLength(100).IsRequired();
-            entity.Property(e => e.TableName).HasMaxLength(100);
-            entity.Property(e => e.Sql);
-            entity.Property(e => e.EntityType).HasMaxLength(200);
-            entity.Property(e => e.HandlerType).HasMaxLength(200);
-            entity.Property(e => e.FilterColumns);
-            entity.Property(e => e.SortBy).HasMaxLength(100);
-            entity.Property(e => e.CodeColumn).HasMaxLength(100);
-            entity.Property(e => e.DescColumn).HasMaxLength(100);
-            entity.Property(e => e.AdditionalColumns);
-
-            entity.HasData(
-                new LookupDefinitionEntity {
-                    Key = "Countries",
-                    TableName = "RefCountries",
-                    FilterColumns = JsonSerializer.Serialize(new[] { "IsActive" }),
-                    SortBy = "CountryName",
-                    CodeColumn = "CountryCode",
-                    DescColumn = "CountryName",
-                    AdditionalColumns = JsonSerializer.Serialize(Array.Empty<string>())
-                },
-                new LookupDefinitionEntity {
-                    Key = "LoanStatusCategory",
-                    TableName = "LoanStatusCategories",
-                    SortBy = "Name",
-                    CodeColumn = "Id",
-                    DescColumn = "Name",
-                    AdditionalColumns = JsonSerializer.Serialize(Array.Empty<string>())
-                },
-                new LookupDefinitionEntity {
-                    Key = "LoanStatuses",
-                    TableName = "LoanStatuses",
-                    FilterColumns = JsonSerializer.Serialize(new[] { "LoanStatusCategoryId" }),
-                    SortBy = "Description",
-                    CodeColumn = "Id",
-                    DescColumn = "Description",
-                    AdditionalColumns = JsonSerializer.Serialize(Array.Empty<string>())
-                }
-            );
-        });
-
-        // LoanStatusCategory
-        modelBuilder.Entity<LoanStatusCategoryEntity>(entity =>
-        {
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.Name).HasMaxLength(100).IsRequired();
-            entity.HasData(
-                new LoanStatusCategoryEntity { Id = 1, Name = "Application" },
-                new LoanStatusCategoryEntity { Id = 2, Name = "Approval" }
-            );
-        });
-
-        // LoanStatus
-        modelBuilder.Entity<LoanStatusEntity>(entity =>
-        {
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.Description).HasMaxLength(200).IsRequired();
-            entity.HasOne(e => e.Category)
-                  .WithMany(c => c.LoanStatuses)
-                  .HasForeignKey(e => e.LoanStatusCategoryId);
-            entity.HasData(
-                new LoanStatusEntity { Id = 1, Description = "Submitted", LoanStatusCategoryId = 1 },
-                new LoanStatusEntity { Id = 2, Description = "In Review", LoanStatusCategoryId = 1 },
-                new LoanStatusEntity { Id = 3, Description = "Approved", LoanStatusCategoryId = 2 },
-                new LoanStatusEntity { Id = 4, Description = "Funded", LoanStatusCategoryId = 2 }
-            );
-        });
-    }
-}
-```
-
----
-
 ## Stores
 
 ### Stores/ILookupDefinitionStore.cs
@@ -276,13 +137,34 @@ public interface ILookupDefinitionStore
 }
 ```
 
+### Stores/JsonLookupDefinitionStore.cs
+
+```csharp
+using Microsoft.Extensions.Options;
+using Shared.LookupService.Models;
+
+namespace Shared.LookupService.Stores;
+
+public class JsonLookupDefinitionStore : ILookupDefinitionStore
+{
+    private readonly IOptionsMonitor<List<LookupDefinition>> _opts;
+    public JsonLookupDefinitionStore(IOptionsMonitor<List<LookupDefinition>> opts)
+        => _opts = opts;
+
+    public Task<IReadOnlyList<LookupDefinition>> GetAllAsync()
+        => Task.FromResult((IReadOnlyList<LookupDefinition>)_opts.CurrentValue);
+    public Task RefreshAsync(string key)    => Task.CompletedTask;
+    public Task RefreshAllAsync()           => Task.CompletedTask;
+}
+```
+
 ### Stores/DbLookupDefinitionStore.cs
 
 ```csharp
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
-using Shared.LookupService.Models;
 using Shared.LookupService.Data;
+using Shared.LookupService.Models;
 
 namespace Shared.LookupService.Stores;
 
@@ -294,51 +176,45 @@ public class DbLookupDefinitionStore : ILookupDefinitionStore
     public async Task<IReadOnlyList<LookupDefinition>> GetAllAsync()
     {
         var rows = await _db.LookupDefinitions.AsNoTracking().ToListAsync();
-        return rows.Select(r => new LookupDefinition {
-            Key               = r.Key,
-            SourceType        = LookupSourceType.Table,
-            TableName         = r.TableName,
-            Sql               = r.Sql,
-            EntityType        = r.EntityType,
-            HandlerType       = r.HandlerType,
-            FilterColumns     = JsonSerializer.Deserialize<string[]>(r.FilterColumns) ?? Array.Empty<string>(),
-            SortBy            = r.SortBy,
-            CodeColumn        = r.CodeColumn,
-            DescColumn        = r.DescColumn,
-            AdditionalColumns = JsonSerializer.Deserialize<string[]>(r.AdditionalColumns) ?? Array.Empty<string>()
+        return rows.Select(r => new LookupDefinition
+        {
+            Key = r.Key,
+            SourceType = LookupSourceType.Table,
+            TableName = r.TableName,
+            Sql = r.Sql,
+            EntityType = r.EntityType,
+            HandlerType = r.HandlerType,
+            FilterColumns = JsonSerializer.Deserialize<string[]>(r.FilterColumns)!,
+            SortBy = r.SortBy,
+            CodeColumn = r.CodeColumn,
+            DescColumn = r.DescColumn,
+            AdditionalColumns = JsonSerializer.Deserialize<string[]>(r.AdditionalColumns)!
         }).ToList();
     }
-
-    public Task RefreshAsync(string key) => Task.CompletedTask;
-    public Task RefreshAllAsync() => Task.CompletedTask;
-}
-```
-
-### Stores/JsonLookupDefinitionStore.cs
-
-```csharp
-using Microsoft.Extensions.Options;
-using Shared.LookupService.Models;
-
-namespace Shared.LookupService.Stores;
-
-public class JsonLookupDefinitionStore : ILookupDefinitionStore
-{
-    private readonly IOptionsMonitor<List<LookupDefinition>> _monitor;
-    public JsonLookupDefinitionStore(IOptionsMonitor<List<LookupDefinition>> monitor)
-        => _monitor = monitor;
-
-    public Task<IReadOnlyList<LookupDefinition>> GetAllAsync()
-        => Task.FromResult((IReadOnlyList<LookupDefinition>)_monitor.CurrentValue);
-
-    public Task RefreshAsync(string key) => Task.CompletedTask;
-    public Task RefreshAllAsync() => Task.CompletedTask;
+    public Task RefreshAsync(string key)    => Task.CompletedTask;
+    public Task RefreshAllAsync()           => Task.CompletedTask;
 }
 ```
 
 ---
 
 ## Providers
+
+### Providers/IConnectionFactory.cs
+
+```csharp
+using System.Data;
+
+namespace Shared.LookupService.Providers;
+
+public interface IConnectionFactory
+{
+    /// <summary>
+    /// Create a new connection for the specified context name (e.g. "Db1" or "Db2").
+    /// </summary>
+    IDbConnection CreateConnection(string? contextName = null);
+}
+```
 
 ### Providers/ILookupProvider.cs
 
@@ -350,8 +226,10 @@ namespace Shared.LookupService.Providers;
 public interface ILookupProvider
 {
     Task<IEnumerable<LookupItem>> GetAsync(
-        LookupDefinition def,
-        IDictionary<string, object>? filters = null);
+        LookupDefinition definition,
+        string? contextName = null,
+        IDictionary<string, object>? filters = null
+    );
 }
 ```
 
@@ -359,276 +237,289 @@ public interface ILookupProvider
 
 ```csharp
 using Shared.LookupService.Models;
-using System.Collections.Generic;
-using System.Threading.Tasks;
 
-namespace Shared.LookupService.Providers
+namespace Shared.LookupService.Providers;
+
+public interface ILookupHandler
 {
-    /// <summary>
-    /// Defines a custom handler for complex lookup logic.
-    /// </summary>
-    public interface ILookupHandler
-    {
-        /// <summary>
-        /// Execute custom logic and return code/description pairs.
-        /// </summary>
-        Task<IEnumerable<LookupItem>> HandleAsync(
-            LookupDefinition definition,
-            IDictionary<string, object>? filterValues = null
-        );
-    }
-}
-```
-
-### Providers/ILookupProvider.cs
-
-```csharp
-using Shared.LookupService.Models;
-using System.Collections.Generic;
-using System.Threading.Tasks;
-
-namespace Shared.LookupService.Providers
-{
-    /// <summary>
-    /// Defines the lookup provider interface for table, SQL, entity, and handler sources.
-    /// </summary>
-    public interface ILookupProvider
-    {
-        Task<IEnumerable<LookupItem>> GetAsync(
-            LookupDefinition definition,
-            IDictionary<string, object>? filters = null
-        );
-    }
+    Task<IEnumerable<LookupItem>> HandleAsync(
+        LookupDefinition definition,
+        IDictionary<string, object>? filters = null
+    );
 }
 ```
 
 ### Providers/TableLookupProvider.cs
 
-````csharp
+```csharp
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using Dapper;
 using Shared.LookupService.Models;
-// Replace with your actual namespace where IDapperContext is defined
-using YourApp.Data;
 
-namespace Shared.LookupService.Providers
+namespace Shared.LookupService.Providers;
+
+public class TableLookupProvider : ILookupProvider
 {
-    /// <summary>
-    /// Retrieves lookup items from a database table using Dapper.
-    /// </summary>
-    public class TableLookupProvider : ILookupProvider
+    private readonly IConnectionFactory _factory;
+
+    public TableLookupProvider(IConnectionFactory factory)
+        => _factory = factory;
+
+    public async Task<IEnumerable<LookupItem>> GetAsync(
+        LookupDefinition def,
+        string? contextName = null,
+        IDictionary<string, object>? filters = null)
     {
-        private readonly IDapperContext _dapperContext;
-        public TableLookupProvider(IDapperContext dapperContext) => _dapperContext = dapperContext;
+        using var conn = _factory.CreateConnection(contextName);
 
-        public async Task<IEnumerable<LookupItem>> GetAsync(
-            LookupDefinition def,
-            IDictionary<string, object>? filters = null)
+        if (def.SourceType != LookupSourceType.Table)
+            throw new ArgumentException("SourceType must be Table");
+        if (string.IsNullOrWhiteSpace(def.TableName))
+            throw new ArgumentException("TableName is required");
+
+        var codeCol = def.CodeColumn ?? "Code";
+        var descCol = def.DescColumn ?? "Description";
+        var cols = new List<string> { $"{codeCol} AS Code", $"{descCol} AS Description" };
+        cols.AddRange(def.AdditionalColumns);
+
+        var sql = $"SELECT {string.Join(", ", cols)} FROM {def.TableName}";
+        var dp = new DynamicParameters();
+
+        if (filters != null && filters.Any())
         {
-            if (def.SourceType != LookupSourceType.Table)
-                throw new ArgumentException("SourceType must be Table", nameof(def.SourceType));
-            if (string.IsNullOrWhiteSpace(def.TableName))
-                throw new ArgumentException("TableName is required", nameof(def.TableName));
-
-            var codeCol = def.CodeColumn ?? "Code";
-            var descCol = def.DescColumn ?? "Description";
-            var selectCols = new List<string>
-            {
-                $"{codeCol} AS Code",
-                $"{descCol} AS Description"
-            };
-            if (def.AdditionalColumns?.Length > 0)
-            {
-                selectCols.AddRange(def.AdditionalColumns);
-            }
-
-            var sql = $"SELECT {string.Join(", ", selectCols)} FROM {def.TableName}";
-
-            var parameters = new DynamicParameters();
-            if (filters != null && filters.Count > 0)
-            {
-                var where = new List<string>();
-                foreach (var col in def.FilterColumns)
-                {
-                    if (filters.ContainsKey(col))
-                    {
-                        where.Add($"{col}=@{col}");
-                        parameters.Add(col, filters[col]);
-                    }
-                }
-                if (where.Any())
-                    sql += " WHERE " + string.Join(" AND ", where);
-            }
-
-            if (!string.IsNullOrWhiteSpace(def.SortBy))
-                sql += $" ORDER BY {def.SortBy}";
-
-            var rows = await _dapperContext.Connection.QueryAsync<dynamic>(sql, parameters);
-            var result = new List<LookupItem>();
-
-            foreach (var row in rows)
-            {
-                var dict = (IDictionary<string, object>)row;
-                var code = dict["Code"]?.ToString() ?? string.Empty;
-                var desc = dict["Description"]?.ToString() ?? string.Empty;
-                Dictionary<string, object>? additional = null;
-                if (def.AdditionalColumns?.Length > 0)
-                {
-                    additional = new Dictionary<string, object>();
-                    foreach (var col in def.AdditionalColumns)
-                    {
-                        if (dict.ContainsKey(col))
-                            additional[col] = dict[col]!;
-                    }
-                    if (additional.Count == 0)
-                        additional = null;
-                }
-
-                result.Add(new LookupItem(code, desc, additional));
-            }
-
-            return result;
+            var where = def.FilterColumns
+                .Where(c => filters.ContainsKey(c))
+                .Select(c => { dp.Add(c, filters[c]); return $"{c}=@{c}"; })
+                .ToArray();
+            if (where.Length > 0)
+                sql += " WHERE " + string.Join(" AND ", where);
         }
+
+        if (!string.IsNullOrEmpty(def.SortBy))
+            sql += $" ORDER BY {def.SortBy}";
+
+        var rows = await conn.QueryAsync<dynamic>(sql, dp);
+        var result = new List<LookupItem>();
+
+        foreach (IDictionary<string, object> row in rows)
+        {
+            var code = row["Code"]?.ToString()!;
+            var desc = row["Description"]?.ToString()!;
+            Dictionary<string, object>? add = null;
+            if (def.AdditionalColumns.Any())
+            {
+                add = def.AdditionalColumns
+                    .Where(col => row.ContainsKey(col))
+                    .ToDictionary(col => col, col => row[col]!);
+                if (add.Count == 0) add = null;
+            }
+            result.Add(new LookupItem(code, desc, add));
+        }
+
+        return result;
     }
 }
+```
+
+### Providers/HandlerLookupProvider.cs
+
 ```csharp
 using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using Shared.LookupService.Models;
+
+namespace Shared.LookupService.Providers;
+
+public class HandlerLookupProvider : ILookupProvider
+{
+    private readonly IServiceProvider _sp;
+
+    public HandlerLookupProvider(IServiceProvider sp)
+        => _sp = sp;
+
+    public Task<IEnumerable<LookupItem>> GetAsync(
+        LookupDefinition def,
+        string? contextName = null,
+        IDictionary<string, object>? filters = null)
+    {
+        if (def.SourceType != LookupSourceType.Handler)
+            throw new ArgumentException("SourceType must be Handler");
+        if (string.IsNullOrWhiteSpace(def.HandlerType))
+            throw new ArgumentException("HandlerType is required");
+
+        var type = Type.GetType(def.HandlerType)
+                   ?? throw new InvalidOperationException($"Cannot load {def.HandlerType}");
+        var handler = (ILookupHandler)_sp.GetRequiredService(type);
+        return handler.HandleAsync(def, filters);
+    }
+}
+```
+
+### Providers/ProductTypeLookupHandler.cs
+
+```csharp
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
 using Dapper;
 using Shared.LookupService.Models;
 
-namespace Shared.LookupService.Providers
+namespace Shared.LookupService.Providers;
+
+public class ProductTypeLookupHandler : ILookupHandler
 {
-    /// <summary>
-    /// Retrieves lookup items from a database table using Dapper.
-    /// </summary>
-    public class TableLookupProvider : ILookupProvider
+    private readonly IConnectionFactory _factory;
+
+    public ProductTypeLookupHandler(IConnectionFactory factory)
+        => _factory = factory;
+
+    public async Task<IEnumerable<LookupItem>> HandleAsync(
+        LookupDefinition def,
+        IDictionary<string, object>? filters = null)
     {
-        private readonly IDbConnection _db;
-        public TableLookupProvider(IDbConnection db) => _db = db;
-
-        public async Task<IEnumerable<LookupItem>> GetAsync(
-            LookupDefinition def,
-            IDictionary<string, object>? filters = null)
-        {
-            if (def.SourceType != LookupSourceType.Table)
-                throw new ArgumentException("SourceType must be Table", nameof(def.SourceType));
-            if (string.IsNullOrWhiteSpace(def.TableName))
-                throw new ArgumentException("TableName is required", nameof(def.TableName));
-
-            var codeCol = def.CodeColumn ?? "Code";
-            var descCol = def.DescColumn ?? "Description";
-            var selectCols = new List<string>
-            {
-                $"{codeCol} AS Code",
-                $"{descCol} AS Description"
-            };
-            if (def.AdditionalColumns?.Length > 0)
-            {
-                selectCols.AddRange(def.AdditionalColumns.Select(c => c));
-            }
-
-            var sql = $"SELECT {string.Join(", ", selectCols)} FROM {def.TableName}";
-
-            var parameters = new DynamicParameters();
-            if (filters != null && filters.Count > 0)
-            {
-                var where = new List<string>();
-                foreach (var col in def.FilterColumns)
-                {
-                    if (filters.ContainsKey(col))
-                    {
-                        where.Add($"{col}=@{col}");
-                        parameters.Add(col, filters[col]);
-                    }
-                }
-                if (where.Any())
-                    sql += " WHERE " + string.Join(" AND ", where);
-            }
-
-            if (!string.IsNullOrWhiteSpace(def.SortBy))
-            {
-                sql += $" ORDER BY {def.SortBy}";
-            }
-
-            var rows = await _db.QueryAsync<dynamic>(sql, parameters);
-            var result = new List<LookupItem>();
-            foreach (var row in rows)
-            {
-                var dict = (IDictionary<string, object>)row;
-                var code = dict["Code"]?.ToString() ?? string.Empty;
-                var desc = dict["Description"]?.ToString() ?? string.Empty;
-                Dictionary<string, object>? additional = null;
-                if (def.AdditionalColumns?.Length > 0)
-                {
-                    additional = new Dictionary<string, object>();
-                    foreach (var col in def.AdditionalColumns)
-                    {
-                        if (dict.ContainsKey(col))
-                            additional[col] = dict[col]!;
-                    }
-                    if (additional.Count == 0)
-                        additional = null;
-                }
-
-                result.Add(new LookupItem(code, desc, additional));
-            }
-
-            return result;
-        }
+        var ctx = filters != null && filters.TryGetValue("AppId", out var id)
+            ? id.ToString()
+            : null;
+        using var conn = _factory.CreateConnection(ctx);
+        string sql = ctx == "1"
+            ? "SELECT Code, Name AS Description FROM App1Products"
+            : "SELECT Code, Name AS Description FROM DefaultProducts";
+        var rows = await conn.QueryAsync<(string Code, string Description)>(sql);
+        return rows.Select(x => new LookupItem(x.Code, x.Description));
     }
 }
-```csharp
-using Dapper;
-using Shared.LookupService.Models;
-using Microsoft.EntityFrameworkCore;
-
-using System.Data;
-using Microsoft.Data.SqlClient;
-using Microsoft.EntityFrameworkCore;
-
-namespace Shared.LookupService.Extensions;
-
-public static class ServiceCollectionExtensions
-{
-    public static IServiceCollection AddLookupDefinitions(this IServiceCollection services, IConfiguration config, string source)
-    {
-        services.AddMemoryCache();
-        
-        services.AddSingleton<TableLookupProvider>();
-        services.AddSingleton<ILookupProvider, TableLookupProvider>();
-        services.AddSingleton<HandlerLookupProvider>();
-        services.AddSingleton<ILookupProvider, HandlerLookupProvider>();
-        services.AddSingleton<ProductTypeLookupHandler>();
-        services.AddSingleton<ILookupHandler, ProductTypeLookupHandler>();
-        services.AddSingleton<LookupProviderFactory>();
-        services.AddSingleton<LookupDataService>();
-        services.AddScoped<CachingLookupDataService>();
-        services.AddScoped<ILookupDataService>(sp => sp.GetRequiredService<CachingLookupDataService>());
-
-        if (source == "Json")
-        {
-            services.Configure<List<LookupDefinition>>(config.GetSection("LookupDataSettings"));
-            services.AddSingleton<ILookupDefinitionStore, JsonLookupDefinitionStore>();
-        }
-        else if (source == "Db")
-        {
-            services.AddDbContext<MockDbContext>(opts => opts.UseInMemoryDatabase("LookupDb"));
-            services.AddScoped<ILookupDefinitionStore, DbLookupDefinitionStore>();
-        }
-
-        return services;
-    }
-}
-````
+```
 
 ---
 
-# LookupApi.Common (Mock DB-backed API)
+## Factory
+
+### Factory/LookupProviderFactory.cs
+
+```csharp
+using Shared.LookupService.Models;
+using Shared.LookupService.Providers;
+
+namespace Shared.LookupService.Factory;
+
+public class LookupProviderFactory
+{
+    private readonly IEnumerable<ILookupProvider> _providers;
+
+    public LookupProviderFactory(IEnumerable<ILookupProvider> providers)
+        => _providers = providers;
+
+    public ILookupProvider Get(LookupDefinition def)
+    {
+        return def.SourceType == LookupSourceType.Handler
+            ? _providers.OfType<HandlerLookupProvider>().First()
+            : _providers.OfType<TableLookupProvider>().First();
+    }
+}
+```
+
+---
+
+## Services
+
+### Services/ILookupDataService.cs
+
+```csharp
+using Shared.LookupService.Models;
+
+namespace Shared.LookupService.Services;
+
+public interface ILookupDataService
+{
+    Task<IEnumerable<LookupItem>> GetAsync(
+        string key,
+        string? contextName = null,
+        IDictionary<string, object>? filters = null
+    );
+}
+```
+
+### Services/LookupDataService.cs
+
+```csharp
+using Shared.LookupService.Models;
+using Shared.LookupService.Stores;
+using Shared.LookupService.Factory;
+
+namespace Shared.LookupService.Services;
+
+public class LookupDataService : ILookupDataService
+{
+    private readonly IReadOnlyDictionary<string, LookupDefinition> _defs;
+    private readonly LookupProviderFactory _factory;
+
+    public LookupDataService(
+        ILookupDefinitionStore store,
+        LookupProviderFactory factory)
+    {
+        _defs = store.GetAllAsync().GetAwaiter().GetResult()
+                     .ToDictionary(d => d.Key, StringComparer.OrdinalIgnoreCase);
+        _factory = factory;
+    }
+
+    public Task<IEnumerable<LookupItem>> GetAsync(
+        string key,
+        string? contextName = null,
+        IDictionary<string, object>? filters = null)
+    {
+        if (!_defs.TryGetValue(key, out var def))
+            throw new KeyNotFoundException($"Lookup '{key}' not found");
+        var provider = _factory.Get(def);
+        return provider.GetAsync(def, contextName, filters);
+    }
+}
+```
+
+### Services/CachingLookupDataService.cs
+
+```csharp
+using Microsoft.Extensions.Caching.Memory;
+using Shared.LookupService.Models;
+
+namespace Shared.LookupService.Services;
+
+public class CachingLookupDataService : ILookupDataService
+{
+    private readonly LookupDataService _inner;
+    private readonly IMemoryCache _cache;
+    private readonly TimeSpan _ttl = TimeSpan.FromMinutes(10);
+
+    public CachingLookupDataService(LookupDataService inner, IMemoryCache cache)
+    {
+        _inner = inner;
+        _cache = cache;
+    }
+
+    public Task<IEnumerable<LookupItem>> GetAsync(
+        string key,
+        string? contextName = null,
+        IDictionary<string, object>? filters = null)
+    {
+        var filterKey = filters == null
+            ? string.Empty
+            : string.Join(";", filters.OrderBy(kv => kv.Key)
+                                         .Select(kv => $"{kv.Key}={kv.Value}"));
+        var cacheKey = $"LookupRes:{key}:{contextName}:{filterKey}";
+        return _cache.GetOrCreateAsync(cacheKey, entry =>
+        {
+            entry.SlidingExpiration = _ttl;
+            return _inner.GetAsync(key, contextName, filters)!;
+        })!;
+    }
+}
+```
+
+---
+
+# LookupApi.Common (API Layer)
 
 ### LookupApi.Common.csproj
 
@@ -636,7 +527,6 @@ public static class ServiceCollectionExtensions
 <Project Sdk="Microsoft.NET.Sdk.Web">
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
-    <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Shared.LookupService/Shared.LookupService.csproj" />
@@ -648,29 +538,161 @@ public static class ServiceCollectionExtensions
 
 ```json
 {
-  "ConnectionStrings": { "Default": "LookupDb" },
-  "Logging": { "LogLevel": { "Default": "Information" } },
-  "AllowedHosts": "*"
+  "ConnectionStrings": {
+    "Db1": "Server=...;Database=Db1;User Id=...;Pwd=...;",
+    "Db2": "Server=...;Database=Db2;User Id=...;Pwd=...;"
+  }
+}
+```
+
+### Data/DapperContext.cs
+
+```csharp
+namespace LookupApi.Common.Data;
+
+public interface IDapperContext
+{
+    string ConnectionString1 { get; }
+    string ConnectionString2 { get; }
+}
+
+public class DapperContext : IDapperContext
+{
+    public string ConnectionString1 { get; }
+    public string ConnectionString2 { get; }
+    public DapperContext(string cs1, string cs2)
+    {
+        ConnectionString1 = cs1;
+        ConnectionString2 = cs2;
+    }
+}
+```
+
+### Data/DapperConnectionFactory.cs
+
+```csharp
+using System.Data;
+using Microsoft.Data.SqlClient;
+using Shared.LookupService.Providers;
+using LookupApi.Common.Data;
+
+namespace LookupApi.Common.Data;
+
+public class DapperConnectionFactory : IConnectionFactory
+{
+    private readonly IDapperContext _ctx;
+    public DapperConnectionFactory(IDapperContext ctx) => _ctx = ctx;
+
+    public IDbConnection CreateConnection(string? contextName = null)
+    {
+        var cs = contextName == "Db2"
+            ? _ctx.ConnectionString2
+            : _ctx.ConnectionString1;
+        return new SqlConnection(cs);
+    }
 }
 ```
 
 ### Program.cs
 
 ```csharp
-using System.Data;
 using Microsoft.Data.SqlClient;
+using System.Data;
+using LookupApi.Common.Data;
 using Shared.LookupService.Extensions;
+using Shared.LookupService.Providers;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Register IDbConnection for Dapper
-builder.Services.AddTransient<IDbConnection>(sp =>
-    new SqlConnection(builder.Configuration.GetConnectionString("Default"))
+// 1) register DapperContext
+builder.Services.AddSingleton<IDapperContext>(
+    sp => new DapperContext(
+        builder.Configuration.GetConnectionString("Db1"),
+        builder.Configuration.GetConnectionString("Db2")
+    )
 );
 
-// Add lookup definitions store (JSON-backed)
-builder.Services.AddLookupDefinitions(builder.Configuration, "Json");
+// 2) register connection factory
+builder.Services.AddSingleton<IConnectionFactory, DapperConnectionFactory>();
 
+// 3) register core lookup services
+builder.Services.AddLookupServices(builder.Configuration);
+
+var app = builder.Build();
+app.MapControllers();
+app.Run();
+```
+
+### Controllers/LookupController.cs
+
+```csharp
+using Microsoft.AspNetCore.Mvc;
+using Shared.LookupService.Services;
+using Shared.LookupService.Models;
+
+namespace LookupApi.Common.Controllers;
+
+[ApiController]
+[Route("api/[controller]")]
+public class LookupController : ControllerBase
+{
+    private readonly ILookupDataService _lookup;
+    public LookupController(ILookupDataService lookup) => _lookup = lookup;
+
+    [HttpGet("{key}")]
+    public async Task<IActionResult> Get(
+        string key,
+        [FromQuery] string? contextName,
+        [FromQuery] Dictionary<string, object>? filters)
+    {
+        var data = await _lookup.GetAsync(key, contextName, filters);
+        return Ok(data);
+    }
+}
+```
+
+---
+
+# FundingModuleApi (JSON-backed)
+
+### FundingModuleApi.csproj
+
+```xml
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Shared.LookupService/Shared.LookupService.csproj" />
+  </ItemGroup>
+</Project>
+```
+
+### appsettings.json
+
+```json
+{
+  "LookupDataSettings": [
+    {
+      "Key": "Countries",
+      "SourceType": "Table",
+      "TableName": "RefCountries",
+      "FilterColumns": ["IsActive"],
+      "SortBy": "CountryName",
+      "CodeColumn": "CountryCode",
+      "DescColumn": "CountryName"
+    }
+  ]
+}
+```
+
+### Program.cs
+
+```csharp
+using Shared.LookupService.Extensions;
+
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddLookupServices(builder.Configuration);
 var app = builder.Build();
 app.MapControllers();
 app.Run();
@@ -693,9 +715,5 @@ public class FundingController : ControllerBase
 
     [HttpGet("countries")]
     public async Task<IActionResult> GetCountries()
-    {
-        var data = await _lookup.GetAsync("Countries");
-        return Ok(data);
-    }
-}
+        => Ok(await _lookup.GetAsync("Countries"));
 ```
