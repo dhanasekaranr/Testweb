@@ -1,719 +1,164 @@
-## Project Structure
+// ===============================
+// monitoring.service.ts
+// ===============================
+import { Injectable } from '@angular/core';
+import { HttpClient, HttpHeaders } from '@angular/common/http';
+import { AuthService } from './auth.service';
+import { v4 as uuidv4 } from 'uuid';
+import { environment } from '../environments/environment';
 
-```
-/src
-  /Shared.LookupService            # reusable lookup library
-    Shared.LookupService.csproj
-    /Models
-      LookupDefinition.cs
-      LookupSourceType.cs
-      LookupItem.cs
-    /Stores                          # definition stores
-      ILookupDefinitionStore.cs
-      JsonLookupDefinitionStore.cs
-      DbLookupDefinitionStore.cs
-    /Providers                       # providers & handler abstractions
-      ILookupProvider.cs
-      ILookupHandler.cs
-      IConnectionFactory.cs
-      TableLookupProvider.cs
-      HandlerLookupProvider.cs
-      ProductTypeLookupHandler.cs
-    /Factory
-      LookupProviderFactory.cs
-    /Services                        # lookup service and caching decorator
-      ILookupDataService.cs
-      LookupDataService.cs
-      CachingLookupDataService.cs
-    /Extensions
-      ServiceCollectionExtensions.cs
-
-  /LookupApi.Common                # DB-backed API using shared lookup library
-    LookupApi.Common.csproj
-    appsettings.json
-    Program.cs
-    /Controllers
-      LookupController.cs
-    /Data
-      DapperContext.cs
-      DapperConnectionFactory.cs
-
-  /FundingModuleApi                # JSON-backed API using shared lookup library
-    FundingModuleApi.csproj
-    appsettings.json
-    Program.cs
-    /Controllers
-      FundingController.cs
-```
-
----
-
-# Shared.LookupService (Class Library)
-
-### Shared.LookupService.csproj
-
-```xml
-<Project Sdk="Microsoft.NET.Sdk">
-  <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
-    <Nullable>enable</Nullable>
-  </PropertyGroup>
-  <ItemGroup>
-    <PackageReference Include="Dapper" Version="2.0.123" />
-    <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="8.0.0" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="8.0.0" />
-  </ItemGroup>
-</Project>
-```
-
-## Models
-
-### Models/LookupDefinition.cs
-
-```csharp
-namespace Shared.LookupService.Models;
-
-/// <summary>
-/// Configuration for a lookup; only one SourceType property applies.
-/// </summary>
-public class LookupDefinition
-{
-    public string Key { get; set; } = null!;
-    public LookupSourceType SourceType { get; set; }
-    public string? TableName { get; set; }
-    public string? Sql { get; set; }
-    public string? EntityType { get; set; }
-    public string? HandlerType { get; set; }
-    public string[] FilterColumns { get; set; } = Array.Empty<string>();
-    public string? SortBy { get; set; }
-    public string? CodeColumn { get; set; }
-    public string? DescColumn { get; set; }
-    public string[] AdditionalColumns { get; set; } = Array.Empty<string>();
+export enum MonitoringEventType {
+  Login = 'LOGIN',
+  Logout = 'LOGOUT',
+  ConfidentialView = 'VIEW_CONFIDENTIAL',
+  UnauthorizedAccess = 'UNAUTHORIZED_ACCESS'
 }
-```
 
-### Models/LookupSourceType.cs
-
-```csharp
-namespace Shared.LookupService.Models;
-
-public enum LookupSourceType
-{
-    Table,
-    Sql,
-    Entity,
-    Handler
+export interface UserActivityEventPayload {
+  id: string;
+  type: 'userActivityEvent';
+  dateTime: string;
+  timeZone: string;
+  ait: string;
+  application: string;
+  action: string;
+  result: '1' | '0';
+  resource: string;
+  resourceHost: string;
+  resourceType: string;
+  device: string;
+  authenticationMethod: 'SSO';
+  username: string;
 }
-```
 
-### Models/LookupItem.cs
-
-```csharp
-namespace Shared.LookupService.Models;
-
-public record LookupItem(
-    string Code,
-    string Description,
-    IDictionary<string, object>? AdditionalData = null
-);
-```
-
----
-
-## Stores
-
-### Stores/ILookupDefinitionStore.cs
-
-```csharp
-using Shared.LookupService.Models;
-
-namespace Shared.LookupService.Stores;
-
-public interface ILookupDefinitionStore
-{
-    Task<IReadOnlyList<LookupDefinition>> GetAllAsync();
-    Task RefreshAsync(string key);
-    Task RefreshAllAsync();
-}
-```
-
-### Stores/JsonLookupDefinitionStore.cs
-
-```csharp
-using Microsoft.Extensions.Options;
-using Shared.LookupService.Models;
-
-namespace Shared.LookupService.Stores;
-
-public class JsonLookupDefinitionStore : ILookupDefinitionStore
-{
-    private readonly IOptionsMonitor<List<LookupDefinition>> _opts;
-    public JsonLookupDefinitionStore(IOptionsMonitor<List<LookupDefinition>> opts)
-        => _opts = opts;
-
-    public Task<IReadOnlyList<LookupDefinition>> GetAllAsync()
-        => Task.FromResult((IReadOnlyList<LookupDefinition>)_opts.CurrentValue);
-    public Task RefreshAsync(string key)    => Task.CompletedTask;
-    public Task RefreshAllAsync()           => Task.CompletedTask;
-}
-```
-
-### Stores/DbLookupDefinitionStore.cs
-
-```csharp
-using System.Text.Json;
-using Microsoft.EntityFrameworkCore;
-using Shared.LookupService.Data;
-using Shared.LookupService.Models;
-
-namespace Shared.LookupService.Stores;
-
-public class DbLookupDefinitionStore : ILookupDefinitionStore
-{
-    private readonly MockDbContext _db;
-    public DbLookupDefinitionStore(MockDbContext db) => _db = db;
-
-    public async Task<IReadOnlyList<LookupDefinition>> GetAllAsync()
-    {
-        var rows = await _db.LookupDefinitions.AsNoTracking().ToListAsync();
-        return rows.Select(r => new LookupDefinition
-        {
-            Key = r.Key,
-            SourceType = LookupSourceType.Table,
-            TableName = r.TableName,
-            Sql = r.Sql,
-            EntityType = r.EntityType,
-            HandlerType = r.HandlerType,
-            FilterColumns = JsonSerializer.Deserialize<string[]>(r.FilterColumns)!,
-            SortBy = r.SortBy,
-            CodeColumn = r.CodeColumn,
-            DescColumn = r.DescColumn,
-            AdditionalColumns = JsonSerializer.Deserialize<string[]>(r.AdditionalColumns)!
-        }).ToList();
-    }
-    public Task RefreshAsync(string key)    => Task.CompletedTask;
-    public Task RefreshAllAsync()           => Task.CompletedTask;
-}
-```
-
----
-
-## Providers
-
-### Providers/IConnectionFactory.cs
-
-```csharp
-using System.Data;
-
-namespace Shared.LookupService.Providers;
-
-public interface IConnectionFactory
-{
-    /// <summary>
-    /// Create a new connection for the specified context name (e.g. "Db1" or "Db2").
-    /// </summary>
-    IDbConnection CreateConnection(string? contextName = null);
-}
-```
-
-### Providers/ILookupProvider.cs
-
-```csharp
-using Shared.LookupService.Models;
-
-namespace Shared.LookupService.Providers;
-
-public interface ILookupProvider
-{
-    Task<IEnumerable<LookupItem>> GetAsync(
-        LookupDefinition definition,
-        string? contextName = null,
-        IDictionary<string, object>? filters = null
-    );
-}
-```
-
-### Providers/ILookupHandler.cs
-
-```csharp
-using Shared.LookupService.Models;
-
-namespace Shared.LookupService.Providers;
-
-public interface ILookupHandler
-{
-    Task<IEnumerable<LookupItem>> HandleAsync(
-        LookupDefinition definition,
-        IDictionary<string, object>? filters = null
-    );
-}
-```
-
-### Providers/TableLookupProvider.cs
-
-```csharp
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using Dapper;
-using Shared.LookupService.Models;
-
-namespace Shared.LookupService.Providers;
-
-public class TableLookupProvider : ILookupProvider
-{
-    private readonly IConnectionFactory _factory;
-
-    public TableLookupProvider(IConnectionFactory factory)
-        => _factory = factory;
-
-    public async Task<IEnumerable<LookupItem>> GetAsync(
-        LookupDefinition def,
-        string? contextName = null,
-        IDictionary<string, object>? filters = null)
-    {
-        using var conn = _factory.CreateConnection(contextName);
-
-        if (def.SourceType != LookupSourceType.Table)
-            throw new ArgumentException("SourceType must be Table");
-        if (string.IsNullOrWhiteSpace(def.TableName))
-            throw new ArgumentException("TableName is required");
-
-        var codeCol = def.CodeColumn ?? "Code";
-        var descCol = def.DescColumn ?? "Description";
-        var cols = new List<string> { $"{codeCol} AS Code", $"{descCol} AS Description" };
-        cols.AddRange(def.AdditionalColumns);
-
-        var sql = $"SELECT {string.Join(", ", cols)} FROM {def.TableName}";
-        var dp = new DynamicParameters();
-
-        if (filters != null && filters.Any())
-        {
-            var where = def.FilterColumns
-                .Where(c => filters.ContainsKey(c))
-                .Select(c => { dp.Add(c, filters[c]); return $"{c}=@{c}"; })
-                .ToArray();
-            if (where.Length > 0)
-                sql += " WHERE " + string.Join(" AND ", where);
-        }
-
-        if (!string.IsNullOrEmpty(def.SortBy))
-            sql += $" ORDER BY {def.SortBy}";
-
-        var rows = await conn.QueryAsync<dynamic>(sql, dp);
-        var result = new List<LookupItem>();
-
-        foreach (IDictionary<string, object> row in rows)
-        {
-            var code = row["Code"]?.ToString()!;
-            var desc = row["Description"]?.ToString()!;
-            Dictionary<string, object>? add = null;
-            if (def.AdditionalColumns.Any())
-            {
-                add = def.AdditionalColumns
-                    .Where(col => row.ContainsKey(col))
-                    .ToDictionary(col => col, col => row[col]!);
-                if (add.Count == 0) add = null;
-            }
-            result.Add(new LookupItem(code, desc, add));
-        }
-
-        return result;
-    }
-}
-```
-
-### Providers/HandlerLookupProvider.cs
-
-```csharp
-using System;
-using System.Collections.Generic;
-using System.Threading.Tasks;
-using Shared.LookupService.Models;
-
-namespace Shared.LookupService.Providers;
-
-public class HandlerLookupProvider : ILookupProvider
-{
-    private readonly IServiceProvider _sp;
-
-    public HandlerLookupProvider(IServiceProvider sp)
-        => _sp = sp;
-
-    public Task<IEnumerable<LookupItem>> GetAsync(
-        LookupDefinition def,
-        string? contextName = null,
-        IDictionary<string, object>? filters = null)
-    {
-        if (def.SourceType != LookupSourceType.Handler)
-            throw new ArgumentException("SourceType must be Handler");
-        if (string.IsNullOrWhiteSpace(def.HandlerType))
-            throw new ArgumentException("HandlerType is required");
-
-        var type = Type.GetType(def.HandlerType)
-                   ?? throw new InvalidOperationException($"Cannot load {def.HandlerType}");
-        var handler = (ILookupHandler)_sp.GetRequiredService(type);
-        return handler.HandleAsync(def, filters);
-    }
-}
-```
-
-### Providers/ProductTypeLookupHandler.cs
-
-```csharp
-using System.Collections.Generic;
-using System.Data;
-using System.Linq;
-using Dapper;
-using Shared.LookupService.Models;
-
-namespace Shared.LookupService.Providers;
-
-public class ProductTypeLookupHandler : ILookupHandler
-{
-    private readonly IConnectionFactory _factory;
-
-    public ProductTypeLookupHandler(IConnectionFactory factory)
-        => _factory = factory;
-
-    public async Task<IEnumerable<LookupItem>> HandleAsync(
-        LookupDefinition def,
-        IDictionary<string, object>? filters = null)
-    {
-        var ctx = filters != null && filters.TryGetValue("AppId", out var id)
-            ? id.ToString()
-            : null;
-        using var conn = _factory.CreateConnection(ctx);
-        string sql = ctx == "1"
-            ? "SELECT Code, Name AS Description FROM App1Products"
-            : "SELECT Code, Name AS Description FROM DefaultProducts";
-        var rows = await conn.QueryAsync<(string Code, string Description)>(sql);
-        return rows.Select(x => new LookupItem(x.Code, x.Description));
-    }
-}
-```
-
----
-
-## Factory
-
-### Factory/LookupProviderFactory.cs
-
-```csharp
-using Shared.LookupService.Models;
-using Shared.LookupService.Providers;
-
-namespace Shared.LookupService.Factory;
-
-public class LookupProviderFactory
-{
-    private readonly IEnumerable<ILookupProvider> _providers;
-
-    public LookupProviderFactory(IEnumerable<ILookupProvider> providers)
-        => _providers = providers;
-
-    public ILookupProvider Get(LookupDefinition def)
-    {
-        return def.SourceType == LookupSourceType.Handler
-            ? _providers.OfType<HandlerLookupProvider>().First()
-            : _providers.OfType<TableLookupProvider>().First();
-    }
-}
-```
-
----
-
-## Services
-
-### Services/ILookupDataService.cs
-
-```csharp
-using Shared.LookupService.Models;
-
-namespace Shared.LookupService.Services;
-
-public interface ILookupDataService
-{
-    Task<IEnumerable<LookupItem>> GetAsync(
-        string key,
-        string? contextName = null,
-        IDictionary<string, object>? filters = null
-    );
-}
-```
-
-### Services/LookupDataService.cs
-
-```csharp
-using Shared.LookupService.Models;
-using Shared.LookupService.Stores;
-using Shared.LookupService.Factory;
-
-namespace Shared.LookupService.Services;
-
-public class LookupDataService : ILookupDataService
-{
-    private readonly IReadOnlyDictionary<string, LookupDefinition> _defs;
-    private readonly LookupProviderFactory _factory;
-
-    public LookupDataService(
-        ILookupDefinitionStore store,
-        LookupProviderFactory factory)
-    {
-        _defs = store.GetAllAsync().GetAwaiter().GetResult()
-                     .ToDictionary(d => d.Key, StringComparer.OrdinalIgnoreCase);
-        _factory = factory;
-    }
-
-    public Task<IEnumerable<LookupItem>> GetAsync(
-        string key,
-        string? contextName = null,
-        IDictionary<string, object>? filters = null)
-    {
-        if (!_defs.TryGetValue(key, out var def))
-            throw new KeyNotFoundException($"Lookup '{key}' not found");
-        var provider = _factory.Get(def);
-        return provider.GetAsync(def, contextName, filters);
-    }
-}
-```
-
-### Services/CachingLookupDataService.cs
-
-```csharp
-using Microsoft.Extensions.Caching.Memory;
-using Shared.LookupService.Models;
-
-namespace Shared.LookupService.Services;
-
-public class CachingLookupDataService : ILookupDataService
-{
-    private readonly LookupDataService _inner;
-    private readonly IMemoryCache _cache;
-    private readonly TimeSpan _ttl = TimeSpan.FromMinutes(10);
-
-    public CachingLookupDataService(LookupDataService inner, IMemoryCache cache)
-    {
-        _inner = inner;
-        _cache = cache;
-    }
-
-    public Task<IEnumerable<LookupItem>> GetAsync(
-        string key,
-        string? contextName = null,
-        IDictionary<string, object>? filters = null)
-    {
-        var filterKey = filters == null
-            ? string.Empty
-            : string.Join(";", filters.OrderBy(kv => kv.Key)
-                                         .Select(kv => $"{kv.Key}={kv.Value}"));
-        var cacheKey = $"LookupRes:{key}:{contextName}:{filterKey}";
-        return _cache.GetOrCreateAsync(cacheKey, entry =>
-        {
-            entry.SlidingExpiration = _ttl;
-            return _inner.GetAsync(key, contextName, filters)!;
-        })!;
-    }
-}
-```
-
----
-
-# LookupApi.Common (API Layer)
-
-### LookupApi.Common.csproj
-
-```xml
-<Project Sdk="Microsoft.NET.Sdk.Web">
-  <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
-  </PropertyGroup>
-  <ItemGroup>
-    <ProjectReference Include="../Shared.LookupService/Shared.LookupService.csproj" />
-  </ItemGroup>
-</Project>
-```
-
-### appsettings.json
-
-```json
-{
-  "ConnectionStrings": {
-    "Db1": "Server=...;Database=Db1;User Id=...;Pwd=...;",
-    "Db2": "Server=...;Database=Db2;User Id=...;Pwd=...;"
+@Injectable({ providedIn: 'root' })
+export class MonitoringService {
+  private endpoint = '/api/monitor/log';
+
+  private readonly staticFields = {
+    type: 'userActivityEvent' as const,
+    application: environment.monitoring.application,
+    authenticationMethod: environment.monitoring.authenticationMethod,
+    resourceHost: environment.monitoring.resourceHost,
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    device: navigator.userAgent
+  };
+
+  constructor(private http: HttpClient, private authService: AuthService) {}
+
+  private buildPayload(action: string, result: '1' | '0', resource: string, resourceType: string): UserActivityEventPayload {
+    return {
+      id: uuidv4(),
+      dateTime: new Date().toISOString(),
+      ait: this.authService.getClientId(),
+      username: this.authService.getUsername(),
+      action,
+      result,
+      resource,
+      resourceType,
+      ...this.staticFields
+    };
+  }
+
+  private send(action: string, result: '1' | '0', resource: string, resourceType: string): void {
+    const payload = this.buildPayload(action, result, resource, resourceType);
+
+    const headers = new HttpHeaders({
+      Authorization: `Bearer ${this.authService.getToken()}`
+    });
+
+    this.http.post(this.endpoint, payload, { headers }).subscribe({
+      next: () => {},
+      error: () => console.warn('⚠️ Monitoring log failed.')
+    });
+  }
+
+  logEvent(type: MonitoringEventType, details: any = {}) {
+    const action = type;
+    const result: '1' | '0' = '1';
+    const resource = details.route || details.url || 'unknown';
+    const resourceType = details.field || 'page';
+    this.send(action, result, resource, resourceType);
+  }
+
+  logConfidentialFieldViewed(fieldName: string, context?: string): void {
+    this.send(MonitoringEventType.ConfidentialView, '1', context || 'unknown', fieldName);
   }
 }
-```
 
-### Data/DapperContext.cs
+// ===============================
+// monitoring.service.spec.ts
+// ===============================
+import { TestBed } from '@angular/core/testing';
+import { MonitoringService, MonitoringEventType } from './monitoring.service';
+import { HttpClientTestingModule, HttpTestingController } from '@angular/common/http/testing';
+import { AuthService } from './auth.service';
 
-```csharp
-namespace LookupApi.Common.Data;
+const mockAuthService = {
+  getToken: () => 'mock-token',
+  getUsername: () => 'mock-user',
+  getClientId: () => 'mock-client-id'
+};
 
-public interface IDapperContext
-{
-    string ConnectionString1 { get; }
-    string ConnectionString2 { get; }
-}
+describe('MonitoringService', () => {
+  let service: MonitoringService;
+  let httpMock: HttpTestingController;
 
-public class DapperContext : IDapperContext
-{
-    public string ConnectionString1 { get; }
-    public string ConnectionString2 { get; }
-    public DapperContext(string cs1, string cs2)
-    {
-        ConnectionString1 = cs1;
-        ConnectionString2 = cs2;
-    }
-}
-```
+  beforeEach(() => {
+    TestBed.configureTestingModule({
+      imports: [HttpClientTestingModule],
+      providers: [
+        MonitoringService,
+        { provide: AuthService, useValue: mockAuthService }
+      ]
+    });
 
-### Data/DapperConnectionFactory.cs
+    service = TestBed.inject(MonitoringService);
+    httpMock = TestBed.inject(HttpTestingController);
+  });
 
-```csharp
-using System.Data;
-using Microsoft.Data.SqlClient;
-using Shared.LookupService.Providers;
-using LookupApi.Common.Data;
+  afterEach(() => {
+    httpMock.verify();
+  });
 
-namespace LookupApi.Common.Data;
+  it('should send a login event', () => {
+    service.logEvent(MonitoringEventType.Login, { route: 'login' });
 
-public class DapperConnectionFactory : IConnectionFactory
-{
-    private readonly IDapperContext _ctx;
-    public DapperConnectionFactory(IDapperContext ctx) => _ctx = ctx;
+    const req = httpMock.expectOne('/api/monitor/log');
+    expect(req.request.method).toBe('POST');
+    expect(req.request.headers.get('Authorization')).toBe('Bearer mock-token');
+    expect(req.request.body).toMatchObject({
+      type: 'userActivityEvent',
+      action: 'LOGIN',
+      resource: 'login',
+      resourceType: 'page',
+      username: 'mock-user',
+      ait: 'mock-client-id',
+      authenticationMethod: 'SSO'
+    });
 
-    public IDbConnection CreateConnection(string? contextName = null)
-    {
-        var cs = contextName == "Db2"
-            ? _ctx.ConnectionString2
-            : _ctx.ConnectionString1;
-        return new SqlConnection(cs);
-    }
-}
-```
+    req.flush({});
+  });
 
-### Program.cs
+  it('should send a confidential field view event', () => {
+    service.logConfidentialFieldViewed('SSN', 'MyComponent');
 
-```csharp
-using Microsoft.Data.SqlClient;
-using System.Data;
-using LookupApi.Common.Data;
-using Shared.LookupService.Extensions;
-using Shared.LookupService.Providers;
+    const req = httpMock.expectOne('/api/monitor/log');
+    expect(req.request.method).toBe('POST');
+    expect(req.request.body.action).toBe('VIEW_CONFIDENTIAL');
+    expect(req.request.body.resource).toBe('MyComponent');
+    expect(req.request.body.resourceType).toBe('SSN');
 
-var builder = WebApplication.CreateBuilder(args);
+    req.flush({});
+  });
 
-// 1) register DapperContext
-builder.Services.AddSingleton<IDapperContext>(
-    sp => new DapperContext(
-        builder.Configuration.GetConnectionString("Db1"),
-        builder.Configuration.GetConnectionString("Db2")
-    )
-);
+  it('should handle unknown resource defaults', () => {
+    service.logEvent(MonitoringEventType.Logout);
 
-// 2) register connection factory
-builder.Services.AddSingleton<IConnectionFactory, DapperConnectionFactory>();
+    const req = httpMock.expectOne('/api/monitor/log');
+    expect(req.request.body.resource).toBe('unknown');
+    expect(req.request.body.resourceType).toBe('page');
 
-// 3) register core lookup services
-builder.Services.AddLookupServices(builder.Configuration);
-
-var app = builder.Build();
-app.MapControllers();
-app.Run();
-```
-
-### Controllers/LookupController.cs
-
-```csharp
-using Microsoft.AspNetCore.Mvc;
-using Shared.LookupService.Services;
-using Shared.LookupService.Models;
-
-namespace LookupApi.Common.Controllers;
-
-[ApiController]
-[Route("api/[controller]")]
-public class LookupController : ControllerBase
-{
-    private readonly ILookupDataService _lookup;
-    public LookupController(ILookupDataService lookup) => _lookup = lookup;
-
-    [HttpGet("{key}")]
-    public async Task<IActionResult> Get(
-        string key,
-        [FromQuery] string? contextName,
-        [FromQuery] Dictionary<string, object>? filters)
-    {
-        var data = await _lookup.GetAsync(key, contextName, filters);
-        return Ok(data);
-    }
-}
-```
-
----
-
-# FundingModuleApi (JSON-backed)
-
-### FundingModuleApi.csproj
-
-```xml
-<Project Sdk="Microsoft.NET.Sdk.Web">
-  <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
-  </PropertyGroup>
-  <ItemGroup>
-    <ProjectReference Include="../Shared.LookupService/Shared.LookupService.csproj" />
-  </ItemGroup>
-</Project>
-```
-
-### appsettings.json
-
-```json
-{
-  "LookupDataSettings": [
-    {
-      "Key": "Countries",
-      "SourceType": "Table",
-      "TableName": "RefCountries",
-      "FilterColumns": ["IsActive"],
-      "SortBy": "CountryName",
-      "CodeColumn": "CountryCode",
-      "DescColumn": "CountryName"
-    }
-  ]
-}
-```
-
-### Program.cs
-
-```csharp
-using Shared.LookupService.Extensions;
-
-var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddLookupServices(builder.Configuration);
-var app = builder.Build();
-app.MapControllers();
-app.Run();
-```
-
-### Controllers/FundingController.cs
-
-```csharp
-using Microsoft.AspNetCore.Mvc;
-using Shared.LookupService.Services;
-
-namespace FundingModuleApi.Controllers;
-
-[ApiController]
-[Route("api/[controller]")]
-public class FundingController : ControllerBase
-{
-    private readonly ILookupDataService _lookup;
-    public FundingController(ILookupDataService lookup) => _lookup = lookup;
-
-    [HttpGet("countries")]
-    public async Task<IActionResult> GetCountries()
-        => Ok(await _lookup.GetAsync("Countries"));
-```
+    req.flush({});
+  });
+});
