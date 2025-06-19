@@ -47,7 +47,7 @@ export class MonitoringService {
   constructor(private http: HttpClient, private authService: AuthService) {}
 
   private buildPayload(action: string, result: '1' | '0', resource: string, resourceType: string): UserActivityEventPayload {
-    return {
+    return Object.assign({
       id: uuidv4(),
       dateTime: new Date().toISOString(),
       ait: this.authService.getClientId(),
@@ -55,9 +55,8 @@ export class MonitoringService {
       action,
       result,
       resource,
-      resourceType,
-      ...this.staticFields
-    };
+      resourceType
+    }, this.staticFields);
   }
 
   private send(action: string, result: '1' | '0', resource: string, resourceType: string): void {
@@ -85,6 +84,92 @@ export class MonitoringService {
     this.send(MonitoringEventType.ConfidentialView, '1', context || 'unknown', fieldName);
   }
 }
+
+// ===============================
+// auth.guard.ts
+// ===============================
+import { Injectable } from '@angular/core';
+import { CanActivate, ActivatedRouteSnapshot, Router } from '@angular/router';
+import { AuthService } from './auth.service';
+import { MonitoringService, MonitoringEventType } from './monitoring.service';
+
+@Injectable({ providedIn: 'root' })
+export class AuthGuard implements CanActivate {
+  constructor(
+    private auth: AuthService,
+    private monitor: MonitoringService,
+    private router: Router
+  ) {}
+
+  canActivate(route: ActivatedRouteSnapshot): boolean {
+    const isAuthorized = this.auth.isAuthenticated();
+    const isConfidential = route.data['monitor'] === true;
+
+    if (!isAuthorized) {
+      this.monitor.logEvent(MonitoringEventType.UnauthorizedAccess, {
+        attemptedRoute: route.routeConfig?.path
+      });
+      this.router.navigate(['/unauthorized']);
+      return false;
+    }
+
+    if (isConfidential) {
+      this.monitor.logEvent(MonitoringEventType.ConfidentialView, {
+        route: route.routeConfig?.path
+      });
+    }
+
+    return true;
+  }
+}
+
+// ===============================
+// http-error.interceptor.ts
+// ===============================
+import { Injectable } from '@angular/core';
+import { HttpInterceptor, HttpRequest, HttpHandler, HttpEvent, HttpErrorResponse } from '@angular/common/http';
+import { Observable, throwError } from 'rxjs';
+import { catchError } from 'rxjs/operators';
+import { MonitoringService, MonitoringEventType } from './monitoring.service';
+
+@Injectable()
+export class HttpErrorInterceptor implements HttpInterceptor {
+  constructor(private monitor: MonitoringService) {}
+
+  intercept(req: HttpRequest<any>, next: HttpHandler): Observable<HttpEvent<any>> {
+    return next.handle(req).pipe(
+      catchError((error: HttpErrorResponse) => {
+        if ([401, 403].includes(error.status)) {
+          this.monitor.logEvent(MonitoringEventType.UnauthorizedAccess, {
+            url: req.url,
+            status: error.status,
+            message: error.message
+          });
+        }
+        return throwError(() => error);
+      })
+    );
+  }
+}
+
+// ===============================
+// app.module.ts (excerpt)
+// ===============================
+import { NgModule } from '@angular/core';
+import { BrowserModule } from '@angular/platform-browser';
+import { HTTP_INTERCEPTORS } from '@angular/common/http';
+import { AppComponent } from './app.component';
+import { HttpErrorInterceptor } from './http-error.interceptor';
+
+@NgModule({
+  declarations: [AppComponent],
+  imports: [BrowserModule],
+  providers: [
+    { provide: HTTP_INTERCEPTORS, useClass: HttpErrorInterceptor, multi: true }
+  ],
+  bootstrap: [AppComponent]
+})
+export class AppModule {}
 
 // ===============================
 // monitoring.service.spec.ts
