@@ -1,44 +1,80 @@
 // ====================================================================
-// Project Structure (relevant parts)
+// Complete End-to-End Lookup Implementation
 // ====================================================================
-// libs/
-//  ├─ core/
-//  ├─ shared/
-//  │    └─ lookup/
-//  │         ├─ lookup.model.ts
-//  │         ├─ lookup.tokens.ts
-//  │         ├─ lookup.service.ts
-//  │         └─ lookup-select.component.ts
-//  ├─ state/
-//  │    ├─ lookup/
-//  │    │    ├─ lookup.models.ts
-//  │    │    ├─ lookup.actions.ts
-//  │    │    ├─ lookup.reducer.ts
-//  │    │    ├─ lookup.selectors.ts
-//  │    │    ├─ lookup.effects.ts
-//  │    │    ├─ lookup.utils.ts
-//  │    │    └─ lookup.state.ts
-//  │    └─ index.ts
-//  └─ funding/
-//       ├─ src/lib/funding.module.ts
-//       ├─ src/lib/funding-routing.module.ts
-//       └─ src/lib/components/fund-selector.component.ts
 
+// --------------------------------------------------------------------
+// File: libs/core/lookup/lookup.tokens.ts
+// --------------------------------------------------------------------
+import { InjectionToken } from '@angular/core';
 
-// ====================================================================
-// File: libs/state/lookup/lookup.models.ts
-// ====================================================================
+/** API URL for lookup service */
+export const LOOKUP_API_URL = new InjectionToken<string>('LookupApiUrl', {
+  providedIn: 'root',
+  factory: () => '/commonapi/lookup'
+});
+
+// --------------------------------------------------------------------
+// File: libs/core/lookup/lookup.service.ts
+// --------------------------------------------------------------------
+import { Injectable, Inject } from '@angular/core';
+import { HttpClient, HttpParams } from '@angular/common/http';
+import { Observable } from 'rxjs';
+import { map, shareReplay } from 'rxjs/operators';
+import { LookupItem } from './state/lookup.models';
+import { LOOKUP_API_URL } from './lookup.tokens';
+
+@Injectable({ providedIn: 'root' })
+export class LookupService {
+  private cache = new Map<string, Observable<LookupItem[]>>();
+
+  constructor(
+    private http: HttpClient,
+    @Inject(LOOKUP_API_URL) private apiUrl: string
+  ) {}
+
+  /**
+   * Fetch lookup items by name and optional parameters.
+   * Caches per name+params key.
+   */
+  get(name: string, uiParams?: Record<string, any>): Observable<LookupItem[]> {
+    const key = `${name}|${JSON.stringify(uiParams || {})}`;
+    if (!this.cache.has(key)) {
+      let params = new HttpParams().set('names', name);
+      if (uiParams) {
+        Object.entries(uiParams).forEach(([k, v]) => {
+          if (v != null) {
+            params = params.set(k, v);
+          }
+        });
+      }
+      const request$ = this.http
+        .get<Record<string, LookupItem[]>>(this.apiUrl, { params })
+        .pipe(
+          map(res => res[name] || []),
+          shareReplay(1)
+        );
+      this.cache.set(key, request$);
+    }
+    return this.cache.get(key)!;
+  }
+}
+
+// --------------------------------------------------------------------
+// File: libs/core/lookup/state/lookup.models.ts
+// --------------------------------------------------------------------
 export interface LookupItem {
+  /** The actual value to bind */
   value: string | number;
+  /** Display name */
   name: string;
+  /** Any additional JSON data */
   additionaldata?: Record<string, any>;
   [key: string]: any;
 }
 
-
-// ====================================================================
-// File: libs/state/lookup/lookup.actions.ts
-// ====================================================================
+// --------------------------------------------------------------------
+// File: libs/core/lookup/state/lookup.actions.ts
+// --------------------------------------------------------------------
 import { createAction, props } from '@ngrx/store';
 import { LookupItem } from './lookup.models';
 
@@ -46,21 +82,18 @@ export const loadLookup = createAction(
   '[Lookup] Load',
   props<{ name: string; uiParams?: Record<string, any> }>()
 );
-
 export const loadLookupSuccess = createAction(
   '[Lookup] Load Success',
   props<{ name: string; items: LookupItem[]; uiParamsKey: string }>()
 );
-
 export const loadLookupFailure = createAction(
   '[Lookup] Load Failure',
   props<{ name: string; error: any }>()
 );
 
-
-// ====================================================================
-// File: libs/state/lookup/lookup.reducer.ts
-// ====================================================================
+// --------------------------------------------------------------------
+// File: libs/core/lookup/state/lookup.reducer.ts
+// --------------------------------------------------------------------
 import { createReducer, on } from '@ngrx/store';
 import * as LookupActions from './lookup.actions';
 import { LookupItem } from './lookup.models';
@@ -96,17 +129,19 @@ export const lookupReducer = createReducer(
   on(LookupActions.loadLookupFailure, (state, { error }) => ({ ...state, loading: false, error }))
 );
 
-
-// ====================================================================
-// File: libs/state/lookup/lookup.selectors.ts
-// ====================================================================
+// --------------------------------------------------------------------
+// File: libs/core/lookup/state/lookup.selectors.ts
+// --------------------------------------------------------------------
 import { createFeatureSelector, createSelector } from '@ngrx/store';
 import { lookupFeatureKey, LookupState } from './lookup.reducer';
 import { serializeParams } from './lookup.utils';
 
 const selectLookupFeature = createFeatureSelector<LookupState>(lookupFeatureKey);
 
-export const selectLookupItems = (name: string, uiParams?: Record<string, any>) =>
+export const selectLookupItems = (
+  name: string,
+  uiParams?: Record<string, any>
+) =>
   createSelector(
     selectLookupFeature,
     state => state.entities[name]?.[serializeParams(uiParams)] ?? []
@@ -117,21 +152,15 @@ export const selectLookupLoading = createSelector(
   state => state.loading
 );
 
-export const selectLookupError = createSelector(
-  selectLookupFeature,
-  state => state.error
-);
-
-
-// ====================================================================
-// File: libs/state/lookup/lookup.effects.ts
-// ====================================================================
+// --------------------------------------------------------------------
+// File: libs/core/lookup/state/lookup.effects.ts
+// --------------------------------------------------------------------
 import { Injectable } from '@angular/core';
 import { Actions, createEffect, ofType } from '@ngrx/effects';
 import { of } from 'rxjs';
 import { catchError, map, mergeMap } from 'rxjs/operators';
 import * as LookupActions from './lookup.actions';
-import { LookupService } from '@yourorg/shared';
+import { LookupService } from '../lookup.service';
 import { serializeParams } from './lookup.utils';
 
 @Injectable()
@@ -140,7 +169,7 @@ export class LookupEffects {
     this.actions$.pipe(
       ofType(LookupActions.loadLookup),
       mergeMap(({ name, uiParams }) =>
-        this.lookupService.getLookup(name, uiParams).pipe(
+        this.lookupService.get(name, uiParams).pipe(
           map(items =>
             LookupActions.loadLookupSuccess({
               name,
@@ -154,13 +183,15 @@ export class LookupEffects {
     )
   );
 
-  constructor(private actions$: Actions, private lookupService: LookupService) {}
+  constructor(
+    private actions$: Actions,
+    private lookupService: LookupService
+  ) {}
 }
 
-
-// ====================================================================
-// File: libs/state/lookup/lookup.utils.ts
-// ====================================================================
+// --------------------------------------------------------------------
+// File: libs/core/lookup/state/lookup.utils.ts
+// --------------------------------------------------------------------
 export function serializeParams(params?: Record<string, any>): string {
   if (!params) return '';
   return Object.keys(params)
@@ -169,10 +200,9 @@ export function serializeParams(params?: Record<string, any>): string {
     .join('&');
 }
 
-
-// ====================================================================
-// File: libs/state/lookup/lookup.state.ts
-// ====================================================================
+// --------------------------------------------------------------------
+// File: libs/core/lookup/state/lookup.state.ts
+// --------------------------------------------------------------------
 import { NgModule } from '@angular/core';
 import { StoreModule } from '@ngrx/store';
 import { EffectsModule } from '@ngrx/effects';
@@ -187,88 +217,26 @@ import { LookupEffects } from './lookup.effects';
 })
 export class LookupStateModule {}
 
+// --------------------------------------------------------------------
+// File: libs/core/src/lib/core.module.ts
+// --------------------------------------------------------------------
+import { NgModule } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { LookupStateModule } from '../lookup/state/lookup.state';
 
-// ====================================================================
-// File: libs/state/index.ts
-// ====================================================================
-export * from './lookup/lookup.models';
-export * from './lookup/lookup.actions';
-export * from './lookup/lookup.selectors';
-export * from './lookup/lookup.effects';
-export * from './lookup/lookup.state';
+@NgModule({
+  imports: [
+    CommonModule,
+    LookupStateModule
+  ]
+})
+export class CoreModule {}
 
-
-// ====================================================================
-// File: libs/shared/lookup/lookup.model.ts
-// ====================================================================
-export interface LookupItem {
-  value: string | number;
-  name: string;
-  additionaldata?: Record<string, any>;
-  [key: string]: any;
-}
-
-
-// ====================================================================
-// File: libs/shared/lookup/lookup.tokens.ts
-// ====================================================================
-import { InjectionToken } from '@angular/core';
-
-export const LOOKUP_API_URL = new InjectionToken<string>('LookupApiUrl', {
-  providedIn: 'root',
-  factory: () => '/commonapi/lookup'
-});
-
-
-// ====================================================================
-// File: libs/shared/lookup/lookup.service.ts
-// ====================================================================
-import { Injectable, Inject } from '@angular/core';
-import { HttpClient, HttpParams } from '@angular/common/http';
-import { Observable } from 'rxjs';
-import { map, shareReplay } from 'rxjs/operators';
-import { LookupItem } from './lookup.model';
-import { LOOKUP_API_URL } from './lookup.tokens';
-
-@Injectable({ providedIn: 'root' })
-export class LookupService {
-  private cache = new Map<string, Observable<LookupItem[]>>();
-
-  constructor(private http: HttpClient, @Inject(LOOKUP_API_URL) private apiUrl: string) {}
-
-  getLookup(name: string, uiParams?: Record<string, any>): Observable<LookupItem[]> {
-    const key = this.buildKey(name, uiParams);
-    if (!this.cache.has(key)) {
-      let params = new HttpParams().set('names', name);
-      if (uiParams) {
-        Object.entries(uiParams).forEach(([k, v]) => {
-          if (v != null) params = params.set(k, v);
-        });
-      }
-      const req$ = this.http.get<Record<string, LookupItem[]>>(this.apiUrl, { params }).pipe(
-        map(res => res[name] || []),
-        shareReplay(1)
-      );
-      this.cache.set(key, req$);
-    }
-    return this.cache.get(key)!;
-  }
-
-  private buildKey(name: string, uiParams?: Record<string, any>): string {
-    const p = serializeParams(uiParams);
-    return p ? `${name}|${p}` : name;
-  }
-}
-
-
-// ====================================================================
+// --------------------------------------------------------------------
 // File: libs/shared/lookup/lookup-select.component.ts
-// ====================================================================
+// --------------------------------------------------------------------
 import { Component, Input, Output, EventEmitter } from '@angular/core';
-import { Store } from '@ngrx/store';
-import { loadLookup } from '@yourorg/state';
-import { selectLookupItems } from '@yourorg/state';
-import { Observable } from 'rxjs';
+import { LookupItem } from '@yourorg/core/lookup/state/lookup.models';
 
 @Component({
   selector: 'app-lookup-select',
@@ -278,110 +246,76 @@ import { Observable } from 'rxjs';
       <mat-select
         [value]="selected"
         (openedChange)="onOpen()"
-        (selectionChange)="onSelect($event.value)"
-        [multiple]="multiple">
-        <mat-option *ngFor="let item of items$ | async" [value]="item.value">
-          {{ item.name }}
-        </mat-option>
+        (selectionChange)="onChange($event.value)"
+        [multiple]="multiple"
+      >
+        <mat-option *ngFor="let item of items" [value]="item.value">{{ item.name }}</mat-option>
       </mat-select>
     </mat-form-field>
   `
 })
 export class LookupSelectComponent {
-  @Input() lookupName!: string;
-  @Input() uiParams?: Record<string, any>;
+  @Input() items: LookupItem[] = [];
   @Input() placeholder = 'Select';
   @Input() multiple = false;
-  @Input() selected: any;
-  @Output() selectedChange = new EventEmitter<any>();
+  @Input() selected: string | number | Array<string | number> | null = null;
+  @Output() selectedChange = new EventEmitter<string | number | Array<string | number>>();
+  @Output() openedChange = new EventEmitter<boolean>();
 
-  items$!: Observable<any[]>;
-
-  constructor(private store: Store) {}
-
-  onOpen() {
-    if (this.lookupName) {
-      this.store.dispatch(loadLookup({ name: this.lookupName, uiParams: this.uiParams }));
-      this.items$ = this.store.select(selectLookupItems(this.lookupName, this.uiParams));
-    }
+  onOpen(): void {
+    this.openedChange.emit(true);
   }
 
-  onSelect(val: any) {
-    this.selectedChange.emit(val);
+  onChange(value: any): void {
+    this.selectedChange.emit(value);
   }
 }
 
+// --------------------------------------------------------------------
+// Usage in Funding feature
 
-// ====================================================================
-// File: libs/funding/src/lib/funding.module.ts
-// ====================================================================
-import { NgModule } from '@angular/core';
-import { CommonModule } from '@angular/common';
-import { FundingRoutingModule } from './funding-routing.module';
-import { SharedModule } from '@yourorg/shared';
-import { LookupStateModule } from '@yourorg/state';
-import { FundSelectorComponent } from './components/fund-selector.component';
-
-@NgModule({
-  declarations: [FundSelectorComponent],
-  imports: [
-    CommonModule,
-    FundingRoutingModule,
-    SharedModule,
-    LookupStateModule  // brings in lookup reducer & effects
-  ]
-})
-export class FundingModule {}
-
-
-// ====================================================================
 // File: libs/funding/src/lib/components/fund-selector.component.ts
-// ====================================================================
-import { Component, OnInit, Input, Output, EventEmitter } from '@angular/core';
+import { Component, Input, Output, EventEmitter } from '@angular/core';
 import { Store } from '@ngrx/store';
-import { loadLookup, selectLookupItems } from '@yourorg/state';
+import { loadLookup } from '@yourorg/core/lookup/state/lookup.actions';
+import { selectLookupItems } from '@yourorg/core/lookup/state/lookup.selectors';
 import { Observable } from 'rxjs';
-import { LookupItem } from '@yourorg/shared';
+import { LookupItem } from '@yourorg/core/lookup/state/lookup.models';
 
 @Component({
   selector: 'app-fund-selector',
   template: `
     <app-lookup-select
-      [lookupName]="'funds'"
-      [placeholder]="placeholder"
-      [selected]="selected"
-      (selectedChange)="onSelect($event)">
-    </app-lookup-select>
+      [items]="funds$ | async"
+      placeholder="{{ placeholder }}"
+      (openedChange)="onOpen()"
+      (selectedChange)="selectedChange.emit($event)"
+    ></app-lookup-select>
   `
 })
-export class FundSelectorComponent implements OnInit {
-  @Input() selected?: any;
+export class FundSelectorComponent {
   @Input() placeholder = 'Select Fund';
-  @Output() selectedChange = new EventEmitter<any>();
+  @Output() selectedChange = new EventEmitter<string | number>();
+  funds$!: Observable<LookupItem[]>;
 
   constructor(private store: Store) {}
 
-  ngOnInit() {}
-
-  onSelect(val: any) {
-    this.selectedChange.emit(val);
+  onOpen(): void {
+    this.store.dispatch(loadLookup({ name: 'funds' }));
+    this.funds$ = this.store.select(selectLookupItems('funds'));
   }
 }
 
-
-// ====================================================================
-// File: libs/funding/src/lib/funding-routing.module.ts
-// ====================================================================
+// File: libs/funding/src/lib/funding.module.ts
 import { NgModule } from '@angular/core';
-import { RouterModule, Routes } from '@angular/router';
+import { CommonModule } from '@angular/common';
+import { MatSelectModule } from '@angular/material/select';
+import { LookupSelectComponent } from '@yourorg/shared/lookup/lookup-select.component';
 import { FundSelectorComponent } from './components/fund-selector.component';
 
-const routes: Routes = [
-  { path: '', component: FundSelectorComponent }
-];
-
 @NgModule({
-  imports: [RouterModule.forChild(routes)],
-  exports: [RouterModule]
+  declarations: [FundSelectorComponent],
+  imports: [CommonModule, MatSelectModule],
+  exports: [FundSelectorComponent]
 })
-export class FundingRoutingModule {}
+export class FundingModule {}
