@@ -1,32 +1,114 @@
-// ========== STATE: lookup.selectors.ts ==========
-import { createFeatureSelector, createSelector } from '@ngrx/store';
-import { LookupState } from './lookup.reducer';
+import {
+  Component, Input, OnInit, OnChanges, SimpleChanges, forwardRef, Output, EventEmitter
+} from '@angular/core';
+import { ControlValueAccessor, NG_VALUE_ACCESSOR } from '@angular/forms';
+import { Store } from '@ngrx/store';
+import { Observable } from 'rxjs';
+import { selectLookupByName, selectLoading, selectError } from '../../state/lookup/lookup.selectors';
+import { LookupItem } from '../../models/lookup.model';
 
-export const selectLookupState = createFeatureSelector<LookupState>('lookup');
-export const selectLookupEntities = createSelector(
-  selectLookupState,
-  state => state.entities
-);
-
-// selector now takes optional params to filter additionalData
-export const selectLookupByName = (lookupName: string, params?: Record<string, any>) => createSelector(
-  selectLookupEntities,
-  entities => {
-    const items = entities[lookupName] || [];
-    if (!params) return items;
-    return items.filter(item =>
-      params && item.additionalData && Object.keys(params).every(
-        k => item.additionalData![k] === params[k]
-      )
-    );
+@Component({
+  selector: 'app-lookup-select',
+  template: `
+    <mat-form-field appearance="fill">
+      <mat-label>{{ label }}</mat-label>
+      <mat-select
+        [disabled]="(loading$ | async) || disabled"
+        [value]="selectedValue"
+        (selectionChange)="onChange($event.value)"
+      >
+        <mat-option *ngFor="let item of items$ | async; trackBy: trackByFn" [value]="item.name">
+          {{ item.value }}
+        </mat-option>
+      </mat-select>
+      <button mat-icon-button *ngIf="allowReload" aria-label="Reload" (click)="onReload()">
+        <mat-icon>refresh</mat-icon>
+      </button>
+    </mat-form-field>
+    <mat-error *ngIf="(error$ | async)">{{ (error$ | async) }}</mat-error>
+  `,
+  providers: [
+    {
+      provide: NG_VALUE_ACCESSOR,
+      useExisting: forwardRef(() => LookupSelectComponent),
+      multi: true
+    }
+  ]
+})
+export class LookupSelectComponent implements OnInit, OnChanges, ControlValueAccessor {
+  /** Optimize rendering by tracking items by their unique name */
+  trackByFn(index: number, item: LookupItem): string {
+    return item.name;
   }
-);
+  /** Name of the lookup to load */
+  @Input() lookupName!: string;
+  /** Initial selected value */
+  @Input() selectedValue?: string;
+  /** Optional filter params */
+  @Input() params?: Record<string, any>;
+  /** Form field label */
+  @Input() label = 'Select';
+  /** Show reload button */
+  @Input() allowReload = false;
 
-export const selectLoading = createSelector(
-  selectLookupState,
-  state => state.loading
-);
-export const selectError = createSelector(
-  selectLookupState,
-  state => state.error
-);
+  /** Emits when user clicks reload button */
+  @Output() reload = new EventEmitter<void>();
+
+  items$!: Observable<LookupItem[]>;
+  loading$!: Observable<boolean>;
+  error$!: Observable<any>;
+
+  disabled = false;
+
+  private onTouched: () => void = () => {};
+  private onChanged: (v: any) => void = () => {};
+
+  constructor(private store: Store) {}
+
+  ngOnInit() {
+    this.load();
+  }
+
+  ngOnChanges(changes: SimpleChanges) {
+    if (changes.lookupName || changes.params) {
+      this.load();
+    }
+    if (changes.selectedValue) {
+      this.value = this.selectedValue;
+    }
+  }
+
+  private load() {
+    this.store.dispatch(loadLookup({ lookupName: this.lookupName, params: this.params }));
+    this.items$ = this.store.select(selectLookupByName(this.lookupName, this.params));
+    this.loading$ = this.store.select(selectLoading);
+    this.error$ = this.store.select(selectError);
+  }
+
+  writeValue(obj: any): void {
+    this.value = obj;
+  }
+
+  registerOnChange(fn: any): void {
+    this.onChanged = fn;
+  }
+
+  registerOnTouched(fn: any): void {
+    this.onTouched = fn;
+  }
+
+  setDisabledState(isDisabled: boolean): void {
+    this.disabled = isDisabled;
+  }
+
+  onChange(v: any) {
+    this.value = v;
+    this.onChanged(v);
+    this.onTouched();
+  }
+
+  /** Emit reload event; caller should handle dispatch */
+  onReload() {
+    this.reload.emit();
+  }
+}
