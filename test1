@@ -1,3 +1,19 @@
+// ========== MODELS: lookup.model.ts ==========
+export interface LookupItem {
+  /**
+   * Unique identifier for the lookup entry
+   */
+  name: string;
+  /**
+   * Display value for the lookup entry
+   */
+  value: string;
+  /**
+   * Optional additional data associated with this entry
+   */
+  additionalData?: Record<string, any>;
+}
+
 // ========== STATE: lookup.actions.ts ==========
 import { createAction, props } from '@ngrx/store';
 import { LookupItem } from '../../models/lookup.model';
@@ -61,19 +77,14 @@ const _lookupReducer = createReducer(
     loading: false,
     entities: { ...state.entities, [lookupName]: items }
   })),
-  on(LookupActions.loadLookupFailure, (state, { error }) => ({
-    ...state,
-    loading: false,
-    error
-  })),
+  on(LookupActions.loadLookupFailure, (state, { error }) => ({ ...state, loading: false, error })),
   on(LookupActions.loadLookupsSuccess, (state, { results }) => ({
     ...state,
     loading: false,
     entities: { ...state.entities, ...results }
   })),
-
   on(LookupActions.reloadLookup, (state, { lookupName }) => {
-    const { [lookupName]: removed, ...rest } = state.entities;
+    const { [lookupName]: _, ...rest } = state.entities;
     return { ...state, entities: rest };
   }),
   on(LookupActions.reloadLookups, (state, { lookupNames }) => {
@@ -162,5 +173,110 @@ export class LookupService {
     let httpParams = new HttpParams().set('names', names.join(','));
     if (params) Object.keys(params).forEach(k => httpParams = httpParams.set(k, params[k]));
     return this.http.get<{ [key: string]: LookupItem[] }>(`${this.baseUrl}/multiple`, { params: httpParams });
+  }
+}
+
+// ========== COMPONENT: lookup-select.component.ts ==========
+import {
+  Component, Input, OnInit, forwardRef
+} from '@angular/core';
+import { ControlValueAccessor, NG_VALUE_ACCESSOR } from '@angular/forms';
+import { Store } from '@ngrx/store';
+import * as LookupActions from '../../state/lookup/lookup.actions';
+import { selectLookupByName, selectLoading } from '../../state/lookup/lookup.selectors';
+import { Observable } from 'rxjs';
+import { LookupItem } from '../../models/lookup.model';
+
+@Component({
+  selector: 'app-lookup-select',
+  template: `
+    <mat-form-field appearance="fill">
+      <mat-label>{{ label }}</mat-label>
+      <mat-select
+        [multiple]="multiple"
+        [disabled]="loading$ | async"
+        [value]="value"
+        (selectionChange)="onChange($event.value)"
+      >
+        <mat-option *ngFor="let item of items$ | async" [value]="item.name">
+          {{ item.value }}
+        </mat-option>
+      </mat-select>
+    </mat-form-field>
+  `,
+  providers: [
+    {
+      provide: NG_VALUE_ACCESSOR,
+      useExisting: forwardRef(() => LookupSelectComponent),
+      multi: true
+    }
+  ]
+})
+export class LookupSelectComponent implements OnInit, ControlValueAccessor {
+  @Input() lookupName!: string;
+  @Input() params?: any;
+  @Input() multiple = false;
+  @Input() label = 'Select';
+
+  items$!: Observable<LookupItem[]>;
+  loading$!: Observable<boolean>;
+  value: any;
+
+  private onTouched!: () => void;
+  private onChanged!: (v: any) => void;
+
+  constructor(private store: Store) {}
+
+  ngOnInit() {
+    this.items$ = this.store.select(selectLookupByName(this.lookupName));
+    this.loading$ = this.store.select(selectLoading);
+    this.store.dispatch(LookupActions.loadLookup({ lookupName: this.lookupName, params: this.params }));
+  }
+
+  writeValue(obj: any): void {
+    this.value = obj;
+  }
+  registerOnChange(fn: any): void {
+    this.onChanged = fn;
+  }
+  registerOnTouched(fn: any): void {
+    this.onTouched = fn;
+  }
+  setDisabledState?(isDisabled: boolean): void {}
+
+  onChange(v: any) {
+    this.value = v;
+    this.onChanged(v);
+    this.onTouched();
+  }
+}
+
+// ========== USAGE EXAMPLES ==========
+import { Store } from '@ngrx/store';
+import { loadLookup, loadLookups, reloadLookup, reloadLookups } from './state/lookup/lookup.actions';
+import { selectLookupByName } from './state/lookup/lookup.selectors';
+
+@Component({ /* ... */ })
+export class SomeComponent implements OnInit {
+  constructor(private store: Store) {}
+
+  ngOnInit() {
+    // Single lookup
+    this.store.dispatch(loadLookup({ lookupName: 'countries', params: { region: 'EU' } }));
+    this.store.select(selectLookupByName('countries')).subscribe(items => {
+      // bind to mat-select
+    });
+
+    // Multiple lookups
+    this.store.dispatch(loadLookups({ lookupNames: ['countries','currencies'] }));
+    this.store.select(selectLookupByName('currencies')).subscribe(items => { /* ... */ });
+  }
+
+  onRefreshCountry() {
+    this.store.dispatch(reloadLookup({ lookupName: 'countries' }));
+  }
+
+  onRefreshAll() {
+    this.store.dispatch(reloadLookups({ lookupNames: ['countries','currencies'] }));
   }
 }
