@@ -7,10 +7,21 @@ export const selectLookupEntities = createSelector(
   selectLookupState,
   state => state.entities
 );
-export const selectLookupByName = (lookupName: string) => createSelector(
+
+// selector now takes optional params to filter additionalData
+export const selectLookupByName = (lookupName: string, params?: Record<string, any>) => createSelector(
   selectLookupEntities,
-  entities => entities[lookupName] || []
+  entities => {
+    const items = entities[lookupName] || [];
+    if (!params) return items;
+    return items.filter(item =>
+      params && item.additionalData && Object.keys(params).every(
+        k => item.additionalData![k] === params[k]
+      )
+    );
+  }
 );
+
 export const selectLoading = createSelector(
   selectLookupState,
   state => state.loading
@@ -18,4 +29,4 @@ export const selectLoading = createSelector(
 export const selectError = createSelector(
   selectLookupState,
   state => state.error
-)
+);
