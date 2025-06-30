@@ -1,104 +1,19 @@
-// src/app/lookup/lookup.effects.ts
-import { Injectable } from '@angular/core';
-import { Actions, createEffect, ofType } from '@ngrx/effects';
-import { Store } from '@ngrx/store';
-import { mergeMap, map, catchError, of, withLatestFrom, filter } from 'rxjs';
-import * as LookupActions from './lookup.actions';
-import { LookupService } from './lookup.service';
-import { selectLookupEntities } from './lookup.selectors';
-
-@Injectable()
-export class LookupEffects {
-  constructor(
-    private actions$: Actions,
-    private store: Store,
-    private lookupService: LookupService
-  ) {}
-
-  /** 
-   * Single lookup effect:
-   * - Skips if state already has items (unless a reload cleared them).
-   * - Chooses enum vs HTTP path based on useEnum flag.
-   */
-  loadLookup$ = createEffect(() =>
-    this.actions$.pipe(
-      ofType(LookupActions.loadLookup),
-      // grab current state
-      withLatestFrom(this.store.select(selectLookupEntities)),
-      // only continue if not yet loaded
-      filter(([{ lookupName }, entities]) =>
-        !entities[lookupName] || entities[lookupName].length === 0
-      ),
-      mergeMap(([{ lookupName, params, useEnum, enumObj }]) => {
-        const source$ =
-          useEnum && enumObj
-            ? this.lookupService.getLookupEnum(enumObj)
-            : this.lookupService.getLookup(lookupName, params);
-
-        return source$.pipe(
-          map(items => LookupActions.loadLookupSuccess({ lookupName, items })),
-          catchError(error =>
-            of(LookupActions.loadLookupFailure({ lookupName, error }))
-          )
-        );
-      })
-    )
-  );
-
-  /**
-   * Bulk lookup effect:
-   * - Skips if *all* requested names already exist in state.
-   * - Otherwise calls the single `getLookups` API once.
-   */
-  loadLookups$ = createEffect(() =>
-    this.actions$.pipe(
-      ofType(LookupActions.loadLookups),
-      // current lookup map
-      withLatestFrom(this.store.select(selectLookupEntities)),
-      // proceed only if at least one name is missing or empty
-      filter(([{ lookupNames }, entities]) =>
-        lookupNames.some(
-          name => !entities[name] || entities[name].length === 0
-        )
-      ),
-      mergeMap(([{ lookupNames, params }]) =>
-        this.lookupService.getLookups(lookupNames, params).pipe(
-          map(results =>
-            LookupActions.loadLookupsSuccess({ results })
-          ),
-          catchError(error =>
-            of(
-              LookupActions.loadLookupFailure({
-                lookupName: 'multiple',
-                error,
-              })
-            )
-          )
-        )
-      )
-    )
-  );
-
-  /**
-   * Reload effects simply map reload→load.
-   * The meta-reducer already cleared out the old entries,
-   * so the filters above will allow a fresh fetch.
-   */
-  reloadLookup$ = createEffect(() =>
-    this.actions$.pipe(
-      ofType(LookupActions.reloadLookup),
-      map(({ lookupName }) =>
-        LookupActions.loadLookup({ lookupName })
-      )
-    )
-  );
-
-  reloadLookups$ = createEffect(() =>
-    this.actions$.pipe(
-      ofType(LookupActions.reloadLookups),
-      map(({ lookupNames, params }) =>
-        LookupActions.loadLookups({ lookupNames, params })
-      )
-    )
-  );
-}
+<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <system.webServer>
+    <rewrite>
+      <rules>
+        <rule name="Angular Routes" stopProcessing="true">
+          <!-- Match anything -->
+          <match url=".*" />
+          <conditions logicalGrouping="MatchAll">
+            <!-- Except if that URL corresponds to an actual file -->
+            <add input="{REQUEST_FILENAME}" matchType="IsFile" negate="true" />
+            <!-- Or an actual directory -->
+            <add input="{REQUEST_FILENAME}" matchType="IsDirectory" negate="true" />
+          </conditions>
+          <!-- Rewrite all other requests to the root -->
+          <action type="Rewrite" url="/" />
+        </rule>
+      </rules>
+    </rewrite
