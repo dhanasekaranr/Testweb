@@ -1,282 +1,104 @@
-// ========== MODELS: lookup.model.ts ==========
-export interface LookupItem {
-  /**
-   * Unique identifier for the lookup entry
-   */
-  name: string;
-  /**
-   * Display value for the lookup entry
-   */
-  value: string;
-  /**
-   * Optional additional data associated with this entry
-   */
-  additionalData?: Record<string, any>;
-}
-
-// ========== STATE: lookup.actions.ts ==========
-import { createAction, props } from '@ngrx/store';
-import { LookupItem } from '../../models/lookup.model';
-
-// Load single lookup
-export const loadLookup = createAction(
-  '[Lookup] Load Lookup',
-  props<{ lookupName: string; params?: any }>()
-);
-export const loadLookupSuccess = createAction(
-  '[Lookup] Load Lookup Success',
-  props<{ lookupName: string; items: LookupItem[] }>()
-);
-export const loadLookupFailure = createAction(
-  '[Lookup] Load Lookup Failure',
-  props<{ lookupName: string; error: any }>()
-);
-
-// Load multiple lookups
-export const loadLookups = createAction(
-  '[Lookup] Load Lookups',
-  props<{ lookupNames: string[]; params?: any }>()
-);
-export const loadLookupsSuccess = createAction(
-  '[Lookup] Load Lookups Success',
-  props<{ results: { [key: string]: LookupItem[] } }>()
-);
-
-// Reload lookups
-export const reloadLookup = createAction(
-  '[Lookup] Reload Lookup',
-  props<{ lookupName: string }>()
-);
-export const reloadLookups = createAction(
-  '[Lookup] Reload Lookups',
-  props<{ lookupNames: string[] }>()
-);
-
-// ========== STATE: lookup.reducer.ts ==========
-import { createReducer, on, Action } from '@ngrx/store';
-import * as LookupActions from './lookup.actions';
-import { LookupItem } from '../../models/lookup.model';
-
-export interface LookupState {
-  entities: { [lookupName: string]: LookupItem[] };
-  loading: boolean;
-  error: any;
-}
-
-export const initialLookupState: LookupState = {
-  entities: {},
-  loading: false,
-  error: null,
-};
-
-const _lookupReducer = createReducer(
-  initialLookupState,
-  on(LookupActions.loadLookup, state => ({ ...state, loading: true, error: null })),
-  on(LookupActions.loadLookupSuccess, (state, { lookupName, items }) => ({
-    ...state,
-    loading: false,
-    entities: { ...state.entities, [lookupName]: items }
-  })),
-  on(LookupActions.loadLookupFailure, (state, { error }) => ({ ...state, loading: false, error })),
-  on(LookupActions.loadLookupsSuccess, (state, { results }) => ({
-    ...state,
-    loading: false,
-    entities: { ...state.entities, ...results }
-  })),
-  on(LookupActions.reloadLookup, (state, { lookupName }) => {
-    const { [lookupName]: _, ...rest } = state.entities;
-    return { ...state, entities: rest };
-  }),
-  on(LookupActions.reloadLookups, (state, { lookupNames }) => {
-    const entitiesCopy = { ...state.entities };
-    lookupNames.forEach(name => delete entitiesCopy[name]);
-    return { ...state, entities: entitiesCopy };
-  })
-);
-
-export function lookupReducer(state: LookupState | undefined, action: Action) {
-  return _lookupReducer(state, action);
-}
-
-// ========== STATE: lookup.effects.ts ==========
+// src/app/lookup/lookup.effects.ts
 import { Injectable } from '@angular/core';
 import { Actions, createEffect, ofType } from '@ngrx/effects';
+import { Store } from '@ngrx/store';
+import { mergeMap, map, catchError, of, withLatestFrom, filter } from 'rxjs';
 import * as LookupActions from './lookup.actions';
-import { LookupService } from '../../services/lookup.service';
-import { mergeMap, map, catchError, of } from 'rxjs';
+import { LookupService } from './lookup.service';
+import { selectLookupEntities } from './lookup.selectors';
 
 @Injectable()
 export class LookupEffects {
   constructor(
     private actions$: Actions,
+    private store: Store,
     private lookupService: LookupService
   ) {}
 
+  /** 
+   * Single lookup effect:
+   * - Skips if state already has items (unless a reload cleared them).
+   * - Chooses enum vs HTTP path based on useEnum flag.
+   */
   loadLookup$ = createEffect(() =>
     this.actions$.pipe(
       ofType(LookupActions.loadLookup),
-      mergeMap(({ lookupName, params }) =>
-        this.lookupService.getLookup(lookupName, params).pipe(
+      // grab current state
+      withLatestFrom(this.store.select(selectLookupEntities)),
+      // only continue if not yet loaded
+      filter(([{ lookupName }, entities]) =>
+        !entities[lookupName] || entities[lookupName].length === 0
+      ),
+      mergeMap(([{ lookupName, params, useEnum, enumObj }]) => {
+        const source$ =
+          useEnum && enumObj
+            ? this.lookupService.getLookupEnum(enumObj)
+            : this.lookupService.getLookup(lookupName, params);
+
+        return source$.pipe(
           map(items => LookupActions.loadLookupSuccess({ lookupName, items })),
-          catchError(error => of(LookupActions.loadLookupFailure({ lookupName, error })))
-        )
-      )
+          catchError(error =>
+            of(LookupActions.loadLookupFailure({ lookupName, error }))
+          )
+        );
+      })
     )
   );
 
+  /**
+   * Bulk lookup effect:
+   * - Skips if *all* requested names already exist in state.
+   * - Otherwise calls the single `getLookups` API once.
+   */
   loadLookups$ = createEffect(() =>
     this.actions$.pipe(
       ofType(LookupActions.loadLookups),
-      mergeMap(({ lookupNames, params }) =>
+      // current lookup map
+      withLatestFrom(this.store.select(selectLookupEntities)),
+      // proceed only if at least one name is missing or empty
+      filter(([{ lookupNames }, entities]) =>
+        lookupNames.some(
+          name => !entities[name] || entities[name].length === 0
+        )
+      ),
+      mergeMap(([{ lookupNames, params }]) =>
         this.lookupService.getLookups(lookupNames, params).pipe(
-          map(results => LookupActions.loadLookupsSuccess({ results })),
-          catchError(error => of(LookupActions.loadLookupFailure({ lookupName: 'multiple', error })))
+          map(results =>
+            LookupActions.loadLookupsSuccess({ results })
+          ),
+          catchError(error =>
+            of(
+              LookupActions.loadLookupFailure({
+                lookupName: 'multiple',
+                error,
+              })
+            )
+          )
         )
       )
     )
   );
 
+  /**
+   * Reload effects simply map reload→load.
+   * The meta-reducer already cleared out the old entries,
+   * so the filters above will allow a fresh fetch.
+   */
   reloadLookup$ = createEffect(() =>
     this.actions$.pipe(
       ofType(LookupActions.reloadLookup),
-      map(({ lookupName }) => LookupActions.loadLookup({ lookupName }))
+      map(({ lookupName }) =>
+        LookupActions.loadLookup({ lookupName })
+      )
     )
   );
 
   reloadLookups$ = createEffect(() =>
     this.actions$.pipe(
       ofType(LookupActions.reloadLookups),
-      map(({ lookupNames }) => LookupActions.loadLookups({ lookupNames }))
+      map(({ lookupNames, params }) =>
+        LookupActions.loadLookups({ lookupNames, params })
+      )
     )
   );
-}
-
-// ========== SERVICE: lookup.service.ts ==========
-import { Injectable } from '@angular/core';
-import { HttpClient, HttpParams } from '@angular/common/http';
-import { Observable } from 'rxjs';
-import { LookupItem } from '../models/lookup.model';
-
-@Injectable({ providedIn: 'root' })
-export class LookupService {
-  private baseUrl = '/commonapi/lookup';
-
-  constructor(private http: HttpClient) {}
-
-  getLookup(name: string, params?: any): Observable<LookupItem[]> {
-    let httpParams = new HttpParams().set('name', name);
-    if (params) Object.keys(params).forEach(k => httpParams = httpParams.set(k, params[k]));
-    return this.http.get<LookupItem[]>(this.baseUrl, { params: httpParams });
-  }
-
-  getLookups(names: string[], params?: any): Observable<{ [key: string]: LookupItem[] }> {
-    let httpParams = new HttpParams().set('names', names.join(','));
-    if (params) Object.keys(params).forEach(k => httpParams = httpParams.set(k, params[k]));
-    return this.http.get<{ [key: string]: LookupItem[] }>(`${this.baseUrl}/multiple`, { params: httpParams });
-  }
-}
-
-// ========== COMPONENT: lookup-select.component.ts ==========
-import {
-  Component, Input, OnInit, forwardRef
-} from '@angular/core';
-import { ControlValueAccessor, NG_VALUE_ACCESSOR } from '@angular/forms';
-import { Store } from '@ngrx/store';
-import * as LookupActions from '../../state/lookup/lookup.actions';
-import { selectLookupByName, selectLoading } from '../../state/lookup/lookup.selectors';
-import { Observable } from 'rxjs';
-import { LookupItem } from '../../models/lookup.model';
-
-@Component({
-  selector: 'app-lookup-select',
-  template: `
-    <mat-form-field appearance="fill">
-      <mat-label>{{ label }}</mat-label>
-      <mat-select
-        [multiple]="multiple"
-        [disabled]="loading$ | async"
-        [value]="value"
-        (selectionChange)="onChange($event.value)"
-      >
-        <mat-option *ngFor="let item of items$ | async" [value]="item.name">
-          {{ item.value }}
-        </mat-option>
-      </mat-select>
-    </mat-form-field>
-  `,
-  providers: [
-    {
-      provide: NG_VALUE_ACCESSOR,
-      useExisting: forwardRef(() => LookupSelectComponent),
-      multi: true
-    }
-  ]
-})
-export class LookupSelectComponent implements OnInit, ControlValueAccessor {
-  @Input() lookupName!: string;
-  @Input() params?: any;
-  @Input() multiple = false;
-  @Input() label = 'Select';
-
-  items$!: Observable<LookupItem[]>;
-  loading$!: Observable<boolean>;
-  value: any;
-
-  private onTouched!: () => void;
-  private onChanged!: (v: any) => void;
-
-  constructor(private store: Store) {}
-
-  ngOnInit() {
-    this.items$ = this.store.select(selectLookupByName(this.lookupName));
-    this.loading$ = this.store.select(selectLoading);
-    this.store.dispatch(LookupActions.loadLookup({ lookupName: this.lookupName, params: this.params }));
-  }
-
-  writeValue(obj: any): void {
-    this.value = obj;
-  }
-  registerOnChange(fn: any): void {
-    this.onChanged = fn;
-  }
-  registerOnTouched(fn: any): void {
-    this.onTouched = fn;
-  }
-  setDisabledState?(isDisabled: boolean): void {}
-
-  onChange(v: any) {
-    this.value = v;
-    this.onChanged(v);
-    this.onTouched();
-  }
-}
-
-// ========== USAGE EXAMPLES ==========
-import { Store } from '@ngrx/store';
-import { loadLookup, loadLookups, reloadLookup, reloadLookups } from './state/lookup/lookup.actions';
-import { selectLookupByName } from './state/lookup/lookup.selectors';
-
-@Component({ /* ... */ })
-export class SomeComponent implements OnInit {
-  constructor(private store: Store) {}
-
-  ngOnInit() {
-    // Single lookup
-    this.store.dispatch(loadLookup({ lookupName: 'countries', params: { region: 'EU' } }));
-    this.store.select(selectLookupByName('countries')).subscribe(items => {
-      // bind to mat-select
-    });
-
-    // Multiple lookups
-    this.store.dispatch(loadLookups({ lookupNames: ['countries','currencies'] }));
-    this.store.select(selectLookupByName('currencies')).subscribe(items => { /* ... */ });
-  }
-
-  onRefreshCountry() {
-    this.store.dispatch(reloadLookup({ lookupName: 'countries' }));
-  }
-
-  onRefreshAll() {
-    this.store.dispatch(reloadLookups({ lookupNames: ['countries','currencies'] }));
-  }
 }
