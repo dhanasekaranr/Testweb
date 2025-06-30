@@ -1,114 +1,148 @@
-import {
-  Component, Input, OnInit, OnChanges, SimpleChanges, forwardRef, Output, EventEmitter
-} from '@angular/core';
-import { ControlValueAccessor, NG_VALUE_ACCESSOR } from '@angular/forms';
-import { Store } from '@ngrx/store';
-import { Observable } from 'rxjs';
-import { selectLookupByName, selectLoading, selectError } from '../../state/lookup/lookup.selectors';
-import { LookupItem } from '../../models/lookup.model';
+# Developer Guide: Generic Lookup Service & Component in Angular 20+
 
-@Component({
-  selector: 'app-lookup-select',
-  template: `
-    <mat-form-field appearance="fill">
-      <mat-label>{{ label }}</mat-label>
-      <mat-select
-        [disabled]="(loading$ | async) || disabled"
-        [value]="selectedValue"
-        (selectionChange)="onChange($event.value)"
-      >
-        <mat-option *ngFor="let item of items$ | async; trackBy: trackByFn" [value]="item.name">
-          {{ item.value }}
-        </mat-option>
-      </mat-select>
-      <button mat-icon-button *ngIf="allowReload" aria-label="Reload" (click)="onReload()">
-        <mat-icon>refresh</mat-icon>
-      </button>
-    </mat-form-field>
-    <mat-error *ngIf="(error$ | async)">{{ (error$ | async) }}</mat-error>
-  `,
-  providers: [
-    {
-      provide: NG_VALUE_ACCESSOR,
-      useExisting: forwardRef(() => LookupSelectComponent),
-      multi: true
-    }
-  ]
-})
-export class LookupSelectComponent implements OnInit, OnChanges, ControlValueAccessor {
-  /** Optimize rendering by tracking items by their unique name */
-  trackByFn(index: number, item: LookupItem): string {
-    return item.name;
-  }
-  /** Name of the lookup to load */
-  @Input() lookupName!: string;
-  /** Initial selected value */
-  @Input() selectedValue?: string;
-  /** Optional filter params */
-  @Input() params?: Record<string, any>;
-  /** Form field label */
-  @Input() label = 'Select';
-  /** Show reload button */
-  @Input() allowReload = false;
+This guide gives a high-level overview of implementing a robust, reusable lookup feature in Angular with NgRx, covering single- and multi-lookup scenarios, dynamic reloading, required placeholders, and form integration.
 
-  /** Emits when user clicks reload button */
-  @Output() reload = new EventEmitter<void>();
+---
 
-  items$!: Observable<LookupItem[]>;
-  loading$!: Observable<boolean>;
-  error$!: Observable<any>;
+## 1. Core Concepts
 
-  disabled = false;
+### 1.1 Model
 
-  private onTouched: () => void = () => {};
-  private onChanged: (v: any) => void = () => {};
+* **`LookupItem`**: a simple interface with `name`, `value`, and optional `additionalData`.
 
-  constructor(private store: Store) {}
+### 1.2 NgRx State Management
 
-  ngOnInit() {
-    this.load();
-  }
+* **Actions**:
 
-  ngOnChanges(changes: SimpleChanges) {
-    if (changes.lookupName || changes.params) {
-      this.load();
-    }
-    if (changes.selectedValue) {
-      this.value = this.selectedValue;
-    }
-  }
+  * `loadLookup` / `loadLookupSuccess` / `loadLookupFailure` for single-endpoint calls.
+  * `loadLookups` / `loadLookupsSuccess` to batch multiple lookups in one API request.
+  * `reloadLookup` / `reloadLookups` to force a refresh of existing data.
+* **Reducer**:
 
-  private load() {
-    this.store.dispatch(loadLookup({ lookupName: this.lookupName, params: this.params }));
-    this.items$ = this.store.select(selectLookupByName(this.lookupName, this.params));
-    this.loading$ = this.store.select(selectLoading);
-    this.error$ = this.store.select(selectError);
-  }
+  * Maintains a dictionary of `entities: Record<string, LookupItem[]>`.
+  * Tracks `loading` & `error` flags.
+  * Handles clearing specific entries on reload actions.
+* **Selectors**:
 
-  writeValue(obj: any): void {
-    this.value = obj;
-  }
+  * `selectLookupByName(name, params?)` to grab and optionally filter results from state.
+  * `selectLoading` / `selectError` for UI feedback.
+* **Effects**:
 
-  registerOnChange(fn: any): void {
-    this.onChanged = fn;
-  }
+  * Calls the API via `LookupService`, dispatches success/failure.
+  * Uses `forkJoin` for multi-lookup requests.
+  * Maps reload actions back to load actions to re-trigger fetches.
 
-  registerOnTouched(fn: any): void {
-    this.onTouched = fn;
-  }
+### 1.3 Service Layer
 
-  setDisabledState(isDisabled: boolean): void {
-    this.disabled = isDisabled;
-  }
+* **`LookupService`** wraps `HttpClient`:
 
-  onChange(v: any) {
-    this.value = v;
-    this.onChanged(v);
-    this.onTouched();
-  }
+  * `getLookup(name, params)` → calls `/commonapi/lookup?name=…`.
+  * Server can also accept `names=csv` for multi-lookups.
 
-  /** Emit reload event; caller should handle dispatch */
-  onReload() {
-    this.reload.emit();
-  }
+---
+
+## 2. Feature Module Setup
+
+1. **`LookupModule`**
+
+   ```ts
+   @NgModule({
+     imports: [
+       StoreModule.forFeature('lookup', lookupReducer, { metaReducers: [clearStateMetaReducer] }),
+       EffectsModule.forFeature([LookupEffects])
+     ]
+   })
+   export class LookupModule {}
+   ```
+2. Import `LookupModule` wherever lookups are needed in your app.
+
+---
+
+## 3. `LookupSelectComponent`
+
+A generic, form-compatible dropdown that:
+
+* Reads from NgRx state (`selectLookupByName`, `selectLoading`, `selectError`).
+* Emits `selectedChange` when user picks an option.
+* Emits `reload` when the reload button is clicked.
+* Supports:
+
+  * **`required`**: shows a top placeholder `-- Please Select --` only when truthy.
+  * **`dynamic`**: if true, re-fetches options when `lookupName` or `params` inputs change.
+
+### 3.1 Key Inputs & Outputs
+
+| Input         | Type                  | Description                                       |
+| ------------- | --------------------- | ------------------------------------------------- |
+| `lookupName`  | `string`              | Key to select from NgRx state                     |
+| `params`      | `Record<string,any>`? | Optional filters applied in selector              |
+| `value`       | `string`              | Selected value (works with Angular forms API)     |
+| `required`    | `boolean`             | Show `-- Please Select --` placeholder at top     |
+| `dynamic`     | `boolean`             | If true, watches input changes to re-select items |
+| `allowReload` | `boolean`             | Show reload button                                |
+
+| Output           | Type                   | Description                                 |
+| ---------------- | ---------------------- | ------------------------------------------- |
+| `selectedChange` | `EventEmitter<string>` | Emits when user selects an option (`value`) |
+| `reload`         | `EventEmitter<void>`   | Emits when reload button is clicked         |
+
+### 3.2 Usage Example
+
+```html
+<app-lookup-select
+  [lookupName]="'countries'"
+  [params]="{ region: 'EU' }"
+  [(value)]="selectedCountry"
+  [required]="true"
+  [dynamic]="false"
+  (reload)="onReload('countries')"
+  (selectedChange)="onCountryChange($event)"
+></app-lookup-select>
+```
+
+---
+
+## 4. Parent Integration
+
+### 4.1 Initial Load
+
+Dispatch lookups from the parent—for example, in `ngOnInit` or in response to user events:
+
+```ts
+this.store.dispatch(loadLookup({ lookupName: 'countries', params: { region: 'EU' } }));
+// Or batch load:
+this.store.dispatch(loadLookups({ lookupNames: ['countries','currencies'], params: {} }));
+```
+
+### 4.2 Handling Reload
+
+```ts
+onReload(lookupName: string) {
+  this.store.dispatch(reloadLookup({ lookupName }));
 }
+```
+
+### 4.3 Listening to Selection
+
+Use `(selectedChange)` on `<app-lookup-select>` to react in the parent:
+
+```ts
+onCountryChange(countryCode: string) {
+  this.selectedCountry = countryCode;
+  // maybe load dependent lookups (e.g. cities)
+  this.store.dispatch(loadLookup({ lookupName: 'cities', params: { country: countryCode } }));
+}
+```
+
+---
+
+## 5. Summary
+
+This architecture:
+
+1. **Centralizes** lookup logic in a single NgRx feature.
+2. **Decouples** data loading (parent components) from rendering (shared lookup component).
+3. **Supports** single vs. bulk lookups, dynamic reloads, and required placeholders.
+4. **Integrates** seamlessly with Angular forms via `ControlValueAccessor`.
+
+With this pattern, adding new lookups or reusing existing ones is as simple as dispatching the right action and embedding `<app-lookup-select>` in your template. Feel free to adapt the inputs/outputs or styling to match your app’s conventions.
