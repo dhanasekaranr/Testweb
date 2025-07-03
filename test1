@@ -1,19 +1,59 @@
-<?xml version="1.0" encoding="utf-8"?>
-<configuration>
-  <system.webServer>
-    <rewrite>
-      <rules>
-        <rule name="Angular Routes" stopProcessing="true">
-          <!-- Match anything -->
-          <match url=".*" />
-          <conditions logicalGrouping="MatchAll">
-            <!-- Except if that URL corresponds to an actual file -->
-            <add input="{REQUEST_FILENAME}" matchType="IsFile" negate="true" />
-            <!-- Or an actual directory -->
-            <add input="{REQUEST_FILENAME}" matchType="IsDirectory" negate="true" />
-          </conditions>
-          <!-- Rewrite all other requests to the root -->
-          <action type="Rewrite" url="/" />
-        </rule>
-      </rules>
-    </rewrite
+// src/app/lookup/lookup.effects.ts
+import { Injectable } from '@angular/core';
+import { Actions, createEffect, ofType } from '@ngrx/effects';
+import { Store } from '@ngrx/store';
+import { of } from 'rxjs';
+import { mergeMap, map, catchError, withLatestFrom } from 'rxjs/operators';
+
+import * as LookupActions from './lookup.actions';
+import { LookupService } from './lookup.service';
+import { selectLookupEntities } from './lookup.selectors';
+import { LookupRequest } from './lookup.types';
+
+@Injectable()
+export class LookupEffects {
+  constructor(
+    private actions$: Actions,
+    private store: Store,
+    private lookupService: LookupService
+  ) {}
+
+  loadLookups$ = createEffect(() =>
+    this.actions$.pipe(
+      ofType(LookupActions.loadLookups),
+      withLatestFrom(this.store.select(selectLookupEntities)),
+      mergeMap(([{ lookups }, entities]) => {
+        // Find which lookups are not yet in state
+        const missing: LookupRequest[] = lookups.filter(
+          req =>
+            !entities[req.lookupName] ||
+            entities[req.lookupName].length === 0
+        );
+
+        if (missing.length === 0) {
+          // All already cached → emit success from cache
+          const results = lookups.reduce<Record<string, any>>((acc, { lookupName }) => {
+            acc[lookupName] = entities[lookupName]!;
+            return acc;
+          }, {});
+          return of(LookupActions.loadLookupsSuccess({ results }));
+        }
+
+        // Otherwise call the batch endpoint once
+        return this.lookupService.getBatchLookups(lookups).pipe(
+          map(results =>
+            LookupActions.loadLookupsSuccess({ results })
+          ),
+          catchError(error =>
+            of(
+              LookupActions.loadLookupFailure({
+                lookupName: 'multiple',
+                error
+              })
+            )
+          )
+        );
+      })
+    )
+  );
+}
