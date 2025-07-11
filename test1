@@ -1,59 +1,124 @@
-// src/app/lookup/lookup.effects.ts
-import { Injectable } from '@angular/core';
-import { Actions, createEffect, ofType } from '@ngrx/effects';
-import { Store } from '@ngrx/store';
-import { of } from 'rxjs';
-import { mergeMap, map, catchError, withLatestFrom } from 'rxjs/operators';
+using System.Data;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Dapper;
+using Paging.Contracts;
 
-import * as LookupActions from './lookup.actions';
-import { LookupService } from './lookup.service';
-import { selectLookupEntities } from './lookup.selectors';
-import { LookupRequest } from './lookup.types';
+namespace Paging.Dapper
+{
+    public abstract class SqlBuilderPagingProvider<TDto> : IPagingProvider<TDto>
+    {
+        private readonly IDbConnection _conn;
+        protected SqlBuilderPagingProvider(IDbConnection conn) => _conn = conn;
 
-@Injectable()
-export class LookupEffects {
-  constructor(
-    private actions$: Actions,
-    private store: Store,
-    private lookupService: LookupService
-  ) {}
+        /// <summary>
+        /// One template containing:
+        ///   - data SELECT … /**where**/ /**orderby**/ OFFSET…FETCH
+        ///   - count SELECT COUNT(1) … /**where**/
+        /// </summary>
+        protected abstract string BaseSqlTemplate { get; }
 
-  loadLookups$ = createEffect(() =>
-    this.actions$.pipe(
-      ofType(LookupActions.loadLookups),
-      withLatestFrom(this.store.select(selectLookupEntities)),
-      mergeMap(([{ lookups }, entities]) => {
-        // Find which lookups are not yet in state
-        const missing: LookupRequest[] = lookups.filter(
-          req =>
-            !entities[req.lookupName] ||
-            entities[req.lookupName].length === 0
-        );
+        public async Task<PagedResult<TDto>> GetPageAsync(PagedRequest req, CancellationToken ct = default)
+        {
+            var builder = new SqlBuilder();
+            var tmpl    = builder.AddTemplate(BaseSqlTemplate);
 
-        if (missing.length === 0) {
-          // All already cached → emit success from cache
-          const results = lookups.reduce<Record<string, any>>((acc, { lookupName }) => {
-            acc[lookupName] = entities[lookupName]!;
-            return acc;
-          }, {});
-          return of(LookupActions.loadLookupsSuccess({ results }));
+            if (req.Filters != null)
+                foreach (var kv in req.Filters)
+                    builder.Where($"{kv.Key} {kv.Value.GetType() == typeof(string) ? "LIKE" : "="} @{kv.Key}", new { kv.Value });
+
+            var dir = req.SortDescending ? "DESC" : "ASC";
+            builder.OrderBy($"{req.SortBy} {dir}");
+
+            builder.Parameters.Add("Offset",   (req.PageNumber - 1) * req.PageSize);
+            builder.Parameters.Add("PageSize", req.PageSize);
+
+            using var multi = await _conn.QueryMultipleAsync(tmpl.RawSql, tmpl.Parameters);
+            var items = (await multi.ReadAsync<TDto>()).AsList();
+            var total = await multi.ReadFirstAsync<int>();
+
+            return new PagedResult<TDto>(items, total, req.PageNumber, req.PageSize);
         }
+    }
+}
 
-        // Otherwise call the batch endpoint once
-        return this.lookupService.getBatchLookups(lookups).pipe(
-          map(results =>
-            LookupActions.loadLookupsSuccess({ results })
-          ),
-          catchError(error =>
-            of(
-              LookupActions.loadLookupFailure({
-                lookupName: 'multiple',
-                error
-              })
-            )
-          )
-        );
-      })
-    )
-  );
+
+
+using System;
+using System.Linq;
+using System.Linq.Expressions;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
+using Paging.Contracts;
+
+namespace Paging.EFCore
+{
+    public abstract class EfPagingProvider<TEntity,TDto> : IPagingProvider<TDto>
+        where TEntity : class
+    {
+        private readonly DbContext _db;
+        protected EfPagingProvider(DbContext db) => _db = db;
+
+        /// <summary>
+        /// Start query here (Include joins as needed).
+        /// </summary>
+        protected abstract IQueryable<TEntity> BaseQuery { get; }
+
+        /// <summary>
+        /// How to shape your DTO from the entity.
+        /// </summary>
+        protected abstract Expression<Func<TEntity,TDto>> Selector { get; }
+
+        public async Task<PagedResult<TDto>> GetPageAsync(PagedRequest req, CancellationToken ct = default)
+        {
+            var q = BaseQuery;
+
+            if (req.Filters != null)
+                foreach (var kv in req.Filters)
+                    q = q.Where($"{kv.Key} == @0", kv.Value);
+
+            var total = await q.CountAsync(ct);
+
+            var order = $"{req.SortBy}{(req.SortDescending ? " descending" : "")}";
+            q = q.OrderBy(order);
+
+            var items = await q
+                .Skip((req.PageNumber - 1) * req.PageSize)
+                .Take(req.PageSize)
+                .Select(Selector)
+                .ToListAsync(ct);
+
+            return new PagedResult<TDto>(items, total, req.PageNumber, req.PageSize);
+        }
+    }
+}
+
+
+
+using System.Linq;
+using System.Reflection;
+using Microsoft.Extensions.DependencyInjection;
+using Paging.Contracts;
+
+namespace Paging.Extensions
+{
+    public static class ServiceCollectionExtensions
+    {
+        public static IServiceCollection AddPagingProviders(this IServiceCollection services, params Assembly[] assemblies)
+        {
+            var providerType = typeof(IPagingProvider<>);
+            var types = assemblies
+              .SelectMany(a => a.GetTypes())
+              .Where(t => !t.IsAbstract && !t.IsInterface)
+              .SelectMany(t => t.GetInterfaces(), (t,i) => new { t, i })
+              .Where(x => x.i.IsGenericType && x.i.GetGenericTypeDefinition() == providerType);
+
+            foreach (var x in types)
+                services.AddScoped(x.i, x.t);
+
+            return services;
+        }
+    }
 }
