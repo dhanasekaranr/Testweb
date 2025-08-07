@@ -1,101 +1,292 @@
-how this Expected ROI of 500K can be justified ?? Expected ROI
-* Cost Savings: $500K annually in reduced search time
-* Efficiency Gains: 25% faster problem resolution
-* Onboarding Time: 50% reduction for new employees
-* Knowledge Retention: Reduced dependency on subject matter experts
+// Models/UIFieldFilter.cs
+public enum FilterOperator { Equals, Contains, GreaterThan, LessThan }
 
-Edit
-You're right to question this - ROI justification needs solid data backing. Let me break down how to calculate and justify a $500K annual ROI with realistic assumptions:
-
-ROI Calculation Framework
-1. Time-Based Cost Savings
-Search Time Reduction:
-
-Current State Analysis:
-- 100 employees spend average 2 hours/day searching for information
-- Average fully-loaded salary: $100K ($48/hour)
-- Annual search cost: 100 × 2 × 250 days × $48 = $2.4M
-
-Target Improvement:
-- AI system reduces search time by 60% (from 2 hours to 45 minutes)
-- Annual savings: 100 × 1.25 hours × 250 days × $48 = $1.5M
-- Net savings: $1.5M (this is conservative at $500K)
-Problem Resolution Efficiency:
-
-Current State:
-- 20 critical issues/month taking average 8 hours to resolve
-- Resolution involves 3 people average ($48/hour each)
-- Monthly cost: 20 × 8 × 3 × $48 = $23K/month = $276K/year
-
-With AI System (25% faster):
-- Same issues resolved in 6 hours
-- Monthly cost: 20 × 6 × 3 × $48 = $17.3K/month = $208K/year
-- Annual savings: $68K
-2. Onboarding Cost Reduction
-Current Onboarding:
-- 24 new hires/year (auto lending industry ~20% turnover)
-- 3 months to full productivity
-- During ramp-up: 50% productivity loss = $25K per person
-- Annual onboarding productivity loss: 24 × $25K = $600K
-
-With AI System (50% faster onboarding):
-- 1.5 months to full productivity
-- Productivity loss reduced to $12.5K per person
-- Annual loss: 24 × $12.5K = $300K
-- Savings: $300K
-3. SME Dependency Reduction
-Subject Matter Expert Time:
-- 5 SMEs spending 30% of time answering questions
-- SME average salary: $120K ($58/hour)
-- Annual SME consultation cost: 5 × 0.3 × 2000 hours × $58 = $174K
-
-With AI System:
-- 70% of questions answered by AI, reducing SME burden to 10%
-- Annual SME cost: 5 × 0.1 × 2000 hours × $58 = $58K
-- Savings: $116K
-Conservative ROI Breakdown
-
-AI Knowledge Base ROI Justification Model
-Document 
-How to Make This Credible:
-1. Conduct Pre-Implementation Data Collection
-bash
-# 2-week time tracking study
-- Deploy time tracking tools (RescueTime, Toggl)
-- Survey 20-30 employees across departments
-- Analyze JIRA/ServiceNow ticket resolution times
-- Review current search patterns in Confluence/SharePoint
-2. Use Industry Benchmarks
-Search time: Studies show knowledge workers spend 19% of time searching (IBM study)
-Problem resolution: Average 40-60% improvement with AI-assisted systems
-Onboarding: 30-50% faster time-to-productivity is realistic with good knowledge systems
-3. Start with Pilot Metrics
-Pilot Program (3 months, 20 users):
-- Measure actual time savings
-- Track user satisfaction
-- Document specific use cases
-- Validate cost assumptions
-4. Risk-Adjusted ROI
-Apply 50% confidence factor to aggressive estimates
-Account for adoption curve (80% adoption in year 1)
-Include learning curve impacts (15% efficiency loss initially)
-The key is: Start with a pilot, measure real results, then scale the proven benefits. Your $500K ROI is achievable but needs to be backed by actual data from your specific organization and use cases.
-
-Would you like me to help you design a measurement framework or create a pilot program plan to validate these assumptions?
+public class UIFieldFilter
+{
+    public string         Field    { get; set; } = null!;
+    public FilterOperator Operator { get; set; }
+    public object?        Value    { get; set; }
+}
 
 
+// Models/UIPageDTO.cs
+public class UIPageDTO
+{
+    public int                 PageNumber { get; set; } = 1;
+    public int                 PageSize   { get; set; } = 20;
+    public string?             SortBy     { get; set; }
+    public bool                SortDesc   { get; set; }
+    public List<UIFieldFilter> Filters    { get; } = new();
+}
 
 
+// Models/ProductUIPageDTO.cs
+public class ProductUIPageDTO : UIPageDTO
+{
+    public int?    Id               { get; set; }
+    public string? Desc             { get; set; }
+    public string? Code             { get; set; }
+    public string? CreatedDtPattern { get; set; }
+}
 
 
-Here's a concise one-minute overview of this AI knowledge base proposal:
-Our organization faces a critical information accessibility challenge. Knowledge is fragmented across multiple systems, creating inefficiencies that slow down decision-making, complicate onboarding, and burden teams with manual searches through scattered documentation and databases.
-The proposed solution is an AI-powered knowledge base that centralizes everything into one intelligent system. Using Large Language Models like Mistral or LLaMA combined with Retrieval-Augmented Generation architecture, this platform will instantly serve contextual answers about business rules, technical documentation, project information, and operational data.
-The system operates entirely on-premises for security, utilizing a vector database to store embedded knowledge representations from multiple sources - PDFs, documents, Jira tickets, BitBucket repositories, and PI planning data. Instead of hunting through various systems, team members simply ask questions in natural language and receive accurate, contextual responses immediately.
-Key benefits include dramatically reduced search time, consistent information delivery across teams, streamlined onboarding processes, and enhanced productivity during project planning and development cycles. The RAG architecture ensures responses are both accurate and grounded in actual organizational knowledge rather than generic AI outputs.
-This isn't just about storing information - it's about transforming how we access and utilize our collective organizational intelligence, making every team member more efficient and informed in their daily work.RetryDreduce it a bitEditHere's a streamlined 45-second overview:
-Our organization struggles with fragmented knowledge across multiple systems, making information searches time-consuming and onboarding complex. Teams waste valuable time hunting through scattered documents, databases, and repositories.
-The proposed solution is an AI-powered knowledge base using Large Language Models and Retrieval-Augmented Generation. This on-premises system centralizes all organizational knowledge - business rules, technical docs, Jira tickets, BitBucket repos, and project data - into one intelligent platform.
-Team members simply ask questions in natural language and receive instant, accurate answers. The system uses vector databases to store embedded knowledge representations, ensuring responses are grounded in actual organizational data rather than generic AI outputs.
-Key benefits include dramatically reduced search time, consistent information delivery, streamlined onboarding, and enhanced productivity during development cycles. Instead of manually searching multiple systems, teams get contextual answers immediately.
-This transforms how we access our collective intelligence, making every team member more efficient and better informed in their daily work.
+// Models/ProductDTO.cs
+public class ProductDTO
+{
+    public int      Id          { get; set; }
+    public string   Name        { get; set; } = null!;
+    public string   SpecialCode { get; set; } = null!;
+    public DateTime NoteDt      { get; set; }
+}
+
+
+// Models/PagedResult.cs
+public record PagedResult<T>(
+    IReadOnlyList<T> Items,
+    int TotalCount,
+    int PageNumber,
+    int PageSize
+)
+{
+    public int TotalPages => (int)Math.Ceiling(TotalCount / (double)PageSize);
+}
+
+
+// Mapping/MappingProfile.cs
+using AutoMapper;
+
+public class MappingProfile : Profile
+{
+    public MappingProfile()
+    {
+        // Populate filters in UIPageDTO
+        CreateMap<ProductUIPageDTO, UIPageDTO>()
+            .ForMember(d => d.Filters, o => o.Ignore())
+            .AfterMap((src, dest) =>
+            {
+                if (src.Id.HasValue)
+                    dest.Filters.Add(new UIFieldFilter {
+                        Field    = nameof(src.Id),
+                        Operator = FilterOperator.Equals,
+                        Value    = src.Id.Value
+                    });
+                if (!string.IsNullOrWhiteSpace(src.Desc))
+                    dest.Filters.Add(new UIFieldFilter {
+                        Field    = nameof(src.Desc),
+                        Operator = FilterOperator.Contains,
+                        Value    = src.Desc!
+                    });
+                if (!string.IsNullOrWhiteSpace(src.Code))
+                    dest.Filters.Add(new UIFieldFilter {
+                        Field    = nameof(src.Code),
+                        Operator = FilterOperator.Equals,
+                        Value    = src.Code!
+                    });
+                if (!string.IsNullOrWhiteSpace(src.CreatedDtPattern))
+                    dest.Filters.Add(new UIFieldFilter {
+                        Field    = nameof(src.CreatedDtPattern),
+                        Operator = FilterOperator.Contains,
+                        Value    = src.CreatedDtPattern!
+                    });
+            });
+
+        // Map UI → Dapper DTO (NoteDt ignored)
+        CreateMap<ProductUIPageDTO, ProductDTO>()
+            .ForMember(d => d.Id,          o => o.MapFrom(s => s.Id ?? 0))
+            .ForMember(d => d.Name,        o => o.MapFrom(s => s.Desc!))
+            .ForMember(d => d.SpecialCode, o => o.MapFrom(s => s.Code!))
+            .ForMember(d => d.NoteDt,      o => o.Ignore());
+    }
+}
+
+
+// Services/DapperFilterBuilder.cs
+using Dapper;
+using AutoMapper;
+using System.Text;
+
+public class DapperFilterBuilder
+{
+    private readonly IReadOnlyDictionary<string,string> _columnMap;
+    private readonly HashSet<string>                   _dateColumns;
+
+    public DapperFilterBuilder(IConfigurationProvider mapperConfig)
+    {
+        var typeMap = mapperConfig.FindTypeMapFor<ProductUIPageDTO, ProductDTO>()!;
+
+        _columnMap = typeMap.PropertyMaps
+            .Where(pm => pm.SourceMember != null && pm.DestinationMember != null)
+            .ToDictionary(
+                pm => pm.SourceMember!.Name,
+                pm => pm.DestinationMember!.Name,
+                StringComparer.OrdinalIgnoreCase
+            );
+
+        _dateColumns = typeMap.PropertyMaps
+            .Where(pm =>
+                pm.DestinationType == typeof(DateTime) ||
+                pm.DestinationType == typeof(DateTime?)
+            )
+            .Select(pm => pm.DestinationMember!.Name)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    public (string whereClause, DynamicParameters parameters)
+      BuildSql(IEnumerable<UIFieldFilter> filters)
+    {
+        var sb = new StringBuilder("1=1");
+        var dp = new DynamicParameters();
+        int idx = 0;
+
+        foreach (var f in filters)
+        {
+            var column = _columnMap.TryGetValue(f.Field, out var real)
+                         ? real
+                         : f.Field;
+            var param  = $":p{idx}";
+
+            if (f.Operator == FilterOperator.Contains
+                && f.Value is string str
+                && _dateColumns.Contains(column))
+            {
+                sb.Append($" AND TO_CHAR({column}, 'YYYY/MM/DD') LIKE {param}");
+                dp.Add($"p{idx}", $"%{str}%");
+                idx++;
+                continue;
+            }
+
+            sb.Append($" AND {column} ");
+            switch (f.Operator)
+            {
+                case FilterOperator.Equals:
+                    sb.Append($"= {param}");
+                    dp.Add($"p{idx}", f.Value);
+                    idx++;
+                    break;
+
+                case FilterOperator.Contains:
+                    sb.Append($"LIKE {param}");
+                    dp.Add($"p{idx}", $"%{f.Value}%");
+                    idx++;
+                    break;
+
+                case FilterOperator.GreaterThan:
+                    sb.Append($"> {param}");
+                    dp.Add($"p{idx}", f.Value);
+                    idx++;
+                    break;
+
+                case FilterOperator.LessThan:
+                    sb.Append($"< {param}");
+                    dp.Add($"p{idx}", f.Value);
+                    idx++;
+                    break;
+            }
+        }
+
+        return (sb.ToString(), dp);
+    }
+}
+
+
+// Services/DapperPagingService.cs
+using Dapper;
+using System.Data;
+
+public class DapperPagingService<TDto>
+{
+    private readonly IDbConnection       _conn;
+    private readonly DapperFilterBuilder _filterBuilder;
+    private readonly string              _tableName;
+
+    public DapperPagingService(
+        IDbConnection conn,
+        DapperFilterBuilder filterBuilder,
+        string tableName)
+    {
+        _conn          = conn;
+        _filterBuilder = filterBuilder;
+        _tableName     = tableName;
+    }
+
+    public async Task<PagedResult<TDto>> GetPagedAsync(UIPageDTO request)
+    {
+        var (where, dp) = _filterBuilder.BuildSql(request.Filters);
+
+        var sql = $@"
+            SELECT COUNT(1)
+              FROM {_tableName}
+             WHERE {where};
+
+            SELECT *
+              FROM {_tableName}
+             WHERE {where}
+             ORDER BY {(string.IsNullOrEmpty(request.SortBy) ? "Id" : request.SortBy)}
+                     {(request.SortDesc ? "DESC" : "ASC")}
+             OFFSET {(request.PageNumber-1)*request.PageSize} ROWS
+             FETCH NEXT {request.PageSize} ROWS ONLY;";
+
+        using var multi = await _conn.QueryMultipleAsync(sql, dp);
+        var total = await multi.ReadFirstAsync<int>();
+        var items = (await multi.ReadAsync<TDto>()).ToList();
+
+        return new PagedResult<TDto>(items, total, request.PageNumber, request.PageSize);
+    }
+}
+
+
+// Program.cs
+using AutoMapper;
+using System.Data;
+using Oracle.ManagedDataAccess.Client;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// AutoMapper
+builder.Services.AddAutoMapper(typeof(MappingProfile));
+
+// Temp SP to get mapper config
+var spTemp       = builder.Services.BuildServiceProvider();
+var mapperConfig = spTemp.GetRequiredService<IConfigurationProvider>();
+
+// Filter builder
+builder.Services.AddSingleton(new DapperFilterBuilder(mapperConfig));
+
+// IDbConnection
+builder.Services.AddScoped<IDbConnection>(sp =>
+    new OracleConnection(builder.Configuration.GetConnectionString("Default")));
+
+// Paging service
+builder.Services.AddScoped(sp =>
+    new DapperPagingService<ProductDTO>(
+        sp.GetRequiredService<IDbConnection>(),
+        sp.GetRequiredService<DapperFilterBuilder>(),
+        tableName: "Products"
+    )
+);
+
+builder.Services.AddControllers();
+var app = builder.Build();
+app.MapControllers();
+app.Run();
+
+
+// Controllers/ProductsController.cs
+using Microsoft.AspNetCore.Mvc;
+
+[ApiController]
+[Route("api/[controller]")]
+public class ProductsController : ControllerBase
+{
+    private readonly DapperPagingService<ProductDTO> _paging;
+
+    public ProductsController(DapperPagingService<ProductDTO> paging)
+        => _paging = paging;
+
+    [HttpGet]
+    public async Task<ActionResult<PagedResult<ProductDTO>>> Get([FromQuery] ProductUIPageDTO ui)
+    {
+        var result = await _paging.GetPagedAsync(ui);
+        return Ok(result);
+    }
+}
