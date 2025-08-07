@@ -290,3 +290,195 @@ public class ProductsController : ControllerBase
         return Ok(result);
     }
 }
+
+
+
+
+
+
+
+
+
+// models/filter.model.ts
+export enum FilterOperator {
+  Equals      = 'Equals',
+  Contains    = 'Contains',
+  GreaterThan = 'GreaterThan',
+  LessThan    = 'LessThan'
+}
+
+export interface UIFieldFilter {
+  field: string;
+  operator: FilterOperator;
+  value: any;
+}
+
+export interface UIPageDTO {
+  pageNumber: number;
+  pageSize:   number;
+  sortBy?:    string;
+  sortDesc?:  boolean;
+  filters:    UIFieldFilter[];
+}
+
+// product-pagination.service.ts
+import { Injectable } from '@angular/core';
+import { HttpClient, HttpParams } from '@angular/common/http';
+import { Observable } from 'rxjs';
+import { UIPageDTO, UIFieldFilter, FilterOperator } from './models/filter.model';
+import { PagedResult } from './models/paged-result.model';
+
+@Injectable({ providedIn: 'root' })
+export class ProductPaginationService {
+  constructor(private http: HttpClient) {}
+
+  getProducts(dto: UIPageDTO): Observable<PagedResult<any>> {
+    let params = new HttpParams()
+      .set('pageNumber', dto.pageNumber.toString())
+      .set('pageSize', dto.pageSize.toString());
+    if (dto.sortBy) {
+      params = params.set('sortBy', dto.sortBy)
+                     .set('sortDesc', String(dto.sortDesc));
+    }
+    dto.filters.forEach((f, i) => {
+      params = params
+        .set(`filters[${i}].field`, f.field)
+        .set(`filters[${i}].operator`, f.operator)
+        .set(`filters[${i}].value`, String(f.value));
+    });
+    return this.http.get<PagedResult<any>>('/api/products', { params });
+  }
+}
+
+// app-product-table.component.ts  (child)
+import { AfterViewInit, Component, ElementRef, EventEmitter, Input, Output, ViewChild } from '@angular/core';
+import { fromEvent, merge } from 'rxjs';
+import { debounceTime, distinctUntilChanged, map, startWith, switchMap, tap } from 'rxjs/operators';
+import { UIPageDTO, UIFieldFilter, FilterOperator, ProductDTO, PagedResult } from './models/filter.model';
+import { MatPaginator } from '@angular/material/paginator';
+import { MatSort }      from '@angular/material/sort';
+
+@Component({
+  selector: 'app-product-table',
+  templateUrl: './app-product-table.component.html'
+})
+export class AppProductTableComponent implements AfterViewInit {
+  @Input() data: ProductDTO[] = [];
+  @Input() total = 0;
+  @Input() pageSize = 20;
+  @Input() pageIndex = 0;
+  @Input() sortActive = '';
+  @Input() sortDir: 'asc' | 'desc' = 'asc';
+
+  @Output() pageChange      = new EventEmitter<{page: number; size: number}>();
+  @Output() sortChange      = new EventEmitter<{active: string; direction: string}>();
+  @Output() filterChange    = new EventEmitter<UIFieldFilter[]>();
+
+  @ViewChild(MatPaginator) paginator!: MatPaginator;
+  @ViewChild(MatSort)      sort!: MatSort;
+  @ViewChild('createdDtInput', { read: ElementRef }) createdDtInput!: ElementRef;
+
+  private columnFilters: Record<string,string> = {};
+
+  ngAfterViewInit(): void {
+    // page event
+    this.paginator.page.pipe(
+      tap(e => this.pageChange.emit({ page: e.pageIndex + 1, size: e.pageSize }))
+    ).subscribe();
+    // sort event
+    this.sort.sortChange.pipe(
+      tap(e => { this.paginator.pageIndex = 0; this.sortChange.emit({ active: e.active, direction: e.direction }); })
+    ).subscribe();
+    // filter event
+    const dateKeydown$ = fromEvent<KeyboardEvent>(this.createdDtInput.nativeElement,'keydown').pipe(
+      map(() => this.createdDtInput.nativeElement.value.trim()),
+      debounceTime(300),
+      distinctUntilChanged(),
+      tap(value => {
+        this.paginator.pageIndex = 0;
+        if (value) this.columnFilters['CreatedDtPattern'] = value;
+        else delete this.columnFilters['CreatedDtPattern'];
+        const filters: UIFieldFilter[] = [];
+        Object.entries(this.columnFilters).forEach(([field, val]) => {
+          filters.push({ field, operator: FilterOperator.Contains, value: val });
+        });
+        this.filterChange.emit(filters);
+      })
+    );
+
+    merge(
+      dateKeydown$.pipe(tap()),
+      this.paginator.page.pipe(startWith(null)),
+      this.sort.sortChange.pipe(startWith(null))
+    ).subscribe();
+  }
+}
+
+// app-main-table.component.ts  (parent)
+import { Component, OnInit } from '@angular/core';
+import { ProductPaginationService } from './product-pagination.service';
+import { UIFieldFilter, UIPageDTO, FilterOperator } from './models/filter.model';
+
+@Component({
+  selector: 'app-main-table',
+  template: `
+    <app-product-table
+      [data]="data"
+      [total]="total"
+      [pageSize]="pageSize"
+      [pageIndex]="pageIndex"
+      [sortActive]="sortActive"
+      [sortDir]="sortDir"
+      (pageChange)="onPage($event)"
+      (sortChange)="onSort($event)"
+      (filterChange)="onFilter($event)">
+    </app-product-table>
+  `
+})
+export class AppMainTableComponent implements OnInit {
+  data: any[] = [];
+  total = 0;
+  pageSize = 20;
+  pageIndex = 1;
+  sortActive = '';
+  sortDir: 'asc'|'desc' = 'asc';
+  private filters: UIFieldFilter[] = [];
+
+  constructor(private service: ProductPaginationService) {}
+
+  ngOnInit() {
+    this.load();
+  }
+
+  onPage(event: {page: number; size: number}) {
+    this.pageIndex = event.page;
+    this.pageSize  = event.size;
+    this.load();
+  }
+
+  onSort(event: {active: string; direction: string}) {
+    this.sortActive = event.active;
+    this.sortDir    = event.direction as 'asc'|'desc';
+    this.load();
+  }
+
+  onFilter(filters: UIFieldFilter[]) {
+    this.filters = filters;
+    this.pageIndex = 1;
+    this.load();
+  }
+
+  private load() {
+    const dto: UIPageDTO = {
+      pageNumber: this.pageIndex,
+      pageSize:   this.pageSize,
+      sortBy:     this.sortActive,
+      sortDesc:   this.sortDir === 'desc',
+      filters:    this.filters
+    };
+    this.service.getProducts(dto).subscribe(res => {
+      this.data  = res.items;
+      this.total = res.totalCount;
+    });
+  }
+}
