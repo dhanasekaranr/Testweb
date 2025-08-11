@@ -1,484 +1,350 @@
-// Models/UIFieldFilter.cs
-public enum FilterOperator { Equals, Contains, GreaterThan, LessThan }
+@use '@angular/material' as mat;
+@use '../variables/colors' as colors;
 
-public class UIFieldFilter
-{
-    public string         Field    { get; set; } = null!;
-    public FilterOperator Operator { get; set; }
-    public object?        Value    { get; set; }
-}
-
-
-// Models/UIPageDTO.cs
-public class UIPageDTO
-{
-    public int                 PageNumber { get; set; } = 1;
-    public int                 PageSize   { get; set; } = 20;
-    public string?             SortBy     { get; set; }
-    public bool                SortDesc   { get; set; }
-    public List<UIFieldFilter> Filters    { get; } = new();
-}
-
-
-// Models/ProductUIPageDTO.cs
-public class ProductUIPageDTO : UIPageDTO
-{
-    public int?    Id               { get; set; }
-    public string? Desc             { get; set; }
-    public string? Code             { get; set; }
-    public string? CreatedDtPattern { get; set; }
-}
-
-
-// Models/ProductDTO.cs
-public class ProductDTO
-{
-    public int      Id          { get; set; }
-    public string   Name        { get; set; } = null!;
-    public string   SpecialCode { get; set; } = null!;
-    public DateTime NoteDt      { get; set; }
-}
-
-
-// Models/PagedResult.cs
-public record PagedResult<T>(
-    IReadOnlyList<T> Items,
-    int TotalCount,
-    int PageNumber,
-    int PageSize
-)
-{
-    public int TotalPages => (int)Math.Ceiling(TotalCount / (double)PageSize);
-}
-
-
-// Mapping/MappingProfile.cs
-using AutoMapper;
-
-public class MappingProfile : Profile
-{
-    public MappingProfile()
-    {
-        // Populate filters in UIPageDTO
-        CreateMap<ProductUIPageDTO, UIPageDTO>()
-            .ForMember(d => d.Filters, o => o.Ignore())
-            .AfterMap((src, dest) =>
-            {
-                if (src.Id.HasValue)
-                    dest.Filters.Add(new UIFieldFilter {
-                        Field    = nameof(src.Id),
-                        Operator = FilterOperator.Equals,
-                        Value    = src.Id.Value
-                    });
-                if (!string.IsNullOrWhiteSpace(src.Desc))
-                    dest.Filters.Add(new UIFieldFilter {
-                        Field    = nameof(src.Desc),
-                        Operator = FilterOperator.Contains,
-                        Value    = src.Desc!
-                    });
-                if (!string.IsNullOrWhiteSpace(src.Code))
-                    dest.Filters.Add(new UIFieldFilter {
-                        Field    = nameof(src.Code),
-                        Operator = FilterOperator.Equals,
-                        Value    = src.Code!
-                    });
-                if (!string.IsNullOrWhiteSpace(src.CreatedDtPattern))
-                    dest.Filters.Add(new UIFieldFilter {
-                        Field    = nameof(src.CreatedDtPattern),
-                        Operator = FilterOperator.Contains,
-                        Value    = src.CreatedDtPattern!
-                    });
-            });
-
-        // Map UI → Dapper DTO (NoteDt ignored)
-        CreateMap<ProductUIPageDTO, ProductDTO>()
-            .ForMember(d => d.Id,          o => o.MapFrom(s => s.Id ?? 0))
-            .ForMember(d => d.Name,        o => o.MapFrom(s => s.Desc!))
-            .ForMember(d => d.SpecialCode, o => o.MapFrom(s => s.Code!))
-            .ForMember(d => d.NoteDt,      o => o.Ignore());
-    }
-}
-
-
-// Services/DapperFilterBuilder.cs
-using Dapper;
-using AutoMapper;
-using System.Text;
-
-public class DapperFilterBuilder
-{
-    private readonly IReadOnlyDictionary<string,string> _columnMap;
-    private readonly HashSet<string>                   _dateColumns;
-
-    public DapperFilterBuilder(IConfigurationProvider mapperConfig)
-    {
-        var typeMap = mapperConfig.FindTypeMapFor<ProductUIPageDTO, ProductDTO>()!;
-
-        _columnMap = typeMap.PropertyMaps
-            .Where(pm => pm.SourceMember != null && pm.DestinationMember != null)
-            .ToDictionary(
-                pm => pm.SourceMember!.Name,
-                pm => pm.DestinationMember!.Name,
-                StringComparer.OrdinalIgnoreCase
-            );
-
-        _dateColumns = typeMap.PropertyMaps
-            .Where(pm =>
-                pm.DestinationType == typeof(DateTime) ||
-                pm.DestinationType == typeof(DateTime?)
-            )
-            .Select(pm => pm.DestinationMember!.Name)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-    }
-
-    public (string whereClause, DynamicParameters parameters)
-      BuildSql(IEnumerable<UIFieldFilter> filters)
-    {
-        var sb = new StringBuilder("1=1");
-        var dp = new DynamicParameters();
-        int idx = 0;
-
-        foreach (var f in filters)
-        {
-            var column = _columnMap.TryGetValue(f.Field, out var real)
-                         ? real
-                         : f.Field;
-            var param  = $":p{idx}";
-
-            if (f.Operator == FilterOperator.Contains
-                && f.Value is string str
-                && _dateColumns.Contains(column))
-            {
-                sb.Append($" AND TO_CHAR({column}, 'YYYY/MM/DD') LIKE {param}");
-                dp.Add($"p{idx}", $"%{str}%");
-                idx++;
-                continue;
-            }
-
-            sb.Append($" AND {column} ");
-            switch (f.Operator)
-            {
-                case FilterOperator.Equals:
-                    sb.Append($"= {param}");
-                    dp.Add($"p{idx}", f.Value);
-                    idx++;
-                    break;
-
-                case FilterOperator.Contains:
-                    sb.Append($"LIKE {param}");
-                    dp.Add($"p{idx}", $"%{f.Value}%");
-                    idx++;
-                    break;
-
-                case FilterOperator.GreaterThan:
-                    sb.Append($"> {param}");
-                    dp.Add($"p{idx}", f.Value);
-                    idx++;
-                    break;
-
-                case FilterOperator.LessThan:
-                    sb.Append($"< {param}");
-                    dp.Add($"p{idx}", f.Value);
-                    idx++;
-                    break;
-            }
+// Define Windows Forms style tab theme
+@mixin windows-forms-tabs-theme($theme) {
+  $color-config: mat.get-color-config($theme);
+  $typography-config: mat.get-typography-config($theme);
+  
+  .tab-control {
+    // Override Material tab styles using CSS custom properties
+    --mdc-secondary-navigation-tab-container-height: 32px;
+    --mat-tab-header-label-text-color: #333333;
+    --mat-tab-header-label-text-font: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    --mat-tab-header-label-text-size: 11px;
+    --mat-tab-header-label-text-weight: 400;
+    --mat-tab-header-label-text-line-height: 1;
+    
+    // Active tab colors
+    --mat-tab-header-active-label-text-color: #000000;
+    --mat-tab-header-active-focus-label-text-color: #000000;
+    --mat-tab-header-active-hover-label-text-color: #000000;
+    
+    // Inactive tab colors
+    --mat-tab-header-inactive-label-text-color: #333333;
+    --mat-tab-header-inactive-focus-label-text-color: #333333;
+    --mat-tab-header-inactive-hover-label-text-color: #333333;
+    
+    // Disabled tab colors
+    --mat-tab-header-disabled-label-text-color: #808080;
+    
+    // Remove ink bar and ripples
+    --mat-tab-header-active-ripple-color: transparent;
+    --mat-tab-header-inactive-ripple-color: transparent;
+    
+    mat-tab-group {
+      .mat-mdc-tab-header {
+        background: #f0f0f0;
+        border-bottom: 1px solid #c0c0c0;
+        border-radius: 0;
+        
+        .mat-mdc-tab-header-pagination {
+          display: none;
         }
-
-        return (sb.ToString(), dp);
+        
+        .mat-mdc-tab-list {
+          .mat-mdc-tab {
+            background: linear-gradient(to bottom, #f8f8f8 0%, #e8e8e8 100%);
+            border: 1px solid #c0c0c0;
+            border-bottom: none;
+            border-radius: 4px 4px 0 0;
+            margin-right: 2px;
+            min-width: 120px;
+            position: relative;
+            
+            &:hover {
+              background: linear-gradient(to bottom, #ffffff 0%, #f0f0f0 100%);
+            }
+            
+            &.mdc-tab--active {
+              background: #ffffff;
+              border-bottom: 1px solid #ffffff;
+              z-index: 10;
+              margin-bottom: -1px;
+            }
+            
+            &.mat-mdc-tab-disabled {
+              background: #e8e8e8;
+              border-color: #d0d0d0;
+              opacity: 1;
+            }
+            
+            .mdc-tab__content {
+              padding: 0 16px;
+            }
+            
+            .mdc-tab__text-label {
+              text-transform: none;
+            }
+            
+            // Hide ink bar and ripple
+            .mdc-tab-indicator,
+            .mat-mdc-tab-ripple {
+              display: none;
+            }
+            
+            // 🆕 NEW: Tab icon colors for shared-tab-group
+            .tab-icon {
+              color: var(--mat-tab-header-inactive-label-text-color, #333333);
+            }
+            
+            &.mdc-tab--active .tab-icon {
+              color: var(--mat-tab-header-active-label-text-color, #000000);
+            }
+            
+            &.mat-mdc-tab-disabled .tab-icon {
+              color: var(--mat-tab-header-disabled-label-text-color, #808080);
+            }
+            
+            // Status icon colors
+            .status-icon {
+              &[color="primary"] {
+                color: var(--mat-sys-primary, #{colors.$primary-color}) !important;
+              }
+              &[color="warn"] {
+                color: var(--error-color, #{colors.$error-color}) !important;
+              }
+              &[color="accent"] {
+                color: var(--info-color, #{colors.$info-color}) !important;
+              }
+            }
+          }
+        }
+      }
+      
+      .mat-mdc-tab-body-wrapper {
+        background: #ffffff;
+        border: none;
+        padding: 16px;
+        min-height: 400px;
+      }
     }
+  }
 }
 
-
-// Services/DapperPagingService.cs
-using Dapper;
-using System.Data;
-
-public class DapperPagingService<TDto>
-{
-    private readonly IDbConnection       _conn;
-    private readonly DapperFilterBuilder _filterBuilder;
-    private readonly string              _tableName;
-
-    public DapperPagingService(
-        IDbConnection conn,
-        DapperFilterBuilder filterBuilder,
-        string tableName)
-    {
-        _conn          = conn;
-        _filterBuilder = filterBuilder;
-        _tableName     = tableName;
+// Responsive adjustments
+@mixin windows-forms-tabs-responsive() {
+  @media (max-width: 768px) {
+    .tab-control {
+      mat-tab-group .mat-mdc-tab-header .mat-mdc-tab-list .mat-mdc-tab {
+        min-width: 80px;
+        font-size: 10px;
+      }
     }
+  }
+}
 
-    public async Task<PagedResult<TDto>> GetPagedAsync(UIPageDTO request)
-    {
-        var (where, dp) = _filterBuilder.BuildSql(request.Filters);
 
-        var sql = $@"
-            SELECT COUNT(1)
-              FROM {_tableName}
-             WHERE {where};
 
-            SELECT *
-              FROM {_tableName}
-             WHERE {where}
-             ORDER BY {(string.IsNullOrEmpty(request.SortBy) ? "Id" : request.SortBy)}
-                     {(request.SortDesc ? "DESC" : "ASC")}
-             OFFSET {(request.PageNumber-1)*request.PageSize} ROWS
-             FETCH NEXT {request.PageSize} ROWS ONLY;";
 
-        using var multi = await _conn.QueryMultipleAsync(sql, dp);
-        var total = await multi.ReadFirstAsync<int>();
-        var items = (await multi.ReadAsync<TDto>()).ToList();
 
-        return new PagedResult<TDto>(items, total, request.PageNumber, request.PageSize);
+
+// Complete Tab Group Theme - All-in-One Solution
+// Drop this into your existing theme system
+// Uses your existing SCSS variables from colors.scss
+
+@use 'variables/colors' as colors;
+
+// ============================================================================
+// CSS CUSTOM PROPERTIES BRIDGE (for compatibility with Angular Material)
+// ============================================================================
+:root {
+  // Material 3 System Variables (required by Angular Material tabs)
+  --mat-sys-primary: #{colors.$primary-color};
+  --mat-sys-on-surface: #{colors.$text-primary};
+  --mat-sys-on-surface-variant: #{colors.$text-secondary};
+  --mat-sys-outline-variant: #{colors.$border-light};
+  --mat-sys-surface-1: #{colors.$background-secondary};
+  --mat-sys-surface-variant: #{colors.$background-tertiary};
+  
+  // Custom variables for tab-group component
+  --text-disabled: #{colors.$text-disabled};
+  --text-primary: #{colors.$text-primary};
+  --text-secondary: #{colors.$text-secondary};
+  --warning-color: #{colors.$warning-color};
+  --success-color: #{colors.$success-color};
+  --error-color: #{colors.$error-color};
+  --info-color: #{colors.$info-color};
+  
+  // Material Tab Variables (for active/inactive states and icons)
+  --mat-tab-header-label-text-color: #{colors.$text-primary};
+  --mat-tab-header-active-label-text-color: #{colors.$primary-color};
+  --mat-tab-header-inactive-label-text-color: #{colors.$text-secondary};
+  --mat-tab-header-disabled-label-text-color: #{colors.$text-disabled};
+  --mat-tab-header-active-focus-indicator-color: #{colors.$primary-color};
+  --mat-tab-header-active-ripple-color: #{rgba(colors.$primary-color, 0.1)};
+}
+
+// ============================================================================
+// SHARED TAB GROUP COMPONENT STYLES
+// ============================================================================
+
+// Target both old and new tab-group components
+.app-shared-tab-group,
+.app-tabs-theme {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+
+  // Tab label container
+  .tab-label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+
+    // Disabled tab styles (like sidenav pattern)
+    &.disabled-tab {
+      opacity: 0.6;
+      
+      .tab-icon:not(.info-icon) {
+        color: colors.$text-disabled;
+      }
+      
+      .info-icon {
+        color: colors.$warning-color !important;
+        margin-left: auto;
+        font-size: 18px;
+        width: 18px;
+        height: 18px;
+        pointer-events: auto; // Keep tooltips working on disabled tabs
+      }
     }
-}
+  }
 
+  // Tab icons
+  .tab-icon {
+    font-size: 18px;
+    height: 18px;
+    width: 18px;
+    margin-right: 0.25rem;
+    color: colors.$text-primary;
+  }
 
-// Program.cs
-using AutoMapper;
-using System.Data;
-using Oracle.ManagedDataAccess.Client;
+  // Status icons (check, error, loading, etc.)
+  .status-icon {
+    font-size: 18px;
+    height: 18px;
+    width: 18px;
 
-var builder = WebApplication.CreateBuilder(args);
-
-// AutoMapper
-builder.Services.AddAutoMapper(typeof(MappingProfile));
-
-// Temp SP to get mapper config
-var spTemp       = builder.Services.BuildServiceProvider();
-var mapperConfig = spTemp.GetRequiredService<IConfigurationProvider>();
-
-// Filter builder
-builder.Services.AddSingleton(new DapperFilterBuilder(mapperConfig));
-
-// IDbConnection
-builder.Services.AddScoped<IDbConnection>(sp =>
-    new OracleConnection(builder.Configuration.GetConnectionString("Default")));
-
-// Paging service
-builder.Services.AddScoped(sp =>
-    new DapperPagingService<ProductDTO>(
-        sp.GetRequiredService<IDbConnection>(),
-        sp.GetRequiredService<DapperFilterBuilder>(),
-        tableName: "Products"
-    )
-);
-
-builder.Services.AddControllers();
-var app = builder.Build();
-app.MapControllers();
-app.Run();
-
-
-// Controllers/ProductsController.cs
-using Microsoft.AspNetCore.Mvc;
-
-[ApiController]
-[Route("api/[controller]")]
-public class ProductsController : ControllerBase
-{
-    private readonly DapperPagingService<ProductDTO> _paging;
-
-    public ProductsController(DapperPagingService<ProductDTO> paging)
-        => _paging = paging;
-
-    [HttpGet]
-    public async Task<ActionResult<PagedResult<ProductDTO>>> Get([FromQuery] ProductUIPageDTO ui)
-    {
-        var result = await _paging.GetPagedAsync(ui);
-        return Ok(result);
+    // Color overrides for status icons
+    &[color="primary"] {
+      color: colors.$primary-color !important;
     }
-}
-
-
-
-
-
-
-
-
-
-// models/filter.model.ts
-export enum FilterOperator {
-  Equals      = 'Equals',
-  Contains    = 'Contains',
-  GreaterThan = 'GreaterThan',
-  LessThan    = 'LessThan'
-}
-
-export interface UIFieldFilter {
-  field: string;
-  operator: FilterOperator;
-  value: any;
-}
-
-export interface UIPageDTO {
-  pageNumber: number;
-  pageSize:   number;
-  sortBy?:    string;
-  sortDesc?:  boolean;
-  filters:    UIFieldFilter[];
-}
-
-// product-pagination.service.ts
-import { Injectable } from '@angular/core';
-import { HttpClient, HttpParams } from '@angular/common/http';
-import { Observable } from 'rxjs';
-import { UIPageDTO, UIFieldFilter, FilterOperator } from './models/filter.model';
-import { PagedResult } from './models/paged-result.model';
-
-@Injectable({ providedIn: 'root' })
-export class ProductPaginationService {
-  constructor(private http: HttpClient) {}
-
-  getProducts(dto: UIPageDTO): Observable<PagedResult<any>> {
-    let params = new HttpParams()
-      .set('pageNumber', dto.pageNumber.toString())
-      .set('pageSize', dto.pageSize.toString());
-    if (dto.sortBy) {
-      params = params.set('sortBy', dto.sortBy)
-                     .set('sortDesc', String(dto.sortDesc));
+    &[color="warn"] {
+      color: colors.$error-color !important;
     }
-    dto.filters.forEach((f, i) => {
-      params = params
-        .set(`filters[${i}].field`, f.field)
-        .set(`filters[${i}].operator`, f.operator)
-        .set(`filters[${i}].value`, String(f.value));
-    });
-    return this.http.get<PagedResult<any>>('/api/products', { params });
+    &[color="accent"] {
+      color: colors.$info-color !important;
+    }
+  }
+
+  // Per-tab action buttons
+  .per-tab-actions {
+    display: flex;
+    gap: 0.5rem;
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid colors.$border-light;
+    background: colors.$background-secondary;
+  }
+
+  // Loading spinner container
+  .spinner-wrap {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    justify-content: center;
+    height: 240px;
+  }
+
+  // Global action buttons
+  .global-actions {
+    display: flex;
+    gap: 0.5rem;
+    justify-content: flex-end;
+    padding: 0.5rem 1rem;
+    border-top: 1px solid colors.$border-light;
+    background: colors.$background-secondary;
   }
 }
 
-// app-product-table.component.ts  (child)
-import { AfterViewInit, Component, ElementRef, EventEmitter, Input, Output, ViewChild } from '@angular/core';
-import { fromEvent, merge } from 'rxjs';
-import { debounceTime, distinctUntilChanged, map, startWith, switchMap, tap } from 'rxjs/operators';
-import { UIPageDTO, UIFieldFilter, FilterOperator, ProductDTO, PagedResult } from './models/filter.model';
-import { MatPaginator } from '@angular/material/paginator';
-import { MatSort }      from '@angular/material/sort';
+// ============================================================================
+// MATERIAL TABS OVERRIDES (for proper icon colors)
+// ============================================================================
 
-@Component({
-  selector: 'app-product-table',
-  templateUrl: './app-product-table.component.html'
-})
-export class AppProductTableComponent implements AfterViewInit {
-  @Input() data: ProductDTO[] = [];
-  @Input() total = 0;
-  @Input() pageSize = 20;
-  @Input() pageIndex = 0;
-  @Input() sortActive = '';
-  @Input() sortDir: 'asc' | 'desc' = 'asc';
-
-  @Output() pageChange      = new EventEmitter<{page: number; size: number}>();
-  @Output() sortChange      = new EventEmitter<{active: string; direction: string}>();
-  @Output() filterChange    = new EventEmitter<UIFieldFilter[]>();
-
-  @ViewChild(MatPaginator) paginator!: MatPaginator;
-  @ViewChild(MatSort)      sort!: MatSort;
-  @ViewChild('createdDtInput', { read: ElementRef }) createdDtInput!: ElementRef;
-
-  private columnFilters: Record<string,string> = {};
-
-  ngAfterViewInit(): void {
-    // page event
-    this.paginator.page.pipe(
-      tap(e => this.pageChange.emit({ page: e.pageIndex + 1, size: e.pageSize }))
-    ).subscribe();
-    // sort event
-    this.sort.sortChange.pipe(
-      tap(e => { this.paginator.pageIndex = 0; this.sortChange.emit({ active: e.active, direction: e.direction }); })
-    ).subscribe();
-    // filter event
-    const dateKeydown$ = fromEvent<KeyboardEvent>(this.createdDtInput.nativeElement,'keydown').pipe(
-      map(() => this.createdDtInput.nativeElement.value.trim()),
-      debounceTime(300),
-      distinctUntilChanged(),
-      tap(value => {
-        this.paginator.pageIndex = 0;
-        if (value) this.columnFilters['CreatedDtPattern'] = value;
-        else delete this.columnFilters['CreatedDtPattern'];
-        const filters: UIFieldFilter[] = [];
-        Object.entries(this.columnFilters).forEach(([field, val]) => {
-          filters.push({ field, operator: FilterOperator.Contains, value: val });
-        });
-        this.filterChange.emit(filters);
-      })
-    );
-
-    merge(
-      dateKeydown$.pipe(tap()),
-      this.paginator.page.pipe(startWith(null)),
-      this.sort.sortChange.pipe(startWith(null))
-    ).subscribe();
+mat-tab-group {
+  .mat-mdc-tab-header {
+    .mat-mdc-tab-list {
+      .mat-mdc-tab {
+        // Tab icon colors for active/inactive states
+        .tab-icon {
+          color: colors.$text-secondary;
+          transition: color 0.2s ease;
+        }
+        
+        // Active tab icon color
+        &.mdc-tab--active .tab-icon {
+          color: colors.$primary-color;
+        }
+        
+        // Disabled tab icon color
+        &.mat-mdc-tab-disabled .tab-icon {
+          color: colors.$text-disabled;
+        }
+        
+        // Hover state
+        &:hover:not(.mat-mdc-tab-disabled) .tab-icon {
+          color: colors.$primary-color;
+        }
+        
+        // Status icon colors within tabs
+        .status-icon {
+          &[color="primary"] {
+            color: colors.$success-color !important;
+          }
+          &[color="warn"] {
+            color: colors.$error-color !important;
+          }
+          &[color="accent"] {
+            color: colors.$info-color !important;
+          }
+        }
+      }
+    }
   }
 }
 
-// app-main-table.component.ts  (parent)
-import { Component, OnInit } from '@angular/core';
-import { ProductPaginationService } from './product-pagination.service';
-import { UIFieldFilter, UIPageDTO, FilterOperator } from './models/filter.model';
+// ============================================================================
+// TOOLTIP ENHANCEMENTS
+// ============================================================================
 
-@Component({
-  selector: 'app-main-table',
-  template: `
-    <app-product-table
-      [data]="data"
-      [total]="total"
-      [pageSize]="pageSize"
-      [pageIndex]="pageIndex"
-      [sortActive]="sortActive"
-      [sortDir]="sortDir"
-      (pageChange)="onPage($event)"
-      (sortChange)="onSort($event)"
-      (filterChange)="onFilter($event)">
-    </app-product-table>
-  `
-})
-export class AppMainTableComponent implements OnInit {
-  data: any[] = [];
-  total = 0;
-  pageSize = 20;
-  pageIndex = 1;
-  sortActive = '';
-  sortDir: 'asc'|'desc' = 'asc';
-  private filters: UIFieldFilter[] = [];
+// Ensure tooltips work on disabled elements
+.mat-mdc-tooltip {
+  font-size: 12px;
+  max-width: 300px;
+}
 
-  constructor(private service: ProductPaginationService) {}
-
-  ngOnInit() {
-    this.load();
-  }
-
-  onPage(event: {page: number; size: number}) {
-    this.pageIndex = event.page;
-    this.pageSize  = event.size;
-    this.load();
-  }
-
-  onSort(event: {active: string; direction: string}) {
-    this.sortActive = event.active;
-    this.sortDir    = event.direction as 'asc'|'desc';
-    this.load();
-  }
-
-  onFilter(filters: UIFieldFilter[]) {
-    this.filters = filters;
-    this.pageIndex = 1;
-    this.load();
-  }
-
-  private load() {
-    const dto: UIPageDTO = {
-      pageNumber: this.pageIndex,
-      pageSize:   this.pageSize,
-      sortBy:     this.sortActive,
-      sortDesc:   this.sortDir === 'desc',
-      filters:    this.filters
-    };
-    this.service.getProducts(dto).subscribe(res => {
-      this.data  = res.items;
-      this.total = res.totalCount;
-    });
+// Info icon specific styling
+.info-icon {
+  cursor: help;
+  opacity: 0.7;
+  
+  &:hover {
+    opacity: 1;
   }
 }
+
+// ============================================================================
+// DARK THEME SUPPORT (optional - uncomment if needed)
+// ============================================================================
+
+/*
+[data-theme="dark"] {
+  --mat-sys-on-surface: #e1e3e1;
+  --mat-sys-on-surface-variant: #c4c7c5;
+  --mat-sys-outline-variant: #44474e;
+  --mat-sys-surface-1: #1d1d1d;
+  --text-disabled: rgba(255, 255, 255, 0.38);
+  --text-primary: #ffffff;
+  --text-secondary: #cccccc;
+}
+*/
