@@ -1,520 +1,62 @@
-# Monitoring Service — Generic Queue — .NET 8 (End‑to‑End)
-
-> Single‑env config (Celestial writes correct values per server). Queue + background dispatcher. Silent failure policy. In‑memory token cache. OBO supported via config switch.
-
----
-
-## File: `appsettings.json`
-
-```jsonc
-{
-  "Monitoring": {
-    "Auth": {
-      "Mode": "client_credentials",          // or "obo"
-      "Issuer": "https://fedsso-dev",
-      "Audience": "monitoring-api-dev",
-      "TokenEndpoint": "https://fedsso-dev/as/token.oauth2",
-      "Scope": "monitoring.read",
-      "ClientId": "monitoring-confidential-client",
-      "ClientSecret": "<INJECTED_BY_CELESTIAL>",
-      "Cache": { "Provider": "Memory", "RefreshSkewSeconds": 300 }
-    },
-    "Queues": { "Capacity": 10000, "MaxRetries": 3, "BaseBackoffMs": 200 },
-    "Api": "https://monitoring.dev.internal"
-  }
-}
-```
-
-> **Secret**: keep value out of git. Celestial should write it on the box or inject via env var `Monitoring__Auth__ClientSecret`.
-
----
-
-## File: `Options/MonitoringOptions.cs`
-
-```csharp
-using System.Collections.Generic;
-
-namespace MyApi.Options;
-
-public sealed class MonitoringOptions
-{
-    public MonitoringAuthOptions Auth { get; set; } = new();
-    public QueueOptions Queues { get; set; } = new();
-    public string Api { get; set; } = string.Empty;
-}
-
-public sealed class MonitoringAuthOptions
-{
-    // "client_credentials" or "obo"
-    public string Mode { get; set; } = "client_credentials";
-    public string Issuer { get; set; } = string.Empty;
-    public string Audience { get; set; } = string.Empty;
-    public string TokenEndpoint { get; set; } = string.Empty;
-    public string Scope { get; set; } = string.Empty;
-    public string ClientId { get; set; } = string.Empty;
-    public string? ClientSecret { get; set; } = null; // injected by Celestial
-    public CacheOptions Cache { get; set; } = new();
-}
-
-public sealed class CacheOptions
-{
-    public string Provider { get; set; } = "Memory"; // future: "Redis"
-    public int RefreshSkewSeconds { get; set; } = 300;
-}
-
-public sealed class QueueOptions
-{
-    public int Capacity { get; set; } = 10000;
-    public int MaxRetries { get; set; } = 3;
-    public int BaseBackoffMs { get; set; } = 200;
-}
-```
-
----
-
-## File: `Shared/Queue.cs` (Generic queue + dispatcher)
-
-```csharp
-using System;
-using System.Threading;
-using System.Threading.Channels;
-using System.Threading.Tasks;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
-using MyApi.Options;
-
-namespace MyApi.Shared;
-
-public interface IBackgroundQueue<T>
-{
-    bool Enqueue(T item);
-    ChannelReader<T> Reader { get; }
-}
-
-public sealed class BackgroundQueue<T> : IBackgroundQueue<T>
-{
-    private readonly Channel<T> _channel;
-
-    public BackgroundQueue(QueueOptions opt)
-    {
-        _channel = Channel.CreateBounded<T>(new BoundedChannelOptions(opt.Capacity)
-        {
-            SingleReader = true,
-            SingleWriter = false,
-            FullMode = BoundedChannelFullMode.DropOldest
-        });
-    }
-
-    public ChannelReader<T> Reader => _channel.Reader;
-    public bool Enqueue(T item) => _channel.Writer.TryWrite(item);
-}
-
-public interface IOutboundSender<T>
-{
-    Task SendAsync(T item, CancellationToken ct);
-}
-
-public sealed class BackgroundDispatcher<T> : BackgroundService
-{
-    private readonly IBackgroundQueue<T> _queue;
-    private readonly IOutboundSender<T> _sender;
-    private readonly QueueOptions _opt;
-    private readonly ILogger<BackgroundDispatcher<T>> _log;
-
-    public BackgroundDispatcher(
-        IBackgroundQueue<T> queue,
-        IOutboundSender<T> sender,
-        QueueOptions opt,
-        ILogger<BackgroundDispatcher<T>> log)
-    {
-        _queue = queue; _sender = sender; _opt = opt; _log = log;
-    }
-
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
-    {
-        await foreach (var item in _queue.Reader.ReadAllAsync(stoppingToken))
-        {
-            var attempt = 0;
-            for (;;)
-            {
-                try { await _sender.SendAsync(item, stoppingToken); break; }
-                catch (Exception ex)
-                {
-                    attempt++;
-                    if (attempt > _opt.MaxRetries)
-                    {
-                        _log.LogError(ex, "Dropped item after {Attempts}", attempt);
-                        break; // swallow permanently (silent policy)
-                    }
-                    var delay = TimeSpan.FromMilliseconds(_opt.BaseBackoffMs * Math.Pow(2, attempt - 1));
-                    _log.LogWarning(ex, "Retry {Attempt} in {Delay}ms", attempt, delay.TotalMilliseconds);
-                    try { await Task.Delay(delay, stoppingToken); } catch { /* ignore */ }
-                }
-            }
-        }
-    }
-}
-```
-
----
-
-## File: `Monitoring/MonitoringEvent.cs`
-
-```csharp
-namespace MyApi.Monitoring;
-
-public sealed record MonitoringEvent(object Payload, string? UserAccessToken, string CorrelationId);
-```
-
----
-
-## File: `Auth/MonitoringTokenProvider.cs` (Cache‑first; OBO or client‑creds)
-
-```csharp
-using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Text;
-using System.Text.Json;
-using System.Threading;
-using System.Threading.Tasks;
-using Microsoft.Extensions.Caching.Distributed;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
-using MyApi.Options;
+using MyApi.Provider.Auth;
+using MyApi.Provider.Options;
+using MyApi.Service.Monitoring;
+using MyApi.Service.Options;
+using MyApi.Service.Shared;
 
-namespace MyApi.Auth;
 
-public interface IMonitoringTokenProvider
+namespace MyApi.Service.Extensions;
+
+
+public static class MonitoringServiceCollectionExtensions
 {
-    Task<string> GetTokenAsync(string? userAccessToken, CancellationToken ct);
-    Task InvalidateAsync(string cacheKey, CancellationToken ct);
-}
-
-public sealed class MonitoringTokenProvider : IMonitoringTokenProvider
+public static IServiceCollection AddMonitoringPipeline(this IServiceCollection services, IConfiguration config)
 {
-    private readonly IDistributedCache _cache;      // in-memory today; Redis later
-    private readonly IHttpClientFactory _http;
-    private readonly MonitoringOptions _opt;
-    private readonly KeyedLock _locks = new();
+// Bind Monitoring section for Service (includes Auth nested options)
+services.AddOptions<MonitoringOptions>()
+.Bind(config.GetSection("Monitoring"))
+.Validate(o => !string.IsNullOrWhiteSpace(o.Api), "Monitoring.Api required")
+.Validate(o => !string.IsNullOrWhiteSpace(o.Auth.ClientId), "Monitoring.Auth.ClientId required")
+.Validate(o => !string.IsNullOrWhiteSpace(o.Auth.ClientSecret), "Monitoring.Auth.ClientSecret required")
+.Validate(o => !string.IsNullOrWhiteSpace(o.Auth.TokenEndpoint), "Monitoring.Auth.TokenEndpoint required")
+.ValidateOnStart();
 
-    public MonitoringTokenProvider(
-        IDistributedCache cache,
-        IHttpClientFactory http,
-        IOptions<MonitoringOptions> opt)
-    {
-        _cache = cache; _http = http; _opt = opt.Value;
-    }
 
-    public async Task<string> GetTokenAsync(string? userAccessToken, CancellationToken ct)
-    {
-        var auth = _opt.Auth;
-        var mode = auth.Mode.ToLowerInvariant();
+// Also bind Provider's Auth options to the same subtree
+services.AddOptions<MonitoringAuthOptions>()
+.Bind(config.GetSection("Monitoring:Auth"))
+.Validate(o => !string.IsNullOrWhiteSpace(o.ClientId), "ClientId required")
+.Validate(o => !string.IsNullOrWhiteSpace(o.ClientSecret), "ClientSecret required")
+.Validate(o => !string.IsNullOrWhiteSpace(o.TokenEndpoint), "TokenEndpoint required")
+.ValidateOnStart();
 
-        var cacheKey = mode == "obo" && !string.IsNullOrEmpty(userAccessToken)
-            ? $"mon:obo:{GetSub(userAccessToken)}"
-            : "mon:app";
 
-        var cached = await _cache.GetStringAsync(cacheKey, ct);
-        if (!string.IsNullOrEmpty(cached)) return cached;
+// Token cache (in-memory now; swap to Redis later without code changes)
+services.AddDistributedMemoryCache();
+services.AddHttpClient();
 
-        using (await _locks.AcquireAsync(cacheKey, ct))
-        {
-            cached = await _cache.GetStringAsync(cacheKey, ct);
-            if (!string.IsNullOrEmpty(cached)) return cached;
 
-            (string token, int expiresIn) = mode == "obo"
-                ? await AcquireOboAsync(userAccessToken!, auth, ct)
-                : await AcquireClientCredsAsync(auth, ct);
-
-            var skew = TimeSpan.FromSeconds(Math.Max(0, auth.Cache.RefreshSkewSeconds));
-            var ttl = TimeSpan.FromSeconds(Math.Max(30, expiresIn)) - skew;
-            if (ttl < TimeSpan.FromSeconds(30)) ttl = TimeSpan.FromSeconds(30);
-
-            await _cache.SetStringAsync(cacheKey, token, new DistributedCacheEntryOptions
-            {
-                AbsoluteExpirationRelativeToNow = ttl
-            }, ct);
-
-            return token;
-        }
-    }
-
-    public Task InvalidateAsync(string cacheKey, CancellationToken ct)
-        => _cache.RemoveAsync(cacheKey, ct);
-
-    private async Task<(string,int)> AcquireClientCredsAsync(MonitoringAuthOptions auth, CancellationToken ct)
-    {
-        var form = new Dictionary<string, string>
-        {
-            ["grant_type"] = "client_credentials",
-            ["client_id"] = auth.ClientId,
-            ["client_secret"] = auth.ClientSecret!, // injected by Celestial
-            ["scope"] = auth.Scope
-            // Some IdPs also accept: ["audience"] = auth.Audience
-        };
-
-        var client = _http.CreateClient();
-        using var req = new HttpRequestMessage(HttpMethod.Post, auth.TokenEndpoint)
-        {
-            Content = new FormUrlEncodedContent(form)
-        };
-        using var res = await client.SendAsync(req, ct);
-        res.EnsureSuccessStatusCode();
-        var json = await res.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: ct);
-        return (json.GetProperty("access_token").GetString()!, json.GetProperty("expires_in").GetInt32());
-    }
-
-    private async Task<(string,int)> AcquireOboAsync(string subjectToken, MonitoringAuthOptions auth, CancellationToken ct)
-    {
-        var form = new Dictionary<string, string>
-        {
-            ["grant_type"] = "urn:ietf:params:oauth:grant-type:token-exchange",
-            ["subject_token_type"] = "urn:ietf:params:oauth:token-type:access_token",
-            ["subject_token"] = subjectToken,
-            ["client_id"] = auth.ClientId,
-            ["client_secret"] = auth.ClientSecret!,
-            ["scope"] = auth.Scope,
-            ["audience"] = auth.Audience
-        };
-
-        var client = _http.CreateClient();
-        using var req = new HttpRequestMessage(HttpMethod.Post, auth.TokenEndpoint)
-        {
-            Content = new FormUrlEncodedContent(form)
-        };
-        using var res = await client.SendAsync(req, ct);
-        res.EnsureSuccessStatusCode();
-        var json = await res.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: ct);
-        return (json.GetProperty("access_token").GetString()!, json.GetProperty("expires_in").GetInt32());
-    }
-
-    private static string GetSub(string jwt)
-    {
-        var payload = jwt.Split('.')[1];
-        var s = payload.Replace('-', '+').Replace('_', '/');
-        switch (s.Length % 4) { case 2: s += "=="; break; case 3: s += "="; break; }
-        var json = JsonSerializer.Deserialize<JsonElement>(Encoding.UTF8.GetString(Convert.FromBase64String(s)));
-        return json.TryGetProperty("sub", out var sub) ? sub.GetString() ?? "anon" : "anon";
-    }
-}
-
-public sealed class KeyedLock
+// Queue + sender + hosted dispatcher
+services.AddSingleton<IBackgroundQueue<MonitoringEvent>>(sp =>
 {
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _locks = new();
-    public async Task<IDisposable> AcquireAsync(string key, CancellationToken ct)
-    {
-        var sem = _locks.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
-        await sem.WaitAsync(ct);
-        return new Releaser(key, sem, _locks);
-    }
-    private sealed class Releaser : IDisposable
-    {
-        private readonly string _key; private readonly SemaphoreSlim _sem; private readonly ConcurrentDictionary<string, SemaphoreSlim> _map;
-        public Releaser(string key, SemaphoreSlim sem, ConcurrentDictionary<string, SemaphoreSlim> map) { _key = key; _sem = sem; _map = map; }
-        public void Dispose() { _sem.Release(); if (_sem.CurrentCount == 1) _map.TryRemove(_key, out _); }
-    }
-}
-```
-
----
-
-## File: `Monitoring/MonitoringSender.cs`
-
-```csharp
-using System;
-using System.Net;
-using System.Net.Http.Headers;
-using System.Net.Http.Json;
-using System.Threading;
-using System.Threading.Tasks;
-using Microsoft.Extensions.Options;
-using MyApi.Auth;
-using MyApi.Options;
-using MyApi.Shared;
-
-namespace MyApi.Monitoring;
-
-public sealed class MonitoringSender : IOutboundSender<MonitoringEvent>
+var qopt = sp.GetRequiredService<IOptions<MonitoringOptions>>().Value.Queues;
+return new BackgroundQueue<MonitoringEvent>(qopt);
+});
+services.AddSingleton<IMonitoringTokenProvider, MonitoringTokenProvider>();
+services.AddSingleton<IOutboundSender<MonitoringEvent>, MonitoringSender>();
+services.AddHostedService(sp =>
 {
-    private readonly IHttpClientFactory _http;
-    private readonly IMonitoringTokenProvider _tokens;
-    private readonly MonitoringOptions _opt;
-
-    public MonitoringSender(
-        IHttpClientFactory http,
-        IMonitoringTokenProvider tokens,
-        IOptions<MonitoringOptions> opt)
-    {
-        _http = http; _tokens = tokens; _opt = opt.Value;
-    }
-
-    public async Task SendAsync(MonitoringEvent evt, CancellationToken ct)
-    {
-        var client = _http.CreateClient();
-        client.BaseAddress = new Uri(_opt.Api);
-
-        var needUser = _opt.Auth.Mode.Equals("obo", StringComparison.OrdinalIgnoreCase);
-        var token = await _tokens.GetTokenAsync(needUser ? evt.UserAccessToken : null, ct);
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
-
-        using var res = await client.PostAsJsonAsync("/events", evt.Payload, ct);
-
-        if (res.StatusCode == HttpStatusCode.Unauthorized)
-        {
-            // force a refresh and throw to trigger dispatcher retry
-            await _tokens.InvalidateAsync(needUser ? $"mon:obo:{evt.UserAccessToken}" : "mon:app", ct);
-            throw new HttpRequestException("401 from Monitoring");
-        }
-
-        if ((int)res.StatusCode >= 500)
-        {
-            throw new HttpRequestException($"5xx from Monitoring: {(int)res.StatusCode}");
-        }
-
-        if (!res.IsSuccessStatusCode)
-        {
-            // 4xx (except 401): log-only; no retry
-            var body = await res.Content.ReadAsStringAsync(ct);
-            Console.WriteLine($"[Monitoring WARN] {(int)res.StatusCode}: {body} (cid={evt.CorrelationId})");
-        }
-    }
-}
-```
-
----
-
-## File: `Controllers/MonitoringController.cs`
-
-```csharp
-using System.Threading.Tasks;
-using Microsoft.AspNetCore.Authentication;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.Extensions.Options;
-using MyApi.Monitoring;
-using MyApi.Options;
-using MyApi.Shared;
-
-namespace MyApi.Controllers;
-
-[ApiController]
-[Route("api/monitoring")]
-public sealed class MonitoringController : ControllerBase
-{
-    private readonly IBackgroundQueue<MonitoringEvent> _queue;
-    private readonly MonitoringOptions _opt;
-    private readonly ILogger<MonitoringController> _log;
-
-    public MonitoringController(
-        IBackgroundQueue<MonitoringEvent> queue,
-        IOptions<MonitoringOptions> opt,
-        ILogger<MonitoringController> log)
-    {
-        _queue = queue; _opt = opt.Value; _log = log;
-    }
-
-    [Authorize] // protect your API
-    [HttpPost("push")]
-    public async Task<IActionResult> PushAsync([FromBody] object payload)
-    {
-        string? userToken = null;
-        if (_opt.Auth.Mode.Equals("obo", StringComparison.OrdinalIgnoreCase))
-        {
-            userToken = await HttpContext.GetTokenAsync("access_token");
-        }
-
-        var cid = HttpContext.TraceIdentifier;
-        if (!_queue.Enqueue(new MonitoringEvent(payload, userToken, cid)))
-        {
-            _log.LogWarning("Monitoring queue full; event dropped. cid={cid}", cid);
-        }
-
-        // silent to client by design
-        return Accepted(new { correlationId = cid });
-    }
-}
-```
-
----
-
-## File: `Program.cs`
-
-```csharp
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.Extensions.Options;
-using MyApi.Auth;
-using MyApi.Monitoring;
-using MyApi.Options;
-using MyApi.Shared;
-
-var builder = WebApplication.CreateBuilder(args);
-
-// Config pipeline (Celestial can write appsettings on the box; env vars still override)
-builder.Configuration
-    .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
-    .AddJsonFile($"appsettings.{builder.Environment.EnvironmentName}.json", optional: true, reloadOnChange: true)
-    .AddEnvironmentVariables();
-
-// Bind + validate MonitoringOptions early
-builder.Services
-    .AddOptions<MonitoringOptions>()
-    .Bind(builder.Configuration.GetSection("Monitoring"))
-    .Validate(o => !string.IsNullOrWhiteSpace(o.Api), "Monitoring.Api required")
-    .Validate(o => !string.IsNullOrWhiteSpace(o.Auth.ClientId), "Monitoring.Auth.ClientId required")
-    .Validate(o => !string.IsNullOrWhiteSpace(o.Auth.ClientSecret), "Monitoring.Auth.ClientSecret required")
-    .Validate(o => !string.IsNullOrWhiteSpace(o.Auth.TokenEndpoint), "Monitoring.Auth.TokenEndpoint required")
-    .ValidateOnStart();
-
-// Cache for downstream tokens (in-memory now; swap to Redis later without code changes)
-builder.Services.AddDistributedMemoryCache();
-
-builder.Services.AddHttpContextAccessor();
-builder.Services.AddHttpClient();
-builder.Services.AddControllers();
-
-// Protect your API itself (set per environment)
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(o =>
-    {
-        o.Authority = "https://fedsso-qa"; // your API's issuer for THIS env
-        o.TokenValidationParameters.ValidateAudience = true;
-        o.TokenValidationParameters.ValidAudience = "your-api";
-    });
-builder.Services.AddAuthorization();
-
-// Monitoring pipeline wiring
-builder.Services.AddSingleton<IBackgroundQueue<MonitoringEvent>>(sp =>
-{
-    var qopt = sp.GetRequiredService<IOptions<MonitoringOptions>>().Value.Queues;
-    return new BackgroundQueue<MonitoringEvent>(qopt);
+var q = sp.GetRequiredService<IBackgroundQueue<MonitoringEvent>>();
+var s = sp.GetRequiredService<IOutboundSender<MonitoringEvent>>();
+var opts = sp.GetRequiredService<IOptions<MonitoringOptions>>().Value.Queues;
+var log = sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<BackgroundDispatcher<MonitoringEvent>>>();
+return new BackgroundDispatcher<MonitoringEvent>(q, s, opts, log);
 });
 
-builder.Services.AddSingleton<IMonitoringTokenProvider, MonitoringTokenProvider>();
-builder.Services.AddSingleton<IOutboundSender<MonitoringEvent>, MonitoringSender>();
-builder.Services.AddHostedService(sp =>
-{
-    var q = sp.GetRequiredService<IBackgroundQueue<MonitoringEvent>>();
-    var s = sp.GetRequiredService<IOutboundSender<MonitoringEvent>>();
-    var opts = sp.GetRequiredService<IOptions<MonitoringOptions>>().Value.Queues;
-    var log = sp.GetRequiredService<ILogger<BackgroundDispatcher<MonitoringEvent>>>();
-    return new BackgroundDispatcher<MonitoringEvent>(q, s, opts, log);
-});
 
-var app = builder.Build();
-
-app.UseRouting();
-app.UseAuthentication();
-app.UseAuthorization();
-app.MapControllers();
-
-app.Run();
-```
-
----
-
-## Quick Notes
-
-* **Swap to Redis later**: replace `AddDistributedMemoryCache()` with `AddStackExchangeRedisCache(...)` and provide a connection string. No changes elsewhere.
-* **OBO vs client-creds**: set `Monitoring:Auth:Mode` to `"obo"` if the monitoring API needs user context; otherwise leave as `"client_credentials"` (faster/simpler).
-* **Silent policy**: controller always returns `202`. Dispatcher retries with backoff, then drops and logs.
-* **Security**: never log `ClientSecret`. Ensure Celestial writes secrets post‑publish with locked perms.
+return services;
+}
+}
