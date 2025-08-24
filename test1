@@ -1,62 +1,631 @@
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Options;
-using MyApi.Provider.Auth;
-using MyApi.Provider.Options;
-using MyApi.Service.Monitoring;
-using MyApi.Service.Options;
-using MyApi.Service.Shared;
+# cvl-text-truncate — Angular 20 reusable truncation (FULL END‑TO‑END CODE)
 
+> Drop these files into your workspace exactly as shown. This includes the utility, pipe, directive, component (with CDK overlay popover), centralized CSS tokens, and a dynamic **mat-table** example that selectively applies truncation to configured columns.
 
-namespace MyApi.Service.Extensions;
+---
 
+## Folder structure
 
-public static class MonitoringServiceCollectionExtensions
-{
-public static IServiceCollection AddMonitoringPipeline(this IServiceCollection services, IConfiguration config)
-{
-// Bind Monitoring section for Service (includes Auth nested options)
-services.AddOptions<MonitoringOptions>()
-.Bind(config.GetSection("Monitoring"))
-.Validate(o => !string.IsNullOrWhiteSpace(o.Api), "Monitoring.Api required")
-.Validate(o => !string.IsNullOrWhiteSpace(o.Auth.ClientId), "Monitoring.Auth.ClientId required")
-.Validate(o => !string.IsNullOrWhiteSpace(o.Auth.ClientSecret), "Monitoring.Auth.ClientSecret required")
-.Validate(o => !string.IsNullOrWhiteSpace(o.Auth.TokenEndpoint), "Monitoring.Auth.TokenEndpoint required")
-.ValidateOnStart();
+```
+libs/ui/cvl-text-truncate/
+├─ src/
+│  ├─ lib/
+│  │  ├─ cvl-text-truncate.component.ts
+│  │  ├─ cvl-text-truncate.component.html
+│  │  ├─ cvl-text-truncate.component.scss
+│  │  ├─ cvl-truncate-text.directive.ts
+│  │  ├─ cvl-truncate.pipe.ts
+│  │  ├─ truncate.util.ts
+│  │  └─ cvl-text-truncate.config.ts
+│  └─ public-api.ts
+└─ README.md (optional)
 
+# Global tokens (import once)
+src/styles/components/_cvl-text-truncate.tokens.scss
+```
 
-// Also bind Provider's Auth options to the same subtree
-services.AddOptions<MonitoringAuthOptions>()
-.Bind(config.GetSection("Monitoring:Auth"))
-.Validate(o => !string.IsNullOrWhiteSpace(o.ClientId), "ClientId required")
-.Validate(o => !string.IsNullOrWhiteSpace(o.ClientSecret), "ClientSecret required")
-.Validate(o => !string.IsNullOrWhiteSpace(o.TokenEndpoint), "TokenEndpoint required")
-.ValidateOnStart();
+---
 
+## Global tokens (single source of truth)
 
-// Token cache (in-memory now; swap to Redis later without code changes)
-services.AddDistributedMemoryCache();
-services.AddHttpClient();
+**`src/styles/components/_cvl-text-truncate.tokens.scss`**
 
+```scss
+:root {
+  /* layout */
+  --cvl-truncate-gap: .25rem;
+  --cvl-truncate-icon-size: 20px;
 
-// Queue + sender + hosted dispatcher
-services.AddSingleton<IBackgroundQueue<MonitoringEvent>>(sp =>
-{
-var qopt = sp.GetRequiredService<IOptions<MonitoringOptions>>().Value.Queues;
-return new BackgroundQueue<MonitoringEvent>(qopt);
-});
-services.AddSingleton<IMonitoringTokenProvider, MonitoringTokenProvider>();
-services.AddSingleton<IOutboundSender<MonitoringEvent>, MonitoringSender>();
-services.AddHostedService(sp =>
-{
-var q = sp.GetRequiredService<IBackgroundQueue<MonitoringEvent>>();
-var s = sp.GetRequiredService<IOutboundSender<MonitoringEvent>>();
-var opts = sp.GetRequiredService<IOptions<MonitoringOptions>>().Value.Queues;
-var log = sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<BackgroundDispatcher<MonitoringEvent>>>();
-return new BackgroundDispatcher<MonitoringEvent>(q, s, opts, log);
-});
+  /* popover sizing (responsive) */
+  --cvl-truncate-popover-max-width: min(92vw, 640px);
+  --cvl-truncate-popover-min-width: auto;         /* e.g., 280px if you want a floor */
+  --cvl-truncate-popover-max-height: min(70vh, 480px);
 
+  /* popover chrome */
+  --cvl-truncate-popover-radius: 12px;
+  --cvl-truncate-popover-shadow: 0 6px 18px rgba(0,0,0,.2);
 
-return services;
+  /* colors hook into your MD3 theme tokens if present */
+  --cvl-truncate-surface: var(--mat-sys-surface, #fff);
+  --cvl-truncate-on-surface: var(--mat-sys-on-surface, #1a1a1a);
 }
+
+/* Overlay panel lives under <body>; keep any base rules global */
+.cvl-text-truncate-popover-panel { max-width: 100vw; }
+```
+
+**Import once in your global `styles.scss` (or theme lib):**
+
+```scss
+@use 'src/styles/components/cvl-text-truncate.tokens';
+```
+
+---
+
+## Library exports
+
+**`libs/ui/cvl-text-truncate/src/public-api.ts`**
+
+```ts
+export * from './lib/cvl-text-truncate.component';
+export * from './lib/cvl-truncate-text.directive';
+export * from './lib/cvl-truncate.pipe';
+export * from './lib/truncate.util';
+export * from './lib/cvl-text-truncate.config';
+```
+
+---
+
+## Truncation util (pure + fast)
+
+**`libs/ui/cvl-text-truncate/src/lib/truncate.util.ts`**
+
+```ts
+export interface TruncateOptions {
+  maxChars?: number;          // default 120
+  preserveWords?: boolean;    // default true
+  ellipsis?: string;          // default '…'
 }
+
+export function truncateText(input: string | null | undefined, opts: TruncateOptions = {}): string {
+  if (!input) return '';
+  const {
+    maxChars = 120,
+    preserveWords = true,
+    ellipsis = '…'
+  } = opts;
+
+    // Guard negative/NaN inputs
+  const limit = Number.isFinite(maxChars) && maxChars! > 0 ? Math.floor(maxChars!) : 120;
+
+  if ((input as string).length <= limit) return input as string;
+
+  let cut = (input as string).slice(0, limit);
+  if (preserveWords) {
+    const lastSpace = cut.lastIndexOf(' ');
+    if (lastSpace > 0) cut = cut.slice(0, lastSpace);
+  }
+  return cut + ellipsis;
+}
+```
+
+---
+
+## Pipe (pure)
+
+**`libs/ui/cvl-text-truncate/src/lib/cvl-truncate.pipe.ts`**
+
+```ts
+import { Pipe, PipeTransform } from '@angular/core';
+import { truncateText, TruncateOptions } from './truncate.util';
+
+@Pipe({
+  name: 'cvlTruncate',
+  standalone: true,
+  pure: true
+})
+export class CvlTruncatePipe implements PipeTransform {
+  transform(value: string | null | undefined, options?: TruncateOptions): string {
+    return truncateText(value, options);
+  }
+}
+```
+
+---
+
+## Directive (lightweight, native tooltip)
+
+**`libs/ui/cvl-text-truncate/src/lib/cvl-truncate-text.directive.ts`**
+
+```ts
+import { Directive, ElementRef, Input, OnChanges, Renderer2, SimpleChanges } from '@angular/core';
+import { truncateText } from './truncate.util';
+
+@Directive({
+  selector: '[cvlTruncateText]',
+  standalone: true
+})
+export class CvlTruncateTextDirective implements OnChanges {
+  @Input('cvlTruncateText') text?: string;
+  @Input() maxChars = 120;
+  @Input() preserveWords = true;
+  @Input() showTooltip = true;
+
+  constructor(private el: ElementRef<HTMLElement>, private r: Renderer2) {}
+
+  ngOnChanges(_: SimpleChanges) {
+    const full = (this.text ?? this.el.nativeElement.innerText ?? '').trim();
+    const truncated = truncateText(full, { maxChars: this.maxChars, preserveWords: this.preserveWords });
+
+    this.r.setProperty(this.el.nativeElement, 'innerText', truncated);
+
+    if (this.showTooltip) {
+      this.r.setAttribute(this.el.nativeElement, 'title', full);
+      this.r.setAttribute(this.el.nativeElement, 'aria-label', full);
+    } else {
+      this.el.nativeElement.removeAttribute('title');
+      this.el.nativeElement.removeAttribute('aria-label');
+    }
+  }
+}
+```
+
+---
+
+## Defaults (behavior, optional but recommended)
+
+**`libs/ui/cvl-text-truncate/src/lib/cvl-text-truncate.config.ts`**
+
+```ts
+import { InjectionToken } from '@angular/core';
+
+export interface CvlTruncateDefaults {
+  maxChars: number;
+  preserveWords: boolean;
+  showTooltip: boolean;
+  showPopoverIcon: boolean;
+}
+
+export const CVL_TRUNCATE_DEFAULTS = new InjectionToken<CvlTruncateDefaults>('CVL_TRUNCATE_DEFAULTS', {
+  factory: () => ({
+    maxChars: 120,
+    preserveWords: true,
+    showTooltip: true,
+    showPopoverIcon: false
+  })
+});
+```
+
+> Provide once (e.g., in `app.config.ts`):
+
+```ts
+{ provide: CVL_TRUNCATE_DEFAULTS, useValue: { maxChars: 120, preserveWords: true, showTooltip: true, showPopoverIcon: false } }
+```
+
+---
+
+## Component (tooltip + optional popover icon)
+
+**`libs/ui/cvl-text-truncate/src/lib/cvl-text-truncate.component.ts`**
+
+```ts
+import { ChangeDetectionStrategy, Component, Inject, Input, computed, signal } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { CvlTruncatePipe } from './cvl-truncate.pipe';
+import { truncateText } from './truncate.util';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { MatIconModule } from '@angular/material/icon';
+import { OverlayModule } from '@angular/cdk/overlay';
+import { Clipboard } from '@angular/cdk/clipboard';
+import { CVL_TRUNCATE_DEFAULTS, CvlTruncateDefaults } from './cvl-text-truncate.config';
+
+@Component({
+  selector: 'cvl-text-truncate',
+  standalone: true,
+  imports: [CommonModule, CvlTruncatePipe, MatTooltipModule, MatIconModule, OverlayModule],
+  templateUrl: './cvl-text-truncate.component.html',
+  styleUrls: ['./cvl-text-truncate.component.scss'],
+  changeDetection: ChangeDetectionStrategy.OnPush,
+  host: { 'class': 'cvl-truncate-host' }
+})
+export class CvlTextTruncateComponent {
+  constructor(
+    private clipboard: Clipboard,
+    @Inject(CVL_TRUNCATE_DEFAULTS) private defaults: CvlTruncateDefaults
+  ) {}
+
+  // Core inputs
+  @Input() text = '';
+
+  private _maxChars?: number;
+  @Input() set maxChars(v: number | undefined) { this._maxChars = v; }
+  get maxChars() { return this._maxChars ?? this.defaults.maxChars; }
+
+  private _preserveWords?: boolean;
+  @Input() set preserveWords(v: boolean | undefined) { this._preserveWords = v; }
+  get preserveWords() { return this._preserveWords ?? this.defaults.preserveWords; }
+
+  // UX options
+  private _showTooltip?: boolean;
+  @Input() set showTooltip(v: boolean | undefined) { this._showTooltip = v; }
+  get showTooltip() { return this._showTooltip ?? this.defaults.showTooltip; }
+
+  // If > 0, use CSS line-clamp instead of char truncation
+  @Input() lineClamp = 0;
+
+  // Popover options
+  private _showPopoverIcon?: boolean;
+  @Input() set showPopoverIcon(v: boolean | undefined) { this._showPopoverIcon = v; }
+  get showPopoverIcon() { return this._showPopoverIcon ?? this.defaults.showPopoverIcon; }
+
+  @Input() popoverTitle: string | null = null;
+  @Input() popoverPanelClass = 'cvl-text-truncate-popover-panel';
+  @Input() enableCopy = true;
+
+  open = signal(false);
+
+  get isTruncated(): boolean {
+    if (this.lineClamp > 0) return true; // visually clamped
+    return !!this.text && this.text.length > this.maxChars;
+  }
+
+  truncatedText = computed(() =>
+    this.lineClamp > 0
+      ? this.text
+      : truncateText(this.text, { maxChars: this.maxChars, preserveWords: this.preserveWords })
+  );
+
+  togglePopover() { this.open.set(!this.open()); }
+  closePopover()  { this.open.set(false); }
+  copyAll() { if (this.enableCopy) this.clipboard.copy(this.text || ''); }
+}
+```
+
+**`libs/ui/cvl-text-truncate/src/lib/cvl-text-truncate.component.html`**
+
+```html
+<span
+  class="cvl-truncate"
+  [class.cvl-truncate--clamp]="lineClamp > 0"
+  [style.--lines]="lineClamp > 0 ? lineClamp : null"
+  [matTooltip]="showTooltip ? text : ''"
+  [matTooltipDisabled]="!showTooltip"
+  [matTooltipShowDelay]="150"
+  [matTooltipHideDelay]="0"
+  [attr.title]="!showTooltip ? (isTruncated ? text : null) : null"
+  [attr.aria-label]="isTruncated ? text : null"
+  [attr.tabindex]="0"
+>
+  {{ truncatedText() }}
+</span>
+
+<!-- Optional popover trigger (ellipsis icon). Only appears if truncated -->
+<button
+  *ngIf="showPopoverIcon && isTruncated"
+  type="button"
+  class="cvl-truncate__icon"
+  cdkOverlayOrigin
+  #origin="cdkOverlayOrigin"
+  aria-label="Show full text"
+  (click)="togglePopover()"
+>
+  <mat-icon fontIcon="more_horiz"></mat-icon>
+</button>
+
+<!-- Popover -->
+<ng-template
+  cdkConnectedOverlay
+  [cdkConnectedOverlayOrigin]="origin"
+  [cdkConnectedOverlayOpen]="open()"
+  [cdkConnectedOverlayHasBackdrop]="true"
+  [cdkConnectedOverlayBackdropClass]="'cdk-overlay-transparent-backdrop'"
+  [cdkConnectedOverlayPanelClass]="popoverPanelClass"
+
+  [cdkConnectedOverlayFlexibleDimensions]="true"
+  [cdkConnectedOverlayPush]="true"
+  [cdkConnectedOverlayViewportMargin]="8"
+
+  (backdropClick)="closePopover()"
+  [cdkConnectedOverlayPositions]="[
+    {originX:'end', originY:'bottom', overlayX:'end', overlayY:'top', offsetY:8},
+    {originX:'end', originY:'top',    overlayX:'end', overlayY:'bottom', offsetY:-8}
+  ]"
+>
+  <div class="cvl-truncate__popover">
+    <div class="cvl-truncate__popover-head" *ngIf="popoverTitle || enableCopy">
+      <div class="cvl-truncate__popover-title" *ngIf="popoverTitle">{{ popoverTitle }}</div>
+      <div class="cvl-truncate__popover-actions" *ngIf="enableCopy">
+        <button type="button" class="btn-link" (click)="copyAll()">Copy</button>
+        <button type="button" class="btn-link" (click)="closePopover()">Close</button>
+      </div>
+    </div>
+    <div class="cvl-truncate__popover-body">
+      {{ text }}
+    </div>
+  </div>
+</ng-template>
+```
+
+**`libs/ui/cvl-text-truncate/src/lib/cvl-text-truncate.component.scss`**
+
+```scss
+.cvl-truncate-host {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--cvl-truncate-gap);
+  max-width: 100%;
+}
+
+.cvl-truncate {
+  display: inline-block;
+  max-width: 100%;
+  vertical-align: bottom;
+
+  &.cvl-truncate--clamp {
+    display: -webkit-box;
+    -webkit-line-clamp: var(--lines, 2);
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+}
+
+.cvl-truncate__icon {
+  border: none;
+  background: none;
+  padding: 0;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  width: var(--cvl-truncate-icon-size);
+  height: var(--cvl-truncate-icon-size);
+}
+
+/* Base overlay panel rule is global in tokens file */
+
+.cvl-truncate__popover {
+  width: auto;
+  max-width: var(--cvl-truncate-popover-max-width);
+  min-width: var(--cvl-truncate-popover-min-width);
+  max-height: var(--cvl-truncate-popover-max-height);
+  overflow: auto;
+  padding: 12px 12px 10px;
+  border-radius: var(--cvl-truncate-popover-radius);
+  box-shadow: var(--cvl-truncate-popover-shadow);
+  background: var(--cvl-truncate-surface);
+  color: var(--cvl-truncate-on-surface);
+}
+
+.cvl-truncate__popover-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: .5rem;
+  margin-bottom: .5rem;
+
+  .btn-link {
+    border: none;
+    background: none;
+    cursor: pointer;
+    text-decoration: underline;
+    padding: 2px 4px;
+  }
+}
+
+.cvl-truncate__popover-title {
+  font-weight: 600;
+  font-size: .95rem;
+}
+
+.cvl-truncate__popover-body {
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+```
+
+---
+
+## Dynamic `mat-table` example (apply truncation only to specific columns)
+
+**`column.types.ts`**
+
+```ts
+export type ColumnType = 'text' | 'truncate' | 'truncatePopover' | 'truncateClamp';
+
+export interface ColumnDef<T = any> {
+  key: string;                 // property path, e.g. 'message' or 'user.name'
+  header: string;
+  type?: ColumnType;           // defaults to 'text'
+  width?: string;
+  cellClass?: string;
+
+  truncate?: {
+    maxChars?: number;         // char-based
+    preserveWords?: boolean;   // default true
+    showTooltip?: boolean;     // default true
+    showPopoverIcon?: boolean; // for truncatePopover / Clamp
+    popoverTitle?: string;
+    lineClamp?: number;        // only for 'truncateClamp'
+    popoverPanelClass?: string;// optional per-column override class
+  };
+}
+```
+
+**`table.component.html`**
+
+```html
+<table mat-table [dataSource]="data" class="mat-elevation-z1">
+  <ng-container *ngFor="let col of columns" [matColumnDef]="col.key">
+    <th mat-header-cell *matHeaderCellDef [style.width]="col.width">{{ col.header }}</th>
+
+    <td mat-cell *matCellDef="let row" [ngClass]="col.cellClass">
+      <ng-container [ngSwitch]="col.type || 'text'">
+        <!-- Plain -->
+        <span *ngSwitchCase="'text'">{{ getValue(row, col.key) }}</span>
+
+        <!-- Lightweight truncate (native title) -->
+        <span *ngSwitchCase="'truncate'"
+              class="cell-text"
+              [cvlTruncateText]="getValue(row, col.key)"
+              [maxChars]="col.truncate?.maxChars ?? 120"
+              [preserveWords]="col.truncate?.preserveWords ?? true"
+              [showTooltip]="col.truncate?.showTooltip ?? true">
+        </span>
+
+        <!-- Truncate + popover icon -->
+        <cvl-text-truncate *ngSwitchCase="'truncatePopover'"
+          class="cell-text"
+          [text]="getValue(row, col.key)"
+          [maxChars]="col.truncate?.maxChars ?? 120"
+          [preserveWords]="col.truncate?.preserveWords ?? true"
+          [showTooltip]="col.truncate?.showTooltip ?? true"
+          [showPopoverIcon]="col.truncate?.showPopoverIcon ?? true"
+          [popoverTitle]="col.truncate?.popoverTitle || col.header"
+          [popoverPanelClass]="col.truncate?.popoverPanelClass || 'cvl-text-truncate-popover-panel'"
+          (click)="$event.stopPropagation()">
+        </cvl-text-truncate>
+
+        <!-- Multi-line clamp + popover icon -->
+        <cvl-text-truncate *ngSwitchCase="'truncateClamp'"
+          class="cell-text"
+          [text]="getValue(row, col.key)"
+          [lineClamp]="col.truncate?.lineClamp ?? 2"
+          [showTooltip]="col.truncate?.showTooltip ?? true"
+          [showPopoverIcon]="col.truncate?.showPopoverIcon ?? true"
+          [popoverTitle]="col.truncate?.popoverTitle || col.header"
+          [popoverPanelClass]="col.truncate?.popoverPanelClass || 'cvl-text-truncate-popover-panel'"
+          (click)="$event.stopPropagation()">
+        </cvl-text-truncate>
+      </ng-container>
+    </td>
+  </ng-container>
+
+  <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
+  <tr mat-row *matRowDef="let row; columns: displayedColumns; trackBy: trackById"></tr>
+</table>
+```
+
+**`table.component.ts`**
+
+```ts
+import { ChangeDetectionStrategy, Component, Input } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { MatTableModule } from '@angular/material/table';
+import { MatTooltipModule } from '@angular/material/tooltip';
+import { MatIconModule } from '@angular/material/icon';
+import { OverlayModule } from '@angular/cdk/overlay';
+
+import { ColumnDef } from './column.types';
+import { CvlTextTruncateComponent } from '@your-scope/ui/cvl-text-truncate'; // adjust to your path/tsconfig
+import { CvlTruncateTextDirective } from '@your-scope/ui/cvl-text-truncate';  // adjust to your path/tsconfig
+
+@Component({
+  selector: 'app-dynamic-table',
+  standalone: true,
+  imports: [CommonModule, MatTableModule, MatTooltipModule, MatIconModule, OverlayModule,
+            CvlTextTruncateComponent, CvlTruncateTextDirective],
+  templateUrl: './table.component.html',
+  styleUrls: ['./table.component.scss'],
+  changeDetection: ChangeDetectionStrategy.OnPush
+})
+export class TableComponent<T extends { id: any }> {
+  @Input() data: T[] = [];
+  @Input() columns: ColumnDef<T>[] = [];
+
+  get displayedColumns() { return this.columns.map(c => c.key); }
+
+  getValue = (row: any, path: string): string => {
+    if (!row || !path) return '';
+    return path.split('.').reduce((acc, k) => (acc?.[k]), row) ?? '';
+  };
+
+  trackById = (_: number, r: T) => r.id;
+}
+```
+
+**`table.component.scss`**
+
+```scss
+.cell-text { display: inline-flex; max-width: 100%; vertical-align: bottom; }
+
+/* Constrain only specific columns */
+.mat-column-message { width: 40%; max-width: 520px; }
+.mat-column-notes   { width: 30%; max-width: 420px; }
+```
+
+**`example.columns.ts`**
+
+```ts
+import { ColumnDef } from './column.types';
+
+export const columns: ColumnDef[] = [
+  { key: 'id', header: 'ID', width: '80px', type: 'text' },
+  { key: 'user.name', header: 'User', width: '180px', type: 'text' },
+
+  { key: 'message', header: 'Message', type: 'truncate',
+    cellClass: 'mat-column-message',
+    truncate: { maxChars: 120, preserveWords: true, showTooltip: true }
+  },
+
+  { key: 'details', header: 'Details', type: 'truncatePopover',
+    cellClass: 'mat-column-notes',
+    truncate: {
+      maxChars: 100, preserveWords: true, showTooltip: true,
+      showPopoverIcon: true, popoverTitle: 'Details'
+      // popoverPanelClass: 'truncate--wide' // optional per-column override class
+    }
+  },
+
+  { key: 'notes', header: 'Notes', type: 'truncateClamp',
+    truncate: { lineClamp: 3, showTooltip: true, showPopoverIcon: true, popoverTitle: 'Notes' }
+  }
+];
+```
+
+---
+
+## App wiring snippets (copy/paste)
+
+**`styles.scss`**
+
+```scss
+@use 'src/styles/components/cvl-text-truncate.tokens';
+```
+
+**`app.config.ts`**
+
+```ts
+import { ApplicationConfig } from '@angular/core';
+import { provideAnimations } from '@angular/platform-browser/animations';
+import { CVL_TRUNCATE_DEFAULTS } from '@your-scope/ui/cvl-text-truncate'; // adjust path/alias
+
+export const appConfig: ApplicationConfig = {
+  providers: [
+    provideAnimations(),
+    { provide: CVL_TRUNCATE_DEFAULTS, useValue: { maxChars: 120, preserveWords: true, showTooltip: true, showPopoverIcon: false } }
+  ]
+};
+```
+
+**Example usage anywhere**
+
+```html
+<!-- Directive (native title) -->
+<span [cvlTruncateText]="row.message" [maxChars]="120" [preserveWords]="true" [showTooltip]="true"></span>
+
+<!-- Component (tooltip + icon popover) -->
+<cvl-text-truncate [text]="row.details" [maxChars]="100" [showTooltip]="true" [showPopoverIcon]="true" popoverTitle="Details"></cvl-text-truncate>
+
+<!-- Multiline clamp mode -->
+<cvl-text-truncate [text]="row.notes" [lineClamp]="3" [showTooltip]="true" [showPopoverIcon]="true" popoverTitle="Notes"></cvl-text-truncate>
+```
+
+---
+
+## Notes
+
+* Overlays live under `<body>`, so sizing and colors are sourced from **global CSS variables** in the tokens file. Use `popoverPanelClass` for per-column overrides.
+* Use the directive for massive tables; use the component where a popover is needed.
+* All pieces are **standalone** and **OnPush**/**pure** for performance.
+* Accessibility: `aria-label` exposes full text when truncated; popover trigger is keyboard accessible.
