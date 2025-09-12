@@ -1,631 +1,546 @@
-# cvl-text-truncate — Angular 20 reusable truncation (FULL END‑TO‑END CODE)
-
-> Drop these files into your workspace exactly as shown. This includes the utility, pipe, directive, component (with CDK overlay popover), centralized CSS tokens, and a dynamic **mat-table** example that selectively applies truncation to configured columns.
-
----
-
-## Folder structure
-
-```
-libs/ui/cvl-text-truncate/
-├─ src/
-│  ├─ lib/
-│  │  ├─ cvl-text-truncate.component.ts
-│  │  ├─ cvl-text-truncate.component.html
-│  │  ├─ cvl-text-truncate.component.scss
-│  │  ├─ cvl-truncate-text.directive.ts
-│  │  ├─ cvl-truncate.pipe.ts
-│  │  ├─ truncate.util.ts
-│  │  └─ cvl-text-truncate.config.ts
-│  └─ public-api.ts
-└─ README.md (optional)
-
-# Global tokens (import once)
-src/styles/components/_cvl-text-truncate.tokens.scss
-```
-
----
-
-## Global tokens (single source of truth)
-
-**`src/styles/components/_cvl-text-truncate.tokens.scss`**
-
-```scss
-:root {
-  /* layout */
-  --cvl-truncate-gap: .25rem;
-  --cvl-truncate-icon-size: 20px;
-
-  /* popover sizing (responsive) */
-  --cvl-truncate-popover-max-width: min(92vw, 640px);
-  --cvl-truncate-popover-min-width: auto;         /* e.g., 280px if you want a floor */
-  --cvl-truncate-popover-max-height: min(70vh, 480px);
-
-  /* popover chrome */
-  --cvl-truncate-popover-radius: 12px;
-  --cvl-truncate-popover-shadow: 0 6px 18px rgba(0,0,0,.2);
-
-  /* colors hook into your MD3 theme tokens if present */
-  --cvl-truncate-surface: var(--mat-sys-surface, #fff);
-  --cvl-truncate-on-surface: var(--mat-sys-on-surface, #1a1a1a);
-}
-
-/* Overlay panel lives under <body>; keep any base rules global */
-.cvl-text-truncate-popover-panel { max-width: 100vw; }
-```
-
-**Import once in your global `styles.scss` (or theme lib):**
-
-```scss
-@use 'src/styles/components/cvl-text-truncate.tokens';
-```
-
----
-
-## Library exports
-
-**`libs/ui/cvl-text-truncate/src/public-api.ts`**
-
-```ts
-export * from './lib/cvl-text-truncate.component';
-export * from './lib/cvl-truncate-text.directive';
-export * from './lib/cvl-truncate.pipe';
-export * from './lib/truncate.util';
-export * from './lib/cvl-text-truncate.config';
-```
-
----
-
-## Truncation util (pure + fast)
-
-**`libs/ui/cvl-text-truncate/src/lib/truncate.util.ts`**
-
-```ts
-export interface TruncateOptions {
-  maxChars?: number;          // default 120
-  preserveWords?: boolean;    // default true
-  ellipsis?: string;          // default '…'
-}
-
-export function truncateText(input: string | null | undefined, opts: TruncateOptions = {}): string {
-  if (!input) return '';
-  const {
-    maxChars = 120,
-    preserveWords = true,
-    ellipsis = '…'
-  } = opts;
-
-    // Guard negative/NaN inputs
-  const limit = Number.isFinite(maxChars) && maxChars! > 0 ? Math.floor(maxChars!) : 120;
-
-  if ((input as string).length <= limit) return input as string;
-
-  let cut = (input as string).slice(0, limit);
-  if (preserveWords) {
-    const lastSpace = cut.lastIndexOf(' ');
-    if (lastSpace > 0) cut = cut.slice(0, lastSpace);
-  }
-  return cut + ellipsis;
-}
-```
-
----
-
-## Pipe (pure)
-
-**`libs/ui/cvl-text-truncate/src/lib/cvl-truncate.pipe.ts`**
-
-```ts
-import { Pipe, PipeTransform } from '@angular/core';
-import { truncateText, TruncateOptions } from './truncate.util';
-
-@Pipe({
-  name: 'cvlTruncate',
-  standalone: true,
-  pure: true
-})
-export class CvlTruncatePipe implements PipeTransform {
-  transform(value: string | null | undefined, options?: TruncateOptions): string {
-    return truncateText(value, options);
-  }
-}
-```
-
----
-
-## Directive (lightweight, native tooltip)
-
-**`libs/ui/cvl-text-truncate/src/lib/cvl-truncate-text.directive.ts`**
-
-```ts
-import { Directive, ElementRef, Input, OnChanges, Renderer2, SimpleChanges } from '@angular/core';
-import { truncateText } from './truncate.util';
-
-@Directive({
-  selector: '[cvlTruncateText]',
-  standalone: true
-})
-export class CvlTruncateTextDirective implements OnChanges {
-  @Input('cvlTruncateText') text?: string;
-  @Input() maxChars = 120;
-  @Input() preserveWords = true;
-  @Input() showTooltip = true;
-
-  constructor(private el: ElementRef<HTMLElement>, private r: Renderer2) {}
-
-  ngOnChanges(_: SimpleChanges) {
-    const full = (this.text ?? this.el.nativeElement.innerText ?? '').trim();
-    const truncated = truncateText(full, { maxChars: this.maxChars, preserveWords: this.preserveWords });
-
-    this.r.setProperty(this.el.nativeElement, 'innerText', truncated);
-
-    if (this.showTooltip) {
-      this.r.setAttribute(this.el.nativeElement, 'title', full);
-      this.r.setAttribute(this.el.nativeElement, 'aria-label', full);
-    } else {
-      this.el.nativeElement.removeAttribute('title');
-      this.el.nativeElement.removeAttribute('aria-label');
-    }
-  }
-}
-```
-
----
-
-## Defaults (behavior, optional but recommended)
-
-**`libs/ui/cvl-text-truncate/src/lib/cvl-text-truncate.config.ts`**
-
-```ts
-import { InjectionToken } from '@angular/core';
-
-export interface CvlTruncateDefaults {
-  maxChars: number;
-  preserveWords: boolean;
-  showTooltip: boolean;
-  showPopoverIcon: boolean;
-}
-
-export const CVL_TRUNCATE_DEFAULTS = new InjectionToken<CvlTruncateDefaults>('CVL_TRUNCATE_DEFAULTS', {
-  factory: () => ({
-    maxChars: 120,
-    preserveWords: true,
-    showTooltip: true,
-    showPopoverIcon: false
-  })
-});
-```
-
-> Provide once (e.g., in `app.config.ts`):
-
-```ts
-{ provide: CVL_TRUNCATE_DEFAULTS, useValue: { maxChars: 120, preserveWords: true, showTooltip: true, showPopoverIcon: false } }
-```
-
----
-
-## Component (tooltip + optional popover icon)
-
-**`libs/ui/cvl-text-truncate/src/lib/cvl-text-truncate.component.ts`**
-
-```ts
-import { ChangeDetectionStrategy, Component, Inject, Input, computed, signal } from '@angular/core';
-import { CommonModule } from '@angular/common';
-import { CvlTruncatePipe } from './cvl-truncate.pipe';
-import { truncateText } from './truncate.util';
-import { MatTooltipModule } from '@angular/material/tooltip';
-import { MatIconModule } from '@angular/material/icon';
-import { OverlayModule } from '@angular/cdk/overlay';
-import { Clipboard } from '@angular/cdk/clipboard';
-import { CVL_TRUNCATE_DEFAULTS, CvlTruncateDefaults } from './cvl-text-truncate.config';
-
-@Component({
-  selector: 'cvl-text-truncate',
-  standalone: true,
-  imports: [CommonModule, CvlTruncatePipe, MatTooltipModule, MatIconModule, OverlayModule],
-  templateUrl: './cvl-text-truncate.component.html',
-  styleUrls: ['./cvl-text-truncate.component.scss'],
-  changeDetection: ChangeDetectionStrategy.OnPush,
-  host: { 'class': 'cvl-truncate-host' }
-})
-export class CvlTextTruncateComponent {
-  constructor(
-    private clipboard: Clipboard,
-    @Inject(CVL_TRUNCATE_DEFAULTS) private defaults: CvlTruncateDefaults
-  ) {}
-
-  // Core inputs
-  @Input() text = '';
-
-  private _maxChars?: number;
-  @Input() set maxChars(v: number | undefined) { this._maxChars = v; }
-  get maxChars() { return this._maxChars ?? this.defaults.maxChars; }
-
-  private _preserveWords?: boolean;
-  @Input() set preserveWords(v: boolean | undefined) { this._preserveWords = v; }
-  get preserveWords() { return this._preserveWords ?? this.defaults.preserveWords; }
-
-  // UX options
-  private _showTooltip?: boolean;
-  @Input() set showTooltip(v: boolean | undefined) { this._showTooltip = v; }
-  get showTooltip() { return this._showTooltip ?? this.defaults.showTooltip; }
-
-  // If > 0, use CSS line-clamp instead of char truncation
-  @Input() lineClamp = 0;
-
-  // Popover options
-  private _showPopoverIcon?: boolean;
-  @Input() set showPopoverIcon(v: boolean | undefined) { this._showPopoverIcon = v; }
-  get showPopoverIcon() { return this._showPopoverIcon ?? this.defaults.showPopoverIcon; }
-
-  @Input() popoverTitle: string | null = null;
-  @Input() popoverPanelClass = 'cvl-text-truncate-popover-panel';
-  @Input() enableCopy = true;
-
-  open = signal(false);
-
-  get isTruncated(): boolean {
-    if (this.lineClamp > 0) return true; // visually clamped
-    return !!this.text && this.text.length > this.maxChars;
-  }
-
-  truncatedText = computed(() =>
-    this.lineClamp > 0
-      ? this.text
-      : truncateText(this.text, { maxChars: this.maxChars, preserveWords: this.preserveWords })
-  );
-
-  togglePopover() { this.open.set(!this.open()); }
-  closePopover()  { this.open.set(false); }
-  copyAll() { if (this.enableCopy) this.clipboard.copy(this.text || ''); }
-}
-```
-
-**`libs/ui/cvl-text-truncate/src/lib/cvl-text-truncate.component.html`**
-
-```html
-<span
-  class="cvl-truncate"
-  [class.cvl-truncate--clamp]="lineClamp > 0"
-  [style.--lines]="lineClamp > 0 ? lineClamp : null"
-  [matTooltip]="showTooltip ? text : ''"
-  [matTooltipDisabled]="!showTooltip"
-  [matTooltipShowDelay]="150"
-  [matTooltipHideDelay]="0"
-  [attr.title]="!showTooltip ? (isTruncated ? text : null) : null"
-  [attr.aria-label]="isTruncated ? text : null"
-  [attr.tabindex]="0"
->
-  {{ truncatedText() }}
-</span>
-
-<!-- Optional popover trigger (ellipsis icon). Only appears if truncated -->
-<button
-  *ngIf="showPopoverIcon && isTruncated"
-  type="button"
-  class="cvl-truncate__icon"
-  cdkOverlayOrigin
-  #origin="cdkOverlayOrigin"
-  aria-label="Show full text"
-  (click)="togglePopover()"
->
-  <mat-icon fontIcon="more_horiz"></mat-icon>
-</button>
-
-<!-- Popover -->
-<ng-template
-  cdkConnectedOverlay
-  [cdkConnectedOverlayOrigin]="origin"
-  [cdkConnectedOverlayOpen]="open()"
-  [cdkConnectedOverlayHasBackdrop]="true"
-  [cdkConnectedOverlayBackdropClass]="'cdk-overlay-transparent-backdrop'"
-  [cdkConnectedOverlayPanelClass]="popoverPanelClass"
-
-  [cdkConnectedOverlayFlexibleDimensions]="true"
-  [cdkConnectedOverlayPush]="true"
-  [cdkConnectedOverlayViewportMargin]="8"
-
-  (backdropClick)="closePopover()"
-  [cdkConnectedOverlayPositions]="[
-    {originX:'end', originY:'bottom', overlayX:'end', overlayY:'top', offsetY:8},
-    {originX:'end', originY:'top',    overlayX:'end', overlayY:'bottom', offsetY:-8}
-  ]"
->
-  <div class="cvl-truncate__popover">
-    <div class="cvl-truncate__popover-head" *ngIf="popoverTitle || enableCopy">
-      <div class="cvl-truncate__popover-title" *ngIf="popoverTitle">{{ popoverTitle }}</div>
-      <div class="cvl-truncate__popover-actions" *ngIf="enableCopy">
-        <button type="button" class="btn-link" (click)="copyAll()">Copy</button>
-        <button type="button" class="btn-link" (click)="closePopover()">Close</button>
-      </div>
-    </div>
-    <div class="cvl-truncate__popover-body">
-      {{ text }}
-    </div>
-  </div>
-</ng-template>
-```
-
-**`libs/ui/cvl-text-truncate/src/lib/cvl-text-truncate.component.scss`**
-
-```scss
-.cvl-truncate-host {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--cvl-truncate-gap);
-  max-width: 100%;
-}
-
-.cvl-truncate {
-  display: inline-block;
-  max-width: 100%;
-  vertical-align: bottom;
-
-  &.cvl-truncate--clamp {
-    display: -webkit-box;
-    -webkit-line-clamp: var(--lines, 2);
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-  }
-}
-
-.cvl-truncate__icon {
-  border: none;
-  background: none;
-  padding: 0;
-  line-height: 1;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  width: var(--cvl-truncate-icon-size);
-  height: var(--cvl-truncate-icon-size);
-}
-
-/* Base overlay panel rule is global in tokens file */
-
-.cvl-truncate__popover {
-  width: auto;
-  max-width: var(--cvl-truncate-popover-max-width);
-  min-width: var(--cvl-truncate-popover-min-width);
-  max-height: var(--cvl-truncate-popover-max-height);
-  overflow: auto;
-  padding: 12px 12px 10px;
-  border-radius: var(--cvl-truncate-popover-radius);
-  box-shadow: var(--cvl-truncate-popover-shadow);
-  background: var(--cvl-truncate-surface);
-  color: var(--cvl-truncate-on-surface);
-}
-
-.cvl-truncate__popover-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: .5rem;
-  margin-bottom: .5rem;
-
-  .btn-link {
-    border: none;
-    background: none;
-    cursor: pointer;
-    text-decoration: underline;
-    padding: 2px 4px;
-  }
-}
-
-.cvl-truncate__popover-title {
-  font-weight: 600;
-  font-size: .95rem;
-}
-
-.cvl-truncate__popover-body {
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-```
-
----
-
-## Dynamic `mat-table` example (apply truncation only to specific columns)
-
-**`column.types.ts`**
-
-```ts
-export type ColumnType = 'text' | 'truncate' | 'truncatePopover' | 'truncateClamp';
-
-export interface ColumnDef<T = any> {
-  key: string;                 // property path, e.g. 'message' or 'user.name'
-  header: string;
-  type?: ColumnType;           // defaults to 'text'
-  width?: string;
-  cellClass?: string;
-
-  truncate?: {
-    maxChars?: number;         // char-based
-    preserveWords?: boolean;   // default true
-    showTooltip?: boolean;     // default true
-    showPopoverIcon?: boolean; // for truncatePopover / Clamp
-    popoverTitle?: string;
-    lineClamp?: number;        // only for 'truncateClamp'
-    popoverPanelClass?: string;// optional per-column override class
-  };
-}
-```
-
-**`table.component.html`**
-
-```html
-<table mat-table [dataSource]="data" class="mat-elevation-z1">
-  <ng-container *ngFor="let col of columns" [matColumnDef]="col.key">
-    <th mat-header-cell *matHeaderCellDef [style.width]="col.width">{{ col.header }}</th>
-
-    <td mat-cell *matCellDef="let row" [ngClass]="col.cellClass">
-      <ng-container [ngSwitch]="col.type || 'text'">
-        <!-- Plain -->
-        <span *ngSwitchCase="'text'">{{ getValue(row, col.key) }}</span>
-
-        <!-- Lightweight truncate (native title) -->
-        <span *ngSwitchCase="'truncate'"
-              class="cell-text"
-              [cvlTruncateText]="getValue(row, col.key)"
-              [maxChars]="col.truncate?.maxChars ?? 120"
-              [preserveWords]="col.truncate?.preserveWords ?? true"
-              [showTooltip]="col.truncate?.showTooltip ?? true">
-        </span>
-
-        <!-- Truncate + popover icon -->
-        <cvl-text-truncate *ngSwitchCase="'truncatePopover'"
-          class="cell-text"
-          [text]="getValue(row, col.key)"
-          [maxChars]="col.truncate?.maxChars ?? 120"
-          [preserveWords]="col.truncate?.preserveWords ?? true"
-          [showTooltip]="col.truncate?.showTooltip ?? true"
-          [showPopoverIcon]="col.truncate?.showPopoverIcon ?? true"
-          [popoverTitle]="col.truncate?.popoverTitle || col.header"
-          [popoverPanelClass]="col.truncate?.popoverPanelClass || 'cvl-text-truncate-popover-panel'"
-          (click)="$event.stopPropagation()">
-        </cvl-text-truncate>
-
-        <!-- Multi-line clamp + popover icon -->
-        <cvl-text-truncate *ngSwitchCase="'truncateClamp'"
-          class="cell-text"
-          [text]="getValue(row, col.key)"
-          [lineClamp]="col.truncate?.lineClamp ?? 2"
-          [showTooltip]="col.truncate?.showTooltip ?? true"
-          [showPopoverIcon]="col.truncate?.showPopoverIcon ?? true"
-          [popoverTitle]="col.truncate?.popoverTitle || col.header"
-          [popoverPanelClass]="col.truncate?.popoverPanelClass || 'cvl-text-truncate-popover-panel'"
-          (click)="$event.stopPropagation()">
-        </cvl-text-truncate>
-      </ng-container>
-    </td>
-  </ng-container>
-
-  <tr mat-header-row *matHeaderRowDef="displayedColumns"></tr>
-  <tr mat-row *matRowDef="let row; columns: displayedColumns; trackBy: trackById"></tr>
-</table>
-```
-
-**`table.component.ts`**
-
-```ts
-import { ChangeDetectionStrategy, Component, Input } from '@angular/core';
-import { CommonModule } from '@angular/common';
-import { MatTableModule } from '@angular/material/table';
-import { MatTooltipModule } from '@angular/material/tooltip';
-import { MatIconModule } from '@angular/material/icon';
-import { OverlayModule } from '@angular/cdk/overlay';
-
-import { ColumnDef } from './column.types';
-import { CvlTextTruncateComponent } from '@your-scope/ui/cvl-text-truncate'; // adjust to your path/tsconfig
-import { CvlTruncateTextDirective } from '@your-scope/ui/cvl-text-truncate';  // adjust to your path/tsconfig
-
-@Component({
-  selector: 'app-dynamic-table',
-  standalone: true,
-  imports: [CommonModule, MatTableModule, MatTooltipModule, MatIconModule, OverlayModule,
-            CvlTextTruncateComponent, CvlTruncateTextDirective],
-  templateUrl: './table.component.html',
-  styleUrls: ['./table.component.scss'],
-  changeDetection: ChangeDetectionStrategy.OnPush
-})
-export class TableComponent<T extends { id: any }> {
-  @Input() data: T[] = [];
-  @Input() columns: ColumnDef<T>[] = [];
-
-  get displayedColumns() { return this.columns.map(c => c.key); }
-
-  getValue = (row: any, path: string): string => {
-    if (!row || !path) return '';
-    return path.split('.').reduce((acc, k) => (acc?.[k]), row) ?? '';
-  };
-
-  trackById = (_: number, r: T) => r.id;
-}
-```
-
-**`table.component.scss`**
-
-```scss
-.cell-text { display: inline-flex; max-width: 100%; vertical-align: bottom; }
-
-/* Constrain only specific columns */
-.mat-column-message { width: 40%; max-width: 520px; }
-.mat-column-notes   { width: 30%; max-width: 420px; }
-```
-
-**`example.columns.ts`**
-
-```ts
-import { ColumnDef } from './column.types';
-
-export const columns: ColumnDef[] = [
-  { key: 'id', header: 'ID', width: '80px', type: 'text' },
-  { key: 'user.name', header: 'User', width: '180px', type: 'text' },
-
-  { key: 'message', header: 'Message', type: 'truncate',
-    cellClass: 'mat-column-message',
-    truncate: { maxChars: 120, preserveWords: true, showTooltip: true }
+// ============================================================================
+// BookingModule End-to-End (Auto & RV)
+// .NET 8/9 Web API + Dapper, Strategy + Factory, Keyed DI via Attribute Scan,
+// Keyset pagination (afterId), single DB connection per request.
+// ----------------------------------------------------------------------------
+// Folder Structure
+// ----------------------------------------------------------------------------
+// /src
+//   /Api
+//     Api.csproj
+//     appsettings.json
+//     Program.cs
+//     /Controllers
+//       BookingsController.cs
+//     /Composition
+//       ServiceCollectionExtensions.cs
+//     /Data
+//       IDbConnectionFactory.cs
+//       SqlConnectionFactory.cs
+//     /Bookings
+//       IBooking.cs
+//       BookingTypeKeys.cs
+//       /Dtos
+//         AutoDto.cs
+//         RvDto.cs
+//       /Providers
+//         IBookingProvider.cs
+//         BaseBookingProvider.cs
+//         /Attributes
+//           BookingProviderKeyAttribute.cs
+//         AutoProvider.cs
+//         RvProvider.cs
+//     /Services
+//       IBookingProviderFactory.cs
+//       BookingProviderFactory.cs
+//       IBookingService.cs
+//       BookingService.cs
+// ----------------------------------------------------------------------------
+// Quick test URLs (once running):
+//   GET  /api/bookings/auto/123
+//   GET  /api/bookings/auto?vinOrHin=1HG&make=Honda&take=50&afterId=200
+//   GET  /api/bookings/rv?vinOrHin=4X4&year=2022&take=25
+// ============================================================================
+
+// ============================================================================
+// File: src/Api/Program.cs
+// ============================================================================
+using Api.Composition;
+using Api.Bookings.Providers; // for assembly reference
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Services.AddControllers();
+
+// One-liner: registers DB factory, services, factory, and all providers discovered
+// in the assembly that contains AutoProvider (and friends).
+builder.Services.AddBookingModule(typeof(AutoProvider).Assembly);
+
+var app = builder.Build();
+
+app.MapControllers();
+
+app.Run();
+
+// ============================================================================
+// File: src/Api/appsettings.json
+// ============================================================================
+/*
+{
+  "ConnectionStrings": {
+    "Default": "Server=.;Database=BookingsDb;Trusted_Connection=True;TrustServerCertificate=True;Max Pool Size=200;Min Pool Size=20"
   },
+  "Logging": { "LogLevel": { "Default": "Information", "Microsoft.AspNetCore": "Warning" } },
+  "AllowedHosts": "*"
+}
+*/
 
-  { key: 'details', header: 'Details', type: 'truncatePopover',
-    cellClass: 'mat-column-notes',
-    truncate: {
-      maxChars: 100, preserveWords: true, showTooltip: true,
-      showPopoverIcon: true, popoverTitle: 'Details'
-      // popoverPanelClass: 'truncate--wide' // optional per-column override class
+// ============================================================================
+// File: src/Api/Api.csproj
+// ============================================================================
+/*
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Dapper" Version="2.1.35" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.1" />
+  </ItemGroup>
+</Project>
+*/
+
+// ============================================================================
+// File: src/Api/Controllers/BookingsController.cs
+// ============================================================================
+using Api.Services;
+using Microsoft.AspNetCore.Mvc;
+
+namespace Api.Controllers;
+
+[ApiController]
+[Route("api/bookings/{typeKey}")]
+public sealed class BookingsController : ControllerBase
+{
+    private readonly IBookingService _svc;
+    public BookingsController(IBookingService svc) => _svc = svc;
+
+    // GET api/bookings/{typeKey}/{id}
+    [HttpGet("{id:long}")]
+    public async Task<IActionResult> GetById(string typeKey, long id, CancellationToken ct)
+    {
+        var dto = await _svc.GetByIdAsync(typeKey, id, ct);
+        return dto is null ? NotFound() : Ok(dto);
     }
-  },
 
-  { key: 'notes', header: 'Notes', type: 'truncateClamp',
-    truncate: { lineClamp: 3, showTooltip: true, showPopoverIcon: true, popoverTitle: 'Notes' }
-  }
-];
-```
+    // GET api/bookings/{typeKey}?vinOrHin=&make=&model=&year=&take=&afterId=
+    [HttpGet]
+    public async Task<IActionResult> Search(
+        string typeKey,
+        [FromQuery] string? vinOrHin,
+        [FromQuery] string? make,
+        [FromQuery] string? model,
+        [FromQuery] int? year,
+        [FromQuery] int take = 50,
+        [FromQuery] long? afterId = null,
+        CancellationToken ct = default)
+    {
+        var list = await _svc.SearchAsync(typeKey, vinOrHin, make, model, year, take, afterId, ct);
+        return Ok(list);
+    }
+}
 
----
+// ============================================================================
+// File: src/Api/Composition/ServiceCollectionExtensions.cs
+// ============================================================================
+using System.Reflection;
+using Api.Bookings.Providers;
+using Api.Data;
+using Api.Services;
+using Microsoft.Extensions.DependencyInjection;
 
-## App wiring snippets (copy/paste)
+namespace Api.Composition;
 
-**`styles.scss`**
+public static class ServiceCollectionExtensions
+{
+    public static IServiceCollection AddBookingModule(this IServiceCollection services, params Assembly[] assemblies)
+    {
+        // Infra
+        services.AddSingleton<IDbConnectionFactory, SqlConnectionFactory>();
+        services.AddScoped<IBookingService, BookingService>();
+        services.AddScoped<IBookingProviderFactory, BookingProviderFactory>(); // uses keyed DI
 
-```scss
-@use 'src/styles/components/cvl-text-truncate.tokens';
-```
+        // Where to scan for providers
+        var scan = (assemblies.Length > 0) ? assemblies : new[] { Assembly.GetExecutingAssembly() };
 
-**`app.config.ts`**
+        // Discover provider types with [BookingProviderKey]
+        var providerTypes = scan
+            .SelectMany(a => a.DefinedTypes)
+            .Where(t => !t.IsAbstract && typeof(IBookingProvider).IsAssignableFrom(t))
+            .Select(t => new { Type = (Type)t, Attr = t.GetCustomAttribute<BookingProviderKeyAttribute>() })
+            .ToList();
 
-```ts
-import { ApplicationConfig } from '@angular/core';
-import { provideAnimations } from '@angular/platform-browser/animations';
-import { CVL_TRUNCATE_DEFAULTS } from '@your-scope/ui/cvl-text-truncate'; // adjust path/alias
+        if (providerTypes.Any(x => x.Attr is null))
+        {
+            var missing = string.Join(", ", providerTypes.Where(x => x.Attr is null).Select(x => x.Type.Name));
+            throw new InvalidOperationException($"All IBookingProvider implementations must have [BookingProviderKey]. Missing: {missing}");
+        }
 
-export const appConfig: ApplicationConfig = {
-  providers: [
-    provideAnimations(),
-    { provide: CVL_TRUNCATE_DEFAULTS, useValue: { maxChars: 120, preserveWords: true, showTooltip: true, showPopoverIcon: false } }
-  ]
-};
-```
+        // Guard duplicates
+        var dupKeys = providerTypes
+            .GroupBy(x => x.Attr!.Key, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key)
+            .ToArray();
+        if (dupKeys.Length > 0) throw new InvalidOperationException($"Duplicate booking provider keys: {string.Join(", ", dupKeys)}");
 
-**Example usage anywhere**
+        // Register each provider as a keyed transient
+        foreach (var x in providerTypes)
+        {
+            services.AddKeyedTransient(typeof(IBookingProvider), x.Attr!.Key, x.Type);
+        }
 
-```html
-<!-- Directive (native title) -->
-<span [cvlTruncateText]="row.message" [maxChars]="120" [preserveWords]="true" [showTooltip]="true"></span>
+        return services;
+    }
+}
 
-<!-- Component (tooltip + icon popover) -->
-<cvl-text-truncate [text]="row.details" [maxChars]="100" [showTooltip]="true" [showPopoverIcon]="true" popoverTitle="Details"></cvl-text-truncate>
+// ============================================================================
+// File: src/Api/Data/IDbConnectionFactory.cs
+// ============================================================================
+using System.Data;
 
-<!-- Multiline clamp mode -->
-<cvl-text-truncate [text]="row.notes" [lineClamp]="3" [showTooltip]="true" [showPopoverIcon]="true" popoverTitle="Notes"></cvl-text-truncate>
-```
+namespace Api.Data;
 
----
+public interface IDbConnectionFactory
+{
+    Task<IDbConnection> OpenAsync(CancellationToken ct = default);
+}
 
-## Notes
+// ============================================================================
+// File: src/Api/Data/SqlConnectionFactory.cs
+// ============================================================================
+using System.Data;
+using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.Configuration;
 
-* Overlays live under `<body>`, so sizing and colors are sourced from **global CSS variables** in the tokens file. Use `popoverPanelClass` for per-column overrides.
-* Use the directive for massive tables; use the component where a popover is needed.
-* All pieces are **standalone** and **OnPush**/**pure** for performance.
-* Accessibility: `aria-label` exposes full text when truncated; popover trigger is keyboard accessible.
+namespace Api.Data;
+
+public sealed class SqlConnectionFactory : IDbConnectionFactory
+{
+    private readonly string _connStr;
+    public SqlConnectionFactory(IConfiguration cfg)
+    {
+        _connStr = cfg.GetConnectionString("Default")
+            ?? throw new InvalidOperationException("Missing connection string 'Default'.");
+    }
+
+    public async Task<IDbConnection> OpenAsync(CancellationToken ct = default)
+    {
+        var cn = new SqlConnection(_connStr); // pooling enabled by default
+        await cn.OpenAsync(ct);
+        return cn;
+        }
+}
+
+// ============================================================================
+// File: src/Api/Bookings/IBooking.cs
+// ============================================================================
+namespace Api.Bookings;
+
+public interface IBooking
+{
+    string BookingType { get; }
+}
+
+// ============================================================================
+// File: src/Api/Bookings/BookingTypeKeys.cs
+// ============================================================================
+namespace Api.Bookings;
+
+public static class BookingTypeKeys
+{
+    public const string Auto = "auto";
+    public const string Rv   = "rv";
+}
+
+// ============================================================================
+// File: src/Api/Bookings/Dtos/AutoDto.cs
+// ============================================================================
+using Api.Bookings;
+
+namespace Api.Bookings.Dtos;
+
+public sealed class AutoDto : IBooking
+{
+    public string BookingType => BookingTypeKeys.Auto;
+    public long   Id    { get; init; }
+    public string Vin   { get; init; } = string.Empty;
+    public string Make  { get; init; } = string.Empty;
+    public string Model { get; init; } = string.Empty;
+    public int    Year  { get; init; }
+    public int    Doors { get; init; }
+}
+
+// ============================================================================
+// File: src/Api/Bookings/Dtos/RvDto.cs
+// ============================================================================
+using Api.Bookings;
+
+namespace Api.Bookings.Dtos;
+
+public sealed class RvDto : IBooking
+{
+    public string BookingType => BookingTypeKeys.Rv;
+    public long   Id       { get; init; }
+    public string Vin      { get; init; } = string.Empty;
+    public string Make     { get; init; } = string.Empty;
+    public string Model    { get; init; } = string.Empty;
+    public int    Year     { get; init; }
+    public double LengthFt { get; init; }
+}
+
+// ============================================================================
+// File: src/Api/Bookings/Providers/IBookingProvider.cs
+// ============================================================================
+using System.Data;
+
+namespace Api.Bookings.Providers;
+
+public interface IBookingProvider
+{
+    string Key { get; } // "auto", "rv", ...
+
+    Task<IBooking?> GetByIdAsync(IDbConnection cn, long id, CancellationToken ct);
+
+    // Keyset pagination: afterId instead of skip/offset
+    Task<IReadOnlyList<IBooking>> SearchAsync(
+        IDbConnection cn,
+        string? vinOrHin,
+        string? make,
+        string? model,
+        int? year,
+        int take,
+        long? afterId,
+        CancellationToken ct);
+}
+
+// ============================================================================
+// File: src/Api/Bookings/Providers/BaseBookingProvider.cs
+// ============================================================================
+using System.Data;
+using Dapper;
+
+namespace Api.Bookings.Providers;
+
+public abstract class BaseBookingProvider : IBookingProvider
+{
+    public abstract string Key { get; }
+
+    public abstract Task<IBooking?> GetByIdAsync(IDbConnection cn, long id, CancellationToken ct);
+
+    public abstract Task<IReadOnlyList<IBooking>> SearchAsync(
+        IDbConnection cn,
+        string? vinOrHin,
+        string? make,
+        string? model,
+        int? year,
+        int take,
+        long? afterId,
+        CancellationToken ct);
+
+    protected static string Like(string? s) => string.IsNullOrWhiteSpace(s) ? "%" : $"%{s.Trim()}%";
+
+    protected static async Task<IReadOnlyList<T>> QAsync<T>(IDbConnection cn, string sql, object args, CancellationToken ct)
+        => (await cn.QueryAsync<T>(new CommandDefinition(sql, args, cancellationToken: ct))).AsList();
+}
+
+// ============================================================================
+// File: src/Api/Bookings/Providers/Attributes/BookingProviderKeyAttribute.cs
+// ============================================================================
+namespace Api.Bookings.Providers;
+
+[AttributeUsage(AttributeTargets.Class, AllowMultiple = false, Inherited = false)]
+public sealed class BookingProviderKeyAttribute : Attribute
+{
+    public string Key { get; }
+    public BookingProviderKeyAttribute(string key) => Key = key;
+}
+
+// ============================================================================
+// File: src/Api/Bookings/Providers/AutoProvider.cs
+// ============================================================================
+using System.Data;
+using Api.Bookings.Dtos;
+using Dapper;
+
+namespace Api.Bookings.Providers;
+
+[BookingProviderKey(BookingTypeKeys.Auto)]
+public sealed class AutoProvider : BaseBookingProvider
+{
+    public override string Key => BookingTypeKeys.Auto;
+
+    public override async Task<IBooking?> GetByIdAsync(IDbConnection cn, long id, CancellationToken ct)
+    {
+        const string sql = @"SELECT Id, Vin, Make, Model, [Year], Doors
+                              FROM dbo.Auto WHERE Id = @Id";
+        return await cn.QuerySingleOrDefaultAsync<AutoDto>(new CommandDefinition(sql, new { Id = id }, cancellationToken: ct));
+    }
+
+    public override async Task<IReadOnlyList<IBooking>> SearchAsync(
+        IDbConnection cn, string? vin, string? make, string? model, int? year, int take, long? afterId, CancellationToken ct)
+    {
+        const string sql = @"
+SELECT TOP (@Take) Id, Vin, Make, Model, [Year], Doors
+FROM dbo.Auto
+WHERE (@AfterId IS NULL OR Id > @AfterId)
+  AND (@Vin   IS NULL OR Vin   LIKE @VinLike)
+  AND (@Make  IS NULL OR Make  LIKE @MakeLike)
+  AND (@Model IS NULL OR Model LIKE @ModelLike)
+  AND (@Year  IS NULL OR [Year]= @Year)
+ORDER BY Id ASC;";
+
+        var rows = await QAsync<AutoDto>(cn, sql, new {
+            Take = Math.Clamp(take, 1, 200),
+            AfterId = afterId,
+            Vin = vin,   VinLike = Like(vin),
+            Make = make, MakeLike = Like(make),
+            Model = model, ModelLike = Like(model),
+            Year = year
+        }, ct);
+
+        return rows.Cast<IBooking>().ToList();
+    }
+}
+
+// ============================================================================
+// File: src/Api/Bookings/Providers/RvProvider.cs
+// ============================================================================
+using System.Data;
+using Api.Bookings.Dtos;
+using Dapper;
+
+namespace Api.Bookings.Providers;
+
+[BookingProviderKey(BookingTypeKeys.Rv)]
+public sealed class RvProvider : BaseBookingProvider
+{
+    public override string Key => BookingTypeKeys.Rv;
+
+    public override async Task<IBooking?> GetByIdAsync(IDbConnection cn, long id, CancellationToken ct)
+    {
+        const string sql = @"SELECT Id, Vin, Make, Model, [Year], LengthFt
+                              FROM dbo.Rv WHERE Id = @Id";
+        return await cn.QuerySingleOrDefaultAsync<RvDto>(new CommandDefinition(sql, new { Id = id }, cancellationToken: ct));
+    }
+
+    public override async Task<IReadOnlyList<IBooking>> SearchAsync(
+        IDbConnection cn, string? vin, string? make, string? model, int? year, int take, long? afterId, CancellationToken ct)
+    {
+        const string sql = @"
+SELECT TOP (@Take) Id, Vin, Make, Model, [Year], LengthFt
+FROM dbo.Rv
+WHERE (@AfterId IS NULL OR Id > @AfterId)
+  AND (@Vin   IS NULL OR Vin   LIKE @VinLike)
+  AND (@Make  IS NULL OR Make  LIKE @MakeLike)
+  AND (@Model IS NULL OR Model LIKE @ModelLike)
+  AND (@Year  IS NULL OR [Year]= @Year)
+ORDER BY Id ASC;";
+
+        var rows = await QAsync<RvDto>(cn, sql, new {
+            Take = Math.Clamp(take, 1, 200),
+            AfterId = afterId,
+            Vin = vin,   VinLike = Like(vin),
+            Make = make, MakeLike = Like(make),
+            Model = model, ModelLike = Like(model),
+            Year = year
+        }, ct);
+
+        return rows.Cast<IBooking>().ToList();
+    }
+}
+
+// ============================================================================
+// File: src/Api/Services/IBookingProviderFactory.cs
+// ============================================================================
+using Api.Bookings.Providers;
+
+namespace Api.Services;
+
+public interface IBookingProviderFactory
+{
+    IBookingProvider Resolve(string typeKey);
+}
+
+// ============================================================================
+// File: src/Api/Services/BookingProviderFactory.cs
+// ============================================================================
+using Api.Bookings.Providers;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace Api.Services;
+
+public sealed class BookingProviderFactory : IBookingProviderFactory
+{
+    private readonly IServiceProvider _sp;
+    public BookingProviderFactory(IServiceProvider sp) => _sp = sp;
+
+    public IBookingProvider Resolve(string typeKey)
+        => _sp.GetRequiredKeyedService<IBookingProvider>(typeKey.ToLowerInvariant());
+}
+
+// ============================================================================
+// File: src/Api/Services/IBookingService.cs
+// ============================================================================
+using Api.Bookings;
+
+namespace Api.Services;
+
+public interface IBookingService
+{
+    Task<IBooking?> GetByIdAsync(string typeKey, long id, CancellationToken ct);
+
+    Task<IReadOnlyList<IBooking>> SearchAsync(
+        string typeKey,
+        string? vinOrHin,
+        string? make,
+        string? model,
+        int? year,
+        int take,
+        long? afterId,
+        CancellationToken ct);
+}
+
+// ============================================================================
+// File: src/Api/Services/BookingService.cs
+// ============================================================================
+using Api.Bookings;
+using Api.Bookings.Providers;
+using Api.Data;
+
+namespace Api.Services;
+
+public sealed class BookingService : IBookingService
+{
+    private readonly IDbConnectionFactory _db;
+    private readonly IBookingProviderFactory _factory;
+
+    public BookingService(IDbConnectionFactory db, IBookingProviderFactory factory)
+    {
+        _db = db;
+        _factory = factory;
+    }
+
+    public async Task<IBooking?> GetByIdAsync(string typeKey, long id, CancellationToken ct)
+    {
+        var provider = _factory.Resolve(typeKey);
+        await using var cn = await _db.OpenAsync(ct);
+        return await provider.GetByIdAsync(cn, id, ct);
+    }
+
+    public async Task<IReadOnlyList<IBooking>> SearchAsync(
+        string typeKey, string? vinOrHin, string? make, string? model, int? year, int take, long? afterId, CancellationToken ct)
+    {
+        var provider = _factory.Resolve(typeKey);
+        await using var cn = await _db.OpenAsync(ct);
+        return await provider.SearchAsync(cn, vinOrHin, make, model, year, take, afterId, ct);
+    }
+}
+
+// ============================================================================
+// Notes:
+// - Tables expected:
+//   dbo.Auto(Id BIGINT PK, Vin NVARCHAR(..), Make NVARCHAR(..), Model NVARCHAR(..), [Year] INT, Doors INT, ...)
+//   dbo.Rv  (Id BIGINT PK, Vin NVARCHAR(..), Make NVARCHAR(..), Model NVARCHAR(..), [Year] INT, LengthFt FLOAT, ...)
+// - Ensure covering indexes for search patterns, e.g.:
+//   CREATE INDEX IX_Auto_Vin ON dbo.Auto(Vin) INCLUDE (Make, Model, [Year], Id);
+//   CREATE INDEX IX_Rv_Vin   ON dbo.Rv  (Vin) INCLUDE (Make, Model, [Year], Id);
+// - Keyset paging uses afterId (cursor). Pass afterId=lastReturnedId to get next page.
+// - Cancellation tokens are threaded end-to-end; ASP.NET sets RequestAborted automatically.
+// - To add a new booking type (e.g., boat):
+//     * Create BoatDto : IBooking
+//     * Create BoatProvider : BaseBookingProvider, add [BookingProviderKey("boat")]
+//     * No changes to controller, service, or Program.cs.
+// ============================================================================
