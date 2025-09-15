@@ -1,7 +1,6 @@
 // ============================================================================
-// BookingModule End-to-End (Auto & RV)
-// .NET 8/9 Web API + Dapper, Strategy + Factory, Keyed DI via Attribute Scan,
-// Keyset pagination (afterId), single DB connection per request.
+// VEHICLE + FUNDING — End‑to‑End Implementation (Oracle + Dapper)
+// Strategy + Factory (keyed DI via attribute scan) + Context‑aware DB routing
 // ----------------------------------------------------------------------------
 // Folder Structure
 // ----------------------------------------------------------------------------
@@ -10,51 +9,60 @@
 //     Api.csproj
 //     appsettings.json
 //     Program.cs
-//     /Controllers
-//       BookingsController.cs
 //     /Composition
 //       ServiceCollectionExtensions.cs
+//     /Controllers
+//       VehiclesController.cs
+//       FundingController.cs
 //     /Data
-//       IDbConnectionFactory.cs
-//       SqlConnectionFactory.cs
-//     /Bookings
-//       IBooking.cs
-//       BookingTypeKeys.cs
+//       DataContext.cs
+//       IOracleConnectionFactory.cs
+//       OracleConnectionFactory.cs
+//       IOracleDataProvider.cs
+//       OracleDataProvider.cs
+//     /Vehicle
+//       IVehicle.cs
+//       VehicleTypeKeys.cs
 //       /Dtos
 //         AutoDto.cs
 //         RvDto.cs
 //       /Providers
-//         IBookingProvider.cs
-//         BaseBookingProvider.cs
-//         /Attributes
-//           BookingProviderKeyAttribute.cs
+//         IVehicleProvider.cs
+//         VehicleProviderKeyAttribute.cs
 //         AutoProvider.cs
 //         RvProvider.cs
-//     /Services
-//       IBookingProviderFactory.cs
-//       BookingProviderFactory.cs
-//       IBookingService.cs
-//       BookingService.cs
+//         IVehicleProviderFactory.cs
+//         VehicleProviderFactory.cs
+//     /Funding
+//       /Dtos
+//         CollateralInfoDto.cs
+//       /Data
+//         CollateralInfoRow.cs
+//         IFundingDataProvider.cs
+//         FundingDataProvider.cs
+//       /Services
+//         IFundingService.cs
+//         FundingService.cs
 // ----------------------------------------------------------------------------
-// Quick test URLs (once running):
-//   GET  /api/bookings/auto/123
-//   GET  /api/bookings/auto?vinOrHin=1HG&make=Honda&take=50&afterId=200
-//   GET  /api/bookings/rv?vinOrHin=4X4&year=2022&take=25
+// Sample routes (contextType: cp|vcfs, typeKey: auto|rv):
+//   GET /api/vehicles/cp/auto/123
+//   GET /api/vehicles/vcfs/rv?vinOrHin=4X4&take=25
+//   GET /api/funding/cp/collateral/456           --> CollateralInfoDto with embedded Vehicle DTO
+//   POST/GET batch variants can be added similarly
 // ============================================================================
 
 // ============================================================================
 // File: src/Api/Program.cs
 // ============================================================================
 using Api.Composition;
-using Api.Bookings.Providers; // for assembly reference
+using Api.Vehicle.Providers; // assembly anchor for scanning
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers();
 
-// One-liner: registers DB factory, services, factory, and all providers discovered
-// in the assembly that contains AutoProvider (and friends).
-builder.Services.AddBookingModule(typeof(AutoProvider).Assembly);
+// Register everything (DB infra, Vehicle providers via attribute scan, Funding service)
+builder.Services.AddVehicleModule(typeof(AutoProvider).Assembly);
 
 var app = builder.Build();
 
@@ -68,7 +76,8 @@ app.Run();
 /*
 {
   "ConnectionStrings": {
-    "Default": "Server=.;Database=BookingsDb;Trusted_Connection=True;TrustServerCertificate=True;Max Pool Size=200;Min Pool Size=20"
+    "cp":   "User Id=CP_USER;Password=***;Data Source=CP_DB;Pooling=true;Min Pool Size=20;Max Pool Size=200",
+    "vcfs": "User Id=VCFS_USER;Password=***;Data Source=VCFS_DB;Pooling=true;Min Pool Size=20;Max Pool Size=200"
   },
   "Logging": { "LogLevel": { "Default": "Information", "Microsoft.AspNetCore": "Warning" } },
   "AllowedHosts": "*"
@@ -87,99 +96,63 @@ app.Run();
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Dapper" Version="2.1.35" />
-    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.1" />
+    <PackageReference Include="Oracle.ManagedDataAccess" Version="23.6.1" />
   </ItemGroup>
 </Project>
 */
 
 // ============================================================================
-// File: src/Api/Controllers/BookingsController.cs
-// ============================================================================
-using Api.Services;
-using Microsoft.AspNetCore.Mvc;
-
-namespace Api.Controllers;
-
-[ApiController]
-[Route("api/bookings/{typeKey}")]
-public sealed class BookingsController : ControllerBase
-{
-    private readonly IBookingService _svc;
-    public BookingsController(IBookingService svc) => _svc = svc;
-
-    // GET api/bookings/{typeKey}/{id}
-    [HttpGet("{id:long}")]
-    public async Task<IActionResult> GetById(string typeKey, long id, CancellationToken ct)
-    {
-        var dto = await _svc.GetByIdAsync(typeKey, id, ct);
-        return dto is null ? NotFound() : Ok(dto);
-    }
-
-    // GET api/bookings/{typeKey}?vinOrHin=&make=&model=&year=&take=&afterId=
-    [HttpGet]
-    public async Task<IActionResult> Search(
-        string typeKey,
-        [FromQuery] string? vinOrHin,
-        [FromQuery] string? make,
-        [FromQuery] string? model,
-        [FromQuery] int? year,
-        [FromQuery] int take = 50,
-        [FromQuery] long? afterId = null,
-        CancellationToken ct = default)
-    {
-        var list = await _svc.SearchAsync(typeKey, vinOrHin, make, model, year, take, afterId, ct);
-        return Ok(list);
-    }
-}
-
-// ============================================================================
 // File: src/Api/Composition/ServiceCollectionExtensions.cs
 // ============================================================================
 using System.Reflection;
-using Api.Bookings.Providers;
 using Api.Data;
-using Api.Services;
+using Api.Funding.Data;
+using Api.Funding.Services;
+using Api.Vehicle.Providers;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Api.Composition;
 
 public static class ServiceCollectionExtensions
 {
-    public static IServiceCollection AddBookingModule(this IServiceCollection services, params Assembly[] assemblies)
+    public static IServiceCollection AddVehicleModule(this IServiceCollection services, params Assembly[] assemblies)
     {
-        // Infra
-        services.AddSingleton<IDbConnectionFactory, SqlConnectionFactory>();
-        services.AddScoped<IBookingService, BookingService>();
-        services.AddScoped<IBookingProviderFactory, BookingProviderFactory>(); // uses keyed DI
+        // --- Infra (Oracle)
+        services.AddSingleton<IOracleConnectionFactory, OracleConnectionFactory>();
+        services.AddSingleton<IOracleDataProvider, OracleDataProvider>();
 
-        // Where to scan for providers
+        // --- Funding layer
+        services.AddSingleton<IFundingDataProvider, FundingDataProvider>();
+        services.AddScoped<IFundingService, FundingService>();
+
+        // --- Vehicle factory (keyed DI)
+        services.AddScoped<IVehicleProviderFactory, VehicleProviderFactory>();
+
+        // --- Discover and register vehicle providers via attribute
         var scan = (assemblies.Length > 0) ? assemblies : new[] { Assembly.GetExecutingAssembly() };
-
-        // Discover provider types with [BookingProviderKey]
         var providerTypes = scan
             .SelectMany(a => a.DefinedTypes)
-            .Where(t => !t.IsAbstract && typeof(IBookingProvider).IsAssignableFrom(t))
-            .Select(t => new { Type = (Type)t, Attr = t.GetCustomAttribute<BookingProviderKeyAttribute>() })
+            .Where(t => !t.IsAbstract && typeof(IVehicleProvider).IsAssignableFrom(t))
+            .Select(t => new { Type = (Type)t, Attr = t.GetCustomAttribute<VehicleProviderKeyAttribute>() })
             .ToList();
 
         if (providerTypes.Any(x => x.Attr is null))
         {
             var missing = string.Join(", ", providerTypes.Where(x => x.Attr is null).Select(x => x.Type.Name));
-            throw new InvalidOperationException($"All IBookingProvider implementations must have [BookingProviderKey]. Missing: {missing}");
+            throw new InvalidOperationException($"All IVehicleProvider implementations must have [VehicleProviderKey]. Missing: {missing}");
         }
 
-        // Guard duplicates
         var dupKeys = providerTypes
             .GroupBy(x => x.Attr!.Key, StringComparer.OrdinalIgnoreCase)
             .Where(g => g.Count() > 1)
             .Select(g => g.Key)
             .ToArray();
-        if (dupKeys.Length > 0) throw new InvalidOperationException($"Duplicate booking provider keys: {string.Join(", ", dupKeys)}");
+        if (dupKeys.Length > 0)
+            throw new InvalidOperationException($"Duplicate vehicle provider keys: {string.Join(", ", dupKeys)}");
 
-        // Register each provider as a keyed transient
         foreach (var x in providerTypes)
         {
-            services.AddKeyedTransient(typeof(IBookingProvider), x.Attr!.Key, x.Type);
+            services.AddKeyedTransient(typeof(IVehicleProvider), x.Attr!.Key, x.Type);
         }
 
         return services;
@@ -187,74 +160,133 @@ public static class ServiceCollectionExtensions
 }
 
 // ============================================================================
-// File: src/Api/Data/IDbConnectionFactory.cs
+// File: src/Api/Data/DataContext.cs
 // ============================================================================
-using System.Data;
-
 namespace Api.Data;
 
-public interface IDbConnectionFactory
+public enum DataContext
 {
-    Task<IDbConnection> OpenAsync(CancellationToken ct = default);
+    Cp,
+    Vcfs
 }
 
 // ============================================================================
-// File: src/Api/Data/SqlConnectionFactory.cs
+// File: src/Api/Data/IOracleConnectionFactory.cs
 // ============================================================================
 using System.Data;
-using Microsoft.Data.SqlClient;
-using Microsoft.Extensions.Configuration;
 
 namespace Api.Data;
 
-public sealed class SqlConnectionFactory : IDbConnectionFactory
+public interface IOracleConnectionFactory
 {
-    private readonly string _connStr;
-    public SqlConnectionFactory(IConfiguration cfg)
+    Task<IDbConnection> OpenAsync(DataContext ctx, CancellationToken ct = default);
+}
+
+// ============================================================================
+// File: src/Api/Data/OracleConnectionFactory.cs
+// ============================================================================
+using System.Data;
+using Microsoft.Extensions.Configuration;
+using Oracle.ManagedDataAccess.Client;
+
+namespace Api.Data;
+
+public sealed class OracleConnectionFactory : IOracleConnectionFactory
+{
+    private readonly string _cpCs;
+    private readonly string _vcfsCs;
+
+    public OracleConnectionFactory(IConfiguration cfg)
     {
-        _connStr = cfg.GetConnectionString("Default")
-            ?? throw new InvalidOperationException("Missing connection string 'Default'.");
+        _cpCs   = cfg.GetConnectionString("cp")   ?? throw new("Missing connection string 'cp'.");
+        _vcfsCs = cfg.GetConnectionString("vcfs") ?? throw new("Missing connection string 'vcfs'.");
     }
 
-    public async Task<IDbConnection> OpenAsync(CancellationToken ct = default)
+    public async Task<IDbConnection> OpenAsync(DataContext ctx, CancellationToken ct = default)
     {
-        var cn = new SqlConnection(_connStr); // pooling enabled by default
-        await cn.OpenAsync(ct);
-        return cn;
-        }
+        var cs = ctx == DataContext.Cp ? _cpCs : _vcfsCs;
+        var cn = new OracleConnection(cs); // ODP.NET pooling on by default
+        await cn.OpenAsync(ct).ConfigureAwait(false);
+        return cn; // caller disposes
+    }
 }
 
 // ============================================================================
-// File: src/Api/Bookings/IBooking.cs
+// File: src/Api/Data/IOracleDataProvider.cs
 // ============================================================================
-namespace Api.Bookings;
+using System.Data;
+using Dapper;
 
-public interface IBooking
+namespace Api.Data;
+
+public interface IOracleDataProvider
 {
-    string BookingType { get; }
+    Task<T?> QuerySingleOrDefaultAsync<T>(string sql, object? args, DataContext ctx, CancellationToken ct, int? timeoutSeconds = null);
+    Task<IReadOnlyList<T>> QueryAsync<T>(string sql, object? args, DataContext ctx, CancellationToken ct, int? timeoutSeconds = null, bool buffered = true);
+    Task<int> ExecuteAsync(string sql, object? args, DataContext ctx, CancellationToken ct, int? timeoutSeconds = null);
 }
 
 // ============================================================================
-// File: src/Api/Bookings/BookingTypeKeys.cs
+// File: src/Api/Data/OracleDataProvider.cs
 // ============================================================================
-namespace Api.Bookings;
+using Dapper;
 
-public static class BookingTypeKeys
+namespace Api.Data;
+
+public sealed class OracleDataProvider : IOracleDataProvider
+{
+    private readonly IOracleConnectionFactory _factory;
+    public OracleDataProvider(IOracleConnectionFactory factory) => _factory = factory;
+
+    public async Task<T?> QuerySingleOrDefaultAsync<T>(string sql, object? args, DataContext ctx, CancellationToken ct, int? timeoutSeconds = null)
+    {
+        await using var cn = await _factory.OpenAsync(ctx, ct);
+        return await cn.QuerySingleOrDefaultAsync<T>(new CommandDefinition(sql, args, commandTimeout: timeoutSeconds, cancellationToken: ct));
+    }
+
+    public async Task<IReadOnlyList<T>> QueryAsync<T>(string sql, object? args, DataContext ctx, CancellationToken ct, int? timeoutSeconds = null, bool buffered = true)
+    {
+        await using var cn = await _factory.OpenAsync(ctx, ct);
+        var rows = await cn.QueryAsync<T>(new CommandDefinition(sql, args, commandTimeout: timeoutSeconds, cancellationToken: ct), buffered: buffered);
+        return rows.AsList();
+    }
+
+    public async Task<int> ExecuteAsync(string sql, object? args, DataContext ctx, CancellationToken ct, int? timeoutSeconds = null)
+    {
+        await using var cn = await _factory.OpenAsync(ctx, ct);
+        return await cn.ExecuteAsync(new CommandDefinition(sql, args, commandTimeout: timeoutSeconds, cancellationToken: ct));
+    }
+}
+
+// ============================================================================
+// File: src/Api/Vehicle/IVehicle.cs
+// ============================================================================
+namespace Api.Vehicle;
+
+public interface IVehicle
+{
+    string VehicleType { get; }
+}
+
+// ============================================================================
+// File: src/Api/Vehicle/VehicleTypeKeys.cs
+// ============================================================================
+namespace Api.Vehicle;
+
+public static class VehicleTypeKeys
 {
     public const string Auto = "auto";
     public const string Rv   = "rv";
 }
 
 // ============================================================================
-// File: src/Api/Bookings/Dtos/AutoDto.cs
+// File: src/Api/Vehicle/Dtos/AutoDto.cs
 // ============================================================================
-using Api.Bookings;
+namespace Api.Vehicle.Dtos;
 
-namespace Api.Bookings.Dtos;
-
-public sealed class AutoDto : IBooking
+public sealed class AutoDto : IVehicle
 {
-    public string BookingType => BookingTypeKeys.Auto;
+    public string VehicleType => VehicleTypeKeys.Auto;
     public long   Id    { get; init; }
     public string Vin   { get; init; } = string.Empty;
     public string Make  { get; init; } = string.Empty;
@@ -264,15 +296,13 @@ public sealed class AutoDto : IBooking
 }
 
 // ============================================================================
-// File: src/Api/Bookings/Dtos/RvDto.cs
+// File: src/Api/Vehicle/Dtos/RvDto.cs
 // ============================================================================
-using Api.Bookings;
+namespace Api.Vehicle.Dtos;
 
-namespace Api.Bookings.Dtos;
-
-public sealed class RvDto : IBooking
+public sealed class RvDto : IVehicle
 {
-    public string BookingType => BookingTypeKeys.Rv;
+    public string VehicleType => VehicleTypeKeys.Rv;
     public long   Id       { get; init; }
     public string Vin      { get; init; } = string.Empty;
     public string Make     { get; init; } = string.Empty;
@@ -282,21 +312,20 @@ public sealed class RvDto : IBooking
 }
 
 // ============================================================================
-// File: src/Api/Bookings/Providers/IBookingProvider.cs
+// File: src/Api/Vehicle/Providers/IVehicleProvider.cs
 // ============================================================================
-using System.Data;
+using Api.Data;
 
-namespace Api.Bookings.Providers;
+namespace Api.Vehicle.Providers;
 
-public interface IBookingProvider
+public interface IVehicleProvider
 {
     string Key { get; } // "auto", "rv", ...
 
-    Task<IBooking?> GetByIdAsync(IDbConnection cn, long id, CancellationToken ct);
+    Task<IVehicle?> GetByIdAsync(DataContext ctx, long id, CancellationToken ct);
 
-    // Keyset pagination: afterId instead of skip/offset
-    Task<IReadOnlyList<IBooking>> SearchAsync(
-        IDbConnection cn,
+    Task<IReadOnlyList<IVehicle>> SearchAsync(
+        DataContext ctx,
         string? vinOrHin,
         string? make,
         string? model,
@@ -307,240 +336,403 @@ public interface IBookingProvider
 }
 
 // ============================================================================
-// File: src/Api/Bookings/Providers/BaseBookingProvider.cs
+// File: src/Api/Vehicle/Providers/VehicleProviderKeyAttribute.cs
 // ============================================================================
-using System.Data;
-using Dapper;
-
-namespace Api.Bookings.Providers;
-
-public abstract class BaseBookingProvider : IBookingProvider
-{
-    public abstract string Key { get; }
-
-    public abstract Task<IBooking?> GetByIdAsync(IDbConnection cn, long id, CancellationToken ct);
-
-    public abstract Task<IReadOnlyList<IBooking>> SearchAsync(
-        IDbConnection cn,
-        string? vinOrHin,
-        string? make,
-        string? model,
-        int? year,
-        int take,
-        long? afterId,
-        CancellationToken ct);
-
-    protected static string Like(string? s) => string.IsNullOrWhiteSpace(s) ? "%" : $"%{s.Trim()}%";
-
-    protected static async Task<IReadOnlyList<T>> QAsync<T>(IDbConnection cn, string sql, object args, CancellationToken ct)
-        => (await cn.QueryAsync<T>(new CommandDefinition(sql, args, cancellationToken: ct))).AsList();
-}
-
-// ============================================================================
-// File: src/Api/Bookings/Providers/Attributes/BookingProviderKeyAttribute.cs
-// ============================================================================
-namespace Api.Bookings.Providers;
+namespace Api.Vehicle.Providers;
 
 [AttributeUsage(AttributeTargets.Class, AllowMultiple = false, Inherited = false)]
-public sealed class BookingProviderKeyAttribute : Attribute
+public sealed class VehicleProviderKeyAttribute : Attribute
 {
     public string Key { get; }
-    public BookingProviderKeyAttribute(string key) => Key = key;
+    public VehicleProviderKeyAttribute(string key) => Key = key;
 }
 
 // ============================================================================
-// File: src/Api/Bookings/Providers/AutoProvider.cs
+// File: src/Api/Vehicle/Providers/AutoProvider.cs
 // ============================================================================
-using System.Data;
-using Api.Bookings.Dtos;
-using Dapper;
+using Api.Data;
+using Api.Vehicle.Dtos;
 
-namespace Api.Bookings.Providers;
+namespace Api.Vehicle.Providers;
 
-[BookingProviderKey(BookingTypeKeys.Auto)]
-public sealed class AutoProvider : BaseBookingProvider
+[VehicleProviderKey(VehicleTypeKeys.Auto)]
+public sealed class AutoProvider : IVehicleProvider
 {
-    public override string Key => BookingTypeKeys.Auto;
+    private readonly IOracleDataProvider _db;
+    public AutoProvider(IOracleDataProvider db) => _db = db;
+    public string Key => VehicleTypeKeys.Auto;
 
-    public override async Task<IBooking?> GetByIdAsync(IDbConnection cn, long id, CancellationToken ct)
-    {
-        const string sql = @"SELECT Id, Vin, Make, Model, [Year], Doors
-                              FROM dbo.Auto WHERE Id = @Id";
-        return await cn.QuerySingleOrDefaultAsync<AutoDto>(new CommandDefinition(sql, new { Id = id }, cancellationToken: ct));
-    }
+    public Task<IVehicle?> GetByIdAsync(DataContext ctx, long id, CancellationToken ct)
+        => _db.QuerySingleOrDefaultAsync<AutoDto>(
+               @"SELECT Id, Vin, Make, Model, Year, Doors FROM Auto WHERE Id = :Id",
+               new { Id = id }, ctx, ct)
+              .ContinueWith(t => (IVehicle?)t.Result, ct);
 
-    public override async Task<IReadOnlyList<IBooking>> SearchAsync(
-        IDbConnection cn, string? vin, string? make, string? model, int? year, int take, long? afterId, CancellationToken ct)
+    public async Task<IReadOnlyList<IVehicle>> SearchAsync(
+        DataContext ctx, string? vin, string? make, string? model, int? year, int take, long? afterId, CancellationToken ct)
     {
         const string sql = @"
-SELECT TOP (@Take) Id, Vin, Make, Model, [Year], Doors
-FROM dbo.Auto
-WHERE (@AfterId IS NULL OR Id > @AfterId)
-  AND (@Vin   IS NULL OR Vin   LIKE @VinLike)
-  AND (@Make  IS NULL OR Make  LIKE @MakeLike)
-  AND (@Model IS NULL OR Model LIKE @ModelLike)
-  AND (@Year  IS NULL OR [Year]= @Year)
-ORDER BY Id ASC;";
+SELECT Id, Vin, Make, Model, Year, Doors
+FROM Auto
+WHERE (:AfterId IS NULL OR Id > :AfterId)
+  AND (:Vin   IS NULL OR Vin   LIKE :VinLike)
+  AND (:Make  IS NULL OR Make  LIKE :MakeLike)
+  AND (:Model IS NULL OR Model LIKE :ModelLike)
+  AND (:Year  IS NULL OR Year  = :Year)
+ORDER BY Id
+FETCH FIRST :Take ROWS ONLY";
 
-        var rows = await QAsync<AutoDto>(cn, sql, new {
-            Take = Math.Clamp(take, 1, 200),
+        var rows = await _db.QueryAsync<AutoDto>(sql, new {
             AfterId = afterId,
             Vin = vin,   VinLike = Like(vin),
             Make = make, MakeLike = Like(make),
             Model = model, ModelLike = Like(model),
-            Year = year
-        }, ct);
+            Year = year,
+            Take = Math.Clamp(take, 1, 200)
+        }, ctx, ct);
 
-        return rows.Cast<IBooking>().ToList();
+        return rows.Cast<IVehicle>().ToList();
     }
+
+    private static string Like(string? s) => string.IsNullOrWhiteSpace(s) ? "%" : $"%{s.Trim()}%";
 }
 
 // ============================================================================
-// File: src/Api/Bookings/Providers/RvProvider.cs
+// File: src/Api/Vehicle/Providers/RvProvider.cs
 // ============================================================================
-using System.Data;
-using Api.Bookings.Dtos;
-using Dapper;
+using Api.Data;
+using Api.Vehicle.Dtos;
 
-namespace Api.Bookings.Providers;
+namespace Api.Vehicle.Providers;
 
-[BookingProviderKey(BookingTypeKeys.Rv)]
-public sealed class RvProvider : BaseBookingProvider
+[VehicleProviderKey(VehicleTypeKeys.Rv)]
+public sealed class RvProvider : IVehicleProvider
 {
-    public override string Key => BookingTypeKeys.Rv;
+    private readonly IOracleDataProvider _db;
+    public RvProvider(IOracleDataProvider db) => _db = db;
+    public string Key => VehicleTypeKeys.Rv;
 
-    public override async Task<IBooking?> GetByIdAsync(IDbConnection cn, long id, CancellationToken ct)
-    {
-        const string sql = @"SELECT Id, Vin, Make, Model, [Year], LengthFt
-                              FROM dbo.Rv WHERE Id = @Id";
-        return await cn.QuerySingleOrDefaultAsync<RvDto>(new CommandDefinition(sql, new { Id = id }, cancellationToken: ct));
-    }
+    public Task<IVehicle?> GetByIdAsync(DataContext ctx, long id, CancellationToken ct)
+        => _db.QuerySingleOrDefaultAsync<RvDto>(
+               @"SELECT Id, Vin, Make, Model, Year, LengthFt FROM Rv WHERE Id = :Id",
+               new { Id = id }, ctx, ct)
+              .ContinueWith(t => (IVehicle?)t.Result, ct);
 
-    public override async Task<IReadOnlyList<IBooking>> SearchAsync(
-        IDbConnection cn, string? vin, string? make, string? model, int? year, int take, long? afterId, CancellationToken ct)
+    public async Task<IReadOnlyList<IVehicle>> SearchAsync(
+        DataContext ctx, string? vin, string? make, string? model, int? year, int take, long? afterId, CancellationToken ct)
     {
         const string sql = @"
-SELECT TOP (@Take) Id, Vin, Make, Model, [Year], LengthFt
-FROM dbo.Rv
-WHERE (@AfterId IS NULL OR Id > @AfterId)
-  AND (@Vin   IS NULL OR Vin   LIKE @VinLike)
-  AND (@Make  IS NULL OR Make  LIKE @MakeLike)
-  AND (@Model IS NULL OR Model LIKE @ModelLike)
-  AND (@Year  IS NULL OR [Year]= @Year)
-ORDER BY Id ASC;";
+SELECT Id, Vin, Make, Model, Year, LengthFt
+FROM Rv
+WHERE (:AfterId IS NULL OR Id > :AfterId)
+  AND (:Vin   IS NULL OR Vin   LIKE :VinLike)
+  AND (:Make  IS NULL OR Make  LIKE :MakeLike)
+  AND (:Model IS NULL OR Model LIKE :ModelLike)
+  AND (:Year  IS NULL OR Year  = :Year)
+ORDER BY Id
+FETCH FIRST :Take ROWS ONLY";
 
-        var rows = await QAsync<RvDto>(cn, sql, new {
-            Take = Math.Clamp(take, 1, 200),
+        var rows = await _db.QueryAsync<RvDto>(sql, new {
             AfterId = afterId,
             Vin = vin,   VinLike = Like(vin),
             Make = make, MakeLike = Like(make),
             Model = model, ModelLike = Like(model),
-            Year = year
-        }, ct);
+            Year = year,
+            Take = Math.Clamp(take, 1, 200)
+        }, ctx, ct);
 
-        return rows.Cast<IBooking>().ToList();
+        return rows.Cast<IVehicle>().ToList();
     }
+
+    private static string Like(string? s) => string.IsNullOrWhiteSpace(s) ? "%" : $"%{s.Trim()}%";
 }
 
 // ============================================================================
-// File: src/Api/Services/IBookingProviderFactory.cs
+// File: src/Api/Vehicle/Providers/IVehicleProviderFactory.cs
 // ============================================================================
-using Api.Bookings.Providers;
+namespace Api.Vehicle.Providers;
 
-namespace Api.Services;
-
-public interface IBookingProviderFactory
+public interface IVehicleProviderFactory
 {
-    IBookingProvider Resolve(string typeKey);
+    IVehicleProvider Resolve(string typeKey);
 }
 
 // ============================================================================
-// File: src/Api/Services/BookingProviderFactory.cs
+// File: src/Api/Vehicle/Providers/VehicleProviderFactory.cs
 // ============================================================================
-using Api.Bookings.Providers;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace Api.Services;
+namespace Api.Vehicle.Providers;
 
-public sealed class BookingProviderFactory : IBookingProviderFactory
+public sealed class VehicleProviderFactory : IVehicleProviderFactory
 {
     private readonly IServiceProvider _sp;
-    public BookingProviderFactory(IServiceProvider sp) => _sp = sp;
+    public VehicleProviderFactory(IServiceProvider sp) => _sp = sp;
 
-    public IBookingProvider Resolve(string typeKey)
-        => _sp.GetRequiredKeyedService<IBookingProvider>(typeKey.ToLowerInvariant());
+    public IVehicleProvider Resolve(string typeKey)
+        => _sp.GetRequiredKeyedService<IVehicleProvider>(typeKey.ToLowerInvariant());
 }
 
 // ============================================================================
-// File: src/Api/Services/IBookingService.cs
+// File: src/Api/Funding/Dtos/CollateralInfoDto.cs
 // ============================================================================
-using Api.Bookings;
+using Api.Vehicle;
 
-namespace Api.Services;
+namespace Api.Funding.Dtos;
 
-public interface IBookingService
+public sealed class CollateralInfoDto
 {
-    Task<IBooking?> GetByIdAsync(string typeKey, long id, CancellationToken ct);
-
-    Task<IReadOnlyList<IBooking>> SearchAsync(
-        string typeKey,
-        string? vinOrHin,
-        string? make,
-        string? model,
-        int? year,
-        int take,
-        long? afterId,
-        CancellationToken ct);
+    public long   CollateralId   { get; init; }
+    public long   LoanId         { get; init; }
+    public string VehicleTypeKey { get; init; } = string.Empty; // "auto" | "rv" | ...
+    public long   VehicleId      { get; init; }
+    public IVehicle? Vehicle     { get; init; } // runtime type: AutoDto | RvDto
 }
 
 // ============================================================================
-// File: src/Api/Services/BookingService.cs
+// File: src/Api/Funding/Data/CollateralInfoRow.cs
 // ============================================================================
-using Api.Bookings;
-using Api.Bookings.Providers;
+namespace Api.Funding.Data;
+
+public sealed class CollateralInfoRow
+{
+    public long   CollateralId   { get; init; }
+    public long   LoanId         { get; init; }
+    public string VehicleTypeKey { get; init; } = string.Empty;
+    public long   VehicleId      { get; init; }
+}
+
+// ============================================================================
+// File: src/Api/Funding/Data/IFundingDataProvider.cs
+// ============================================================================
 using Api.Data;
 
-namespace Api.Services;
+namespace Api.Funding.Data;
 
-public sealed class BookingService : IBookingService
+public interface IFundingDataProvider
 {
-    private readonly IDbConnectionFactory _db;
-    private readonly IBookingProviderFactory _factory;
+    Task<CollateralInfoRow?> GetCollateralRowAsync(DataContext ctx, long collateralId, CancellationToken ct);
+    Task<IReadOnlyList<CollateralInfoRow>> GetCollateralRowsAsync(DataContext ctx, IEnumerable<long> collateralIds, CancellationToken ct);
+}
 
-    public BookingService(IDbConnectionFactory db, IBookingProviderFactory factory)
+// ============================================================================
+// File: src/Api/Funding/Data/FundingDataProvider.cs
+// ============================================================================
+using Api.Data;
+using Dapper;
+
+namespace Api.Funding.Data;
+
+public sealed class FundingDataProvider : IFundingDataProvider
+{
+    private readonly IOracleConnectionFactory _conn;
+    public FundingDataProvider(IOracleConnectionFactory conn) => _conn = conn;
+
+    public async Task<CollateralInfoRow?> GetCollateralRowAsync(DataContext ctx, long collateralId, CancellationToken ct)
     {
-        _db = db;
-        _factory = factory;
+        const string sql = @"
+SELECT  c.Id        AS CollateralId,
+        c.LoanId    AS LoanId,
+        c.VehicleTypeKey,
+        c.VehicleId
+FROM Collateral c
+WHERE c.Id = :Id";
+        await using var cn = await _conn.OpenAsync(ctx, ct);
+        return await cn.QuerySingleOrDefaultAsync<CollateralInfoRow>(new CommandDefinition(sql, new { Id = collateralId }, cancellationToken: ct));
     }
 
-    public async Task<IBooking?> GetByIdAsync(string typeKey, long id, CancellationToken ct)
+    public async Task<IReadOnlyList<CollateralInfoRow>> GetCollateralRowsAsync(DataContext ctx, IEnumerable<long> collateralIds, CancellationToken ct)
     {
-        var provider = _factory.Resolve(typeKey);
-        await using var cn = await _db.OpenAsync(ct);
-        return await provider.GetByIdAsync(cn, id, ct);
-    }
-
-    public async Task<IReadOnlyList<IBooking>> SearchAsync(
-        string typeKey, string? vinOrHin, string? make, string? model, int? year, int take, long? afterId, CancellationToken ct)
-    {
-        var provider = _factory.Resolve(typeKey);
-        await using var cn = await _db.OpenAsync(ct);
-        return await provider.SearchAsync(cn, vinOrHin, make, model, year, take, afterId, ct);
+        const string sql = @"
+SELECT  c.Id        AS CollateralId,
+        c.LoanId    AS LoanId,
+        c.VehicleTypeKey,
+        c.VehicleId
+FROM Collateral c
+WHERE c.Id IN :Ids";
+        await using var cn = await _conn.OpenAsync(ctx, ct);
+        var rows = await cn.QueryAsync<CollateralInfoRow>(new CommandDefinition(sql, new { Ids = collateralIds.ToArray() }, cancellationToken: ct));
+        return rows.AsList();
     }
 }
 
 // ============================================================================
-// Notes:
-// - Tables expected:
-//   dbo.Auto(Id BIGINT PK, Vin NVARCHAR(..), Make NVARCHAR(..), Model NVARCHAR(..), [Year] INT, Doors INT, ...)
-//   dbo.Rv  (Id BIGINT PK, Vin NVARCHAR(..), Make NVARCHAR(..), Model NVARCHAR(..), [Year] INT, LengthFt FLOAT, ...)
-// - Ensure covering indexes for search patterns, e.g.:
-//   CREATE INDEX IX_Auto_Vin ON dbo.Auto(Vin) INCLUDE (Make, Model, [Year], Id);
-//   CREATE INDEX IX_Rv_Vin   ON dbo.Rv  (Vin) INCLUDE (Make, Model, [Year], Id);
-// - Keyset paging uses afterId (cursor). Pass afterId=lastReturnedId to get next page.
-// - Cancellation tokens are threaded end-to-end; ASP.NET sets RequestAborted automatically.
-// - To add a new booking type (e.g., boat):
-//     * Create BoatDto : IBooking
-//     * Create BoatProvider : BaseBookingProvider, add [BookingProviderKey("boat")]
-//     * No changes to controller, service, or Program.cs.
+// File: src/Api/Funding/Services/IFundingService.cs
+// ============================================================================
+using Api.Data;
+using Api.Funding.Dtos;
+
+namespace Api.Funding.Services;
+
+public interface IFundingService
+{
+    Task<CollateralInfoDto?> GetCollateralInfoAsync(DataContext ctx, long collateralId, CancellationToken ct);
+
+    Task<IReadOnlyList<CollateralInfoDto>> GetCollateralInfosAsync(DataContext ctx, IEnumerable<long> collateralIds, CancellationToken ct);
+}
+
+// ============================================================================
+// File: src/Api/Funding/Services/FundingService.cs
+// ============================================================================
+using Api.Data;
+using Api.Funding.Data;
+using Api.Funding.Dtos;
+using Api.Vehicle.Providers;
+
+namespace Api.Funding.Services;
+
+public sealed class FundingService : IFundingService
+{
+    private readonly IFundingDataProvider _fundingDb;
+    private readonly IVehicleProviderFactory _vehicleFactory;
+
+    public FundingService(IFundingDataProvider fundingDb, IVehicleProviderFactory vehicleFactory)
+    {
+        _fundingDb = fundingDb;
+        _vehicleFactory = vehicleFactory;
+    }
+
+    public async Task<CollateralInfoDto?> GetCollateralInfoAsync(DataContext ctx, long collateralId, CancellationToken ct)
+    {
+        var row = await _fundingDb.GetCollateralRowAsync(ctx, collateralId, ct);
+        if (row is null) return null;
+
+        var provider = _vehicleFactory.Resolve(row.VehicleTypeKey);
+        var vehicle = await provider.GetByIdAsync(ctx, row.VehicleId, ct);
+
+        return new CollateralInfoDto
+        {
+            CollateralId   = row.CollateralId,
+            LoanId         = row.LoanId,
+            VehicleTypeKey = row.VehicleTypeKey,
+            VehicleId      = row.VehicleId,
+            Vehicle        = vehicle
+        };
+    }
+
+    public async Task<IReadOnlyList<CollateralInfoDto>> GetCollateralInfosAsync(DataContext ctx, IEnumerable<long> collateralIds, CancellationToken ct)
+    {
+        var rows = await _fundingDb.GetCollateralRowsAsync(ctx, collateralIds, ct);
+        if (rows.Count == 0) return Array.Empty<CollateralInfoDto>();
+
+        // Group by type, then fetch per type
+        var byType = rows.GroupBy(r => r.VehicleTypeKey, StringComparer.OrdinalIgnoreCase);
+        var vehicleMap = new Dictionary<(string type, long id), Api.Vehicle.IVehicle?>();
+        foreach (var grp in byType)
+        {
+            var provider = _vehicleFactory.Resolve(grp.Key);
+            // Simple loop (implement GetByIdsAsync on provider later to batch)
+            foreach (var r in grp)
+            {
+                var v = await provider.GetByIdAsync(ctx, r.VehicleId, ct);
+                vehicleMap[(grp.Key, r.VehicleId)] = v;
+            }
+        }
+
+        return rows.Select(r => new CollateralInfoDto
+        {
+            CollateralId   = r.CollateralId,
+            LoanId         = r.LoanId,
+            VehicleTypeKey = r.VehicleTypeKey,
+            VehicleId      = r.VehicleId,
+            Vehicle        = vehicleMap[(r.VehicleTypeKey, r.VehicleId)]
+        }).ToList();
+    }
+}
+
+// ============================================================================
+// File: src/Api/Controllers/VehiclesController.cs
+// ============================================================================
+using Api.Data;
+using Api.Vehicle.Providers;
+using Microsoft.AspNetCore.Mvc;
+
+namespace Api.Controllers;
+
+[ApiController]
+[Route("api/vehicles/{contextType}/{typeKey}")]
+public sealed class VehiclesController : ControllerBase
+{
+    private readonly IVehicleProviderFactory _factory;
+    public VehiclesController(IVehicleProviderFactory factory) => _factory = factory;
+
+    private static bool TryParseCtx(string s, out DataContext ctx) => Enum.TryParse(s, true, out ctx);
+
+    [HttpGet("{id:long}")]
+    public async Task<IActionResult> GetById(string contextType, string typeKey, long id, CancellationToken ct)
+    {
+        if (!TryParseCtx(contextType, out var ctx)) return BadRequest("Invalid contextType.");
+        var provider = _factory.Resolve(typeKey);
+        var dto = await provider.GetByIdAsync(ctx, id, ct);
+        return dto is null ? NotFound() : Ok(dto);
+    }
+
+    // GET api/vehicles/{contextType}/{typeKey}?vinOrHin=&make=&model=&year=&take=&afterId=
+    [HttpGet]
+    public async Task<IActionResult> Search(
+        string contextType, string typeKey,
+        [FromQuery] string? vinOrHin,
+        [FromQuery] string? make,
+        [FromQuery] string? model,
+        [FromQuery] int? year,
+        [FromQuery] int take = 50,
+        [FromQuery] long? afterId = null,
+        CancellationToken ct = default)
+    {
+        if (!TryParseCtx(contextType, out var ctx)) return BadRequest("Invalid contextType.");
+        var provider = _factory.Resolve(typeKey);
+        var list = await provider.SearchAsync(ctx, vinOrHin, make, model, year, take, afterId, ct);
+        return Ok(list);
+    }
+}
+
+// ============================================================================
+// File: src/Api/Controllers/FundingController.cs
+// ============================================================================
+using Api.Data;
+using Api.Funding.Services;
+using Microsoft.AspNetCore.Mvc;
+
+namespace Api.Controllers;
+
+[ApiController]
+[Route("api/funding/{contextType}")]
+public sealed class FundingController : ControllerBase
+{
+    private readonly IFundingService _svc;
+    public FundingController(IFundingService svc) => _svc = svc;
+
+    private static bool TryParseCtx(string s, out DataContext ctx) => Enum.TryParse(s, true, out ctx);
+
+    // GET: /api/funding/{contextType}/collateral/{id}
+    [HttpGet("collateral/{id:long}")]
+    public async Task<IActionResult> GetCollateral(string contextType, long id, CancellationToken ct)
+    {
+        if (!TryParseCtx(contextType, out var ctx)) return BadRequest("Invalid contextType.");
+        var dto = await _svc.GetCollateralInfoAsync(ctx, id, ct);
+        return dto is null ? NotFound() : Ok(dto);
+    }
+
+    // POST: /api/funding/{contextType}/collateral/batch
+    [HttpPost("collateral/batch")]
+    public async Task<IActionResult> GetCollateralBatch(string contextType, [FromBody] long[] ids, CancellationToken ct)
+    {
+        if (!TryParseCtx(contextType, out var ctx)) return BadRequest("Invalid contextType.");
+        if (ids is null || ids.Length == 0) return BadRequest("ids required");
+        var list = await _svc.GetCollateralInfosAsync(ctx, ids, ct);
+        return Ok(list);
+    }
+}
+
+// ============================================================================
+// Notes
+// ----------------------------------------------------------------------------
+// 1) Providers use IOracleDataProvider which opens a pooled Oracle connection per call.
+//    This matches your current pattern and keeps FundingService orchestration simple.
+// 2) Vehicle providers are discovered via [VehicleProviderKey("auto|rv|...")]. Adding a new type
+//    requires only a new provider class + attribute; Program.cs stays unchanged.
+// 3) Keyset pagination: use afterId for paging (fast). For true text search, consider Oracle Text.
+// 4) Indexing (DB): ensure indexes on Auto(Vin), Rv(Vin) etc., plus Id ascending for paging.
+// 5) If you frequently need batch vehicle loads, add GetByIdsAsync(...) to IVehicleProvider and
+//    implement array binding (WHERE Id IN :Ids) to reduce round trips.
 // ============================================================================
