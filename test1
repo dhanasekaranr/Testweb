@@ -1,738 +1,347 @@
-// ============================================================================
-// VEHICLE + FUNDING — End‑to‑End Implementation (Oracle + Dapper)
-// Strategy + Factory (keyed DI via attribute scan) + Context‑aware DB routing
-// ----------------------------------------------------------------------------
-// Folder Structure
-// ----------------------------------------------------------------------------
-// /src
-//   /Api
-//     Api.csproj
-//     appsettings.json
-//     Program.cs
-//     /Composition
-//       ServiceCollectionExtensions.cs
-//     /Controllers
-//       VehiclesController.cs
-//       FundingController.cs
-//     /Data
-//       DataContext.cs
-//       IOracleConnectionFactory.cs
-//       OracleConnectionFactory.cs
-//       IOracleDataProvider.cs
-//       OracleDataProvider.cs
-//     /Vehicle
-//       IVehicle.cs
-//       VehicleTypeKeys.cs
-//       /Dtos
-//         AutoDto.cs
-//         RvDto.cs
-//       /Providers
-//         IVehicleProvider.cs
-//         VehicleProviderKeyAttribute.cs
-//         AutoProvider.cs
-//         RvProvider.cs
-//         IVehicleProviderFactory.cs
-//         VehicleProviderFactory.cs
-//     /Funding
-//       /Dtos
-//         CollateralInfoDto.cs
-//       /Data
-//         CollateralInfoRow.cs
-//         IFundingDataProvider.cs
-//         FundingDataProvider.cs
-//       /Services
-//         IFundingService.cs
-//         FundingService.cs
-// ----------------------------------------------------------------------------
-// Sample routes (contextType: cp|vcfs, typeKey: auto|rv):
-//   GET /api/vehicles/cp/auto/123
-//   GET /api/vehicles/vcfs/rv?vinOrHin=4X4&take=25
-//   GET /api/funding/cp/collateral/456           --> CollateralInfoDto with embedded Vehicle DTO
-//   POST/GET batch variants can be added similarly
-// ============================================================================
-
-// ============================================================================
-// File: src/Api/Program.cs
-// ============================================================================
-using Api.Composition;
-using Api.Vehicle.Providers; // assembly anchor for scanning
-
-var builder = WebApplication.CreateBuilder(args);
-
-builder.Services.AddControllers();
-
-// Register everything (DB infra, Vehicle providers via attribute scan, Funding service)
-builder.Services.AddVehicleModule(typeof(AutoProvider).Assembly);
-
-var app = builder.Build();
-
-app.MapControllers();
-
-app.Run();
-
-// ============================================================================
-// File: src/Api/appsettings.json
-// ============================================================================
-/*
+public/config.json
 {
-  "ConnectionStrings": {
-    "cp":   "User Id=CP_USER;Password=***;Data Source=CP_DB;Pooling=true;Min Pool Size=20;Max Pool Size=200",
-    "vcfs": "User Id=VCFS_USER;Password=***;Data Source=VCFS_DB;Pooling=true;Min Pool Size=20;Max Pool Size=200"
+  "apiUrl": "https://api-dev.example.com",
+  "ssoConfig": {
+    "issuer": "https://idp.example.com/realms/dev",
+    "clientId": "spa-dev",
+    "scope": "openid profile email offline_access api.read",
+    "requireHttps": true
   },
-  "Logging": { "LogLevel": { "Default": "Information", "Microsoft.AspNetCore": "Warning" } },
-  "AllowedHosts": "*"
+  "monitoring": {
+    "endpoint": "https://mon-dev.example.com/events",
+    "enabled": true
+  },
+  "security": {
+    "contentSecurityPolicy": "default-src 'self';",
+    "featurePolicy": "geolocation 'none'"
+  }
 }
-*/
 
-// ============================================================================
-// File: src/Api/Api.csproj
-// ============================================================================
-/*
-<Project Sdk="Microsoft.NET.Sdk.Web">
-  <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
-  </PropertyGroup>
-  <ItemGroup>
-    <PackageReference Include="Dapper" Version="2.1.35" />
-    <PackageReference Include="Oracle.ManagedDataAccess" Version="23.6.1" />
-  </ItemGroup>
-</Project>
-*/
+angular.json (assets mapping)
+"assets": [
+  "src/favicon.ico",
+  "src/assets",
+  { "input": "public", "glob": "**/*", "output": "/" }
+]
 
-// ============================================================================
-// File: src/Api/Composition/ServiceCollectionExtensions.cs
-// ============================================================================
-using System.Reflection;
-using Api.Data;
-using Api.Funding.Data;
-using Api.Funding.Services;
-using Api.Vehicle.Providers;
-using Microsoft.Extensions.DependencyInjection;
+src/app/environment-config.service.ts
+import { Injectable } from '@angular/core';
 
-namespace Api.Composition;
+export class SSOConfig {
+  issuer!: string;
+  clientId!: string;
+  scope?: string;
+  requireHttps?: boolean;
 
-public static class ServiceCollectionExtensions
-{
-    public static IServiceCollection AddVehicleModule(this IServiceCollection services, params Assembly[] assemblies)
-    {
-        // --- Infra (Oracle)
-        services.AddSingleton<IOracleConnectionFactory, OracleConnectionFactory>();
-        services.AddSingleton<IOracleDataProvider, OracleDataProvider>();
+  static fromJSON(j: any): SSOConfig {
+    const x = new SSOConfig();
+    x.issuer = String(j?.issuer ?? '');
+    x.clientId = String(j?.clientId ?? '');
+    x.scope = j?.scope ?? 'openid profile email';
+    x.requireHttps = j?.requireHttps ?? true;
+    if (!x.issuer || !x.clientId) throw new Error('ssoConfig.issuer/clientId required');
+    return x;
+  }
+}
 
-        // --- Funding layer
-        services.AddSingleton<IFundingDataProvider, FundingDataProvider>();
-        services.AddScoped<IFundingService, FundingService>();
+export class MonitoringConfig {
+  endpoint!: string;
+  enabled = false;
+  static fromJSON(j: any): MonitoringConfig {
+    const x = new MonitoringConfig();
+    x.endpoint = String(j?.endpoint ?? '');
+    x.enabled = Boolean(j?.enabled ?? false);
+    return x;
+  }
+}
 
-        // --- Vehicle factory (keyed DI)
-        services.AddScoped<IVehicleProviderFactory, VehicleProviderFactory>();
+export class SecurityConfig {
+  contentSecurityPolicy?: string;
+  featurePolicy?: string;
+  static fromJSON(j: any): SecurityConfig {
+    const x = new SecurityConfig();
+    x.contentSecurityPolicy = j?.contentSecurityPolicy ?? undefined;
+    x.featurePolicy = j?.featurePolicy ?? undefined;
+    return x;
+  }
+}
 
-        // --- Discover and register vehicle providers via attribute
-        var scan = (assemblies.Length > 0) ? assemblies : new[] { Assembly.GetExecutingAssembly() };
-        var providerTypes = scan
-            .SelectMany(a => a.DefinedTypes)
-            .Where(t => !t.IsAbstract && typeof(IVehicleProvider).IsAssignableFrom(t))
-            .Select(t => new { Type = (Type)t, Attr = t.GetCustomAttribute<VehicleProviderKeyAttribute>() })
-            .ToList();
+/** Your existing EnvironmentConfig, now injectable and loaded from /config.json */
+@Injectable({ providedIn: 'root' })
+export class EnvironmentConfig {
+  apiUrl!: string;
+  ssoConfig!: SSOConfig;
+  monitoring!: MonitoringConfig;
+  security!: SecurityConfig;
 
-        if (providerTypes.Any(x => x.Attr is null))
-        {
-            var missing = string.Join(", ", providerTypes.Where(x => x.Attr is null).Select(x => x.Type.Name));
-            throw new InvalidOperationException($"All IVehicleProvider implementations must have [VehicleProviderKey]. Missing: {missing}");
-        }
+  async load(): Promise<void> {
+    const base = document.baseURI?.replace(/\/+$/, '') ?? '';
+    const url = `${base}/config.json?v=${Date.now()}`;
+    const resp = await fetch(url, { cache: 'no-store' });
+    if (!resp.ok) throw new Error(`config.json load failed: ${resp.status}`);
+    const j = await resp.json();
 
-        var dupKeys = providerTypes
-            .GroupBy(x => x.Attr!.Key, StringComparer.OrdinalIgnoreCase)
-            .Where(g => g.Count() > 1)
-            .Select(g => g.Key)
-            .ToArray();
-        if (dupKeys.Length > 0)
-            throw new InvalidOperationException($"Duplicate vehicle provider keys: {string.Join(", ", dupKeys)}");
+    this.apiUrl = String(j?.apiUrl ?? '');
+    if (!this.apiUrl) throw new Error('config.json: apiUrl required');
 
-        foreach (var x in providerTypes)
-        {
-            services.AddKeyedTransient(typeof(IVehicleProvider), x.Attr!.Key, x.Type);
-        }
+    this.ssoConfig = SSOConfig.fromJSON(j?.ssoConfig ?? {});
+    this.monitoring = MonitoringConfig.fromJSON(j?.monitoring ?? {});
+    this.security = SecurityConfig.fromJSON(j?.security ?? {});
+  }
+}
 
-        return services;
+src/app/auth/auth.service.ts
+import { Injectable } from '@angular/core';
+import { OAuthService, AuthConfig } from 'angular-oauth2-oidc';
+import { EnvironmentConfig } from '../environment-config.service';
+import { BehaviorSubject, firstValueFrom } from 'rxjs';
+import { filter, take } from 'rxjs/operators';
+
+@Injectable({ providedIn: 'root' })
+export class AuthService {
+  private refreshInProgress$ = new BehaviorSubject<boolean>(false);
+  private refreshDone$       = new BehaviorSubject<boolean>(true);
+  private firstLoginResolved = false;
+
+  constructor(private oauth: OAuthService, private env: EnvironmentConfig) {}
+
+  /** Called from provideAppInitializer after env.load() */
+  async init(): Promise<void> {
+    this.oauth.configure(this.toAuthConfig());
+    await this.oauth.loadDiscoveryDocument();
+    await this.oauth.tryLoginCodeFlow();
+
+    const maybeResolveFirst = () => {
+      if (!this.firstLoginResolved && this.oauth.hasValidAccessToken()) this.firstLoginResolved = true;
+    };
+    maybeResolveFirst();
+
+    this.oauth.events.subscribe((e: any) => {
+      if (e.type === 'token_received' || e.type === 'token_refreshed') this.schedulePreemptive();
+      maybeResolveFirst();
+    });
+
+    if (this.oauth.hasValidAccessToken()) this.schedulePreemptive();
+  }
+
+  async waitForFirstLogin(): Promise<void> {
+    if (this.firstLoginResolved) return;
+    await firstValueFrom((this.oauth.events as any).pipe(
+      filter(() => this.oauth.hasValidAccessToken()),
+      take(1)
+    ));
+  }
+
+  login(): void { this.oauth.initLoginFlow(); }
+  logout(): void { this.oauth.logOut(true); }
+
+  get accessToken(): string | null { return this.oauth.getAccessToken() || null; }
+  hasValidAccessToken(): boolean { return this.oauth.hasValidAccessToken(); }
+
+  async ensureFreshToken(): Promise<void> {
+    const msLeft = this.oauth.getAccessTokenExpiration() - Date.now();
+    if (!this.oauth.hasValidAccessToken() || msLeft < 60_000) await this.refreshIfPossible();
+  }
+
+  async refreshIfPossible(): Promise<void> {
+    if (this.refreshInProgress$.value) {
+      await firstValueFrom(this.refreshDone$.pipe(filter(v => v === true), take(1)));
+      return;
     }
-}
+    const hasRT = !!this.oauth.getRefreshToken();
+    if (!hasRT) throw new Error('NO_REFRESH_TOKEN');
 
-// ============================================================================
-// File: src/Api/Data/DataContext.cs
-// ============================================================================
-namespace Api.Data;
-
-public enum DataContext
-{
-    Cp,
-    Vcfs
-}
-
-// ============================================================================
-// File: src/Api/Data/IOracleConnectionFactory.cs
-// ============================================================================
-using System.Data;
-
-namespace Api.Data;
-
-public interface IOracleConnectionFactory
-{
-    Task<IDbConnection> OpenAsync(DataContext ctx, CancellationToken ct = default);
-}
-
-// ============================================================================
-// File: src/Api/Data/OracleConnectionFactory.cs
-// ============================================================================
-using System.Data;
-using Microsoft.Extensions.Configuration;
-using Oracle.ManagedDataAccess.Client;
-
-namespace Api.Data;
-
-public sealed class OracleConnectionFactory : IOracleConnectionFactory
-{
-    private readonly string _cpCs;
-    private readonly string _vcfsCs;
-
-    public OracleConnectionFactory(IConfiguration cfg)
-    {
-        _cpCs   = cfg.GetConnectionString("cp")   ?? throw new("Missing connection string 'cp'.");
-        _vcfsCs = cfg.GetConnectionString("vcfs") ?? throw new("Missing connection string 'vcfs'.");
+    this.refreshInProgress$.next(true);
+    this.refreshDone$.next(false);
+    try {
+      const ok = await this.oauth.refreshToken();
+      if (!ok) throw new Error('REFRESH_FAILED');
+    } finally {
+      this.refreshInProgress$.next(false);
+      this.refreshDone$.next(true);
     }
+  }
 
-    public async Task<IDbConnection> OpenAsync(DataContext ctx, CancellationToken ct = default)
-    {
-        var cs = ctx == DataContext.Cp ? _cpCs : _vcfsCs;
-        var cn = new OracleConnection(cs); // ODP.NET pooling on by default
-        await cn.OpenAsync(ct).ConfigureAwait(false);
-        return cn; // caller disposes
+  private schedulePreemptive(): void {
+    const exp = this.oauth.getAccessTokenExpiration();
+    const ms = Math.max(exp - Date.now() - 60_000, 0);
+    setTimeout(() => {
+      if (this.oauth.getAccessTokenExpiration() <= Date.now() + 90_000) {
+        this.refreshIfPossible().catch(() => {});
+      }
+    }, ms);
+  }
+
+  private toAuthConfig(): AuthConfig {
+    const a = this.env.ssoConfig;
+    return {
+      issuer: a.issuer,
+      clientId: a.clientId,
+      responseType: 'code',
+      oidc: true,
+      scope: a.scope ?? 'openid profile email',
+      requireHttps: a.requireHttps ?? true,
+      useSilentRefresh: false,      // per your requirement
+      sessionChecksEnabled: false,
+      disableAtHashCheck: true
+    };
+  }
+}
+
+src/app/auth/auth.interceptor.ts
+import { Injectable } from '@angular/core';
+import {
+  HttpInterceptor, HttpRequest, HttpHandler, HttpEvent, HttpErrorResponse
+} from '@angular/common/http';
+import { Observable, from } from 'rxjs';
+import { switchMap, catchError, throwError } from 'rxjs';
+import { AuthService } from './auth.service';
+
+@Injectable()
+export class AuthInterceptor implements HttpInterceptor {
+  constructor(private auth: AuthService) {}
+
+  intercept(req: HttpRequest<any>, next: HttpHandler): Observable<HttpEvent<any>> {
+    const addAuth = (r: HttpRequest<any>) => {
+      const t = this.auth.accessToken;
+      return t ? r.clone({ setHeaders: { Authorization: `Bearer ${t}` } }) : r;
+    };
+
+    return from(this.auth.ensureFreshToken()).pipe(
+      switchMap(() => next.handle(addAuth(req))),
+      catchError(err => {
+        if (!this.isExpired(err)) return throwError(() => err);
+        return from(this.auth.refreshIfPossible()).pipe(
+          switchMap(() => next.handle(addAuth(req))),
+          catchError(err2 => {
+            this.auth.logout();
+            this.auth.login();
+            return throwError(() => err2);
+          })
+        );
+      })
+    );
+  }
+
+  private isExpired(err: any): boolean {
+    if (err instanceof HttpErrorResponse) {
+      if (err.status === 401) return true;
+      const hdr = err.headers?.get('WWW-Authenticate') ?? '';
+      if (hdr.includes('invalid_token') || hdr.includes('expired')) return true;
+      const msg = ((err.error && (err.error.error || err.error.message)) || '') + '';
+      if (msg.includes('invalid_token') || msg.includes('expired')) return true;
     }
+    return false;
+  }
 }
 
-// ============================================================================
-// File: src/Api/Data/IOracleDataProvider.cs
-// ============================================================================
-using System.Data;
-using Dapper;
+src/app/session-bootstrap.service.ts
+import { Injectable } from '@angular/core';
+import { AuthService } from './auth/auth.service';
+import { UserService } from './services/user.service';
+import { MonitoringService } from './services/monitoring.service';
 
-namespace Api.Data;
+@Injectable({ providedIn: 'root' })
+export class SessionBootstrapService {
+  private booted = false;
 
-public interface IOracleDataProvider
-{
-    Task<T?> QuerySingleOrDefaultAsync<T>(string sql, object? args, DataContext ctx, CancellationToken ct, int? timeoutSeconds = null);
-    Task<IReadOnlyList<T>> QueryAsync<T>(string sql, object? args, DataContext ctx, CancellationToken ct, int? timeoutSeconds = null, bool buffered = true);
-    Task<int> ExecuteAsync(string sql, object? args, DataContext ctx, CancellationToken ct, int? timeoutSeconds = null);
+  constructor(
+    private auth: AuthService,
+    private user: UserService,
+    private mon: MonitoringService
+  ) {}
+
+  /** Run heavy stuff once after the FIRST valid token. Never on refresh. */
+  async initOnce(): Promise<void> {
+    if (this.booted) return;
+    await this.auth.waitForFirstLogin();
+    await this.user.loadProfile();
+    await this.mon.init();
+    this.booted = true;
+  }
 }
 
-// ============================================================================
-// File: src/Api/Data/OracleDataProvider.cs
-// ============================================================================
-using Dapper;
+src/app/services/user.service.ts (stub)
+import { Injectable } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { EnvironmentConfig } from '../environment-config.service';
+import { firstValueFrom } from 'rxjs';
 
-namespace Api.Data;
+@Injectable({ providedIn: 'root' })
+export class UserService {
+  profile: any;
+  private base = this.env.apiUrl;
 
-public sealed class OracleDataProvider : IOracleDataProvider
-{
-    private readonly IOracleConnectionFactory _factory;
-    public OracleDataProvider(IOracleConnectionFactory factory) => _factory = factory;
+  constructor(private http: HttpClient, private env: EnvironmentConfig) {}
 
-    public async Task<T?> QuerySingleOrDefaultAsync<T>(string sql, object? args, DataContext ctx, CancellationToken ct, int? timeoutSeconds = null)
-    {
-        await using var cn = await _factory.OpenAsync(ctx, ct);
-        return await cn.QuerySingleOrDefaultAsync<T>(new CommandDefinition(sql, args, commandTimeout: timeoutSeconds, cancellationToken: ct));
-    }
-
-    public async Task<IReadOnlyList<T>> QueryAsync<T>(string sql, object? args, DataContext ctx, CancellationToken ct, int? timeoutSeconds = null, bool buffered = true)
-    {
-        await using var cn = await _factory.OpenAsync(ctx, ct);
-        var rows = await cn.QueryAsync<T>(new CommandDefinition(sql, args, commandTimeout: timeoutSeconds, cancellationToken: ct), buffered: buffered);
-        return rows.AsList();
-    }
-
-    public async Task<int> ExecuteAsync(string sql, object? args, DataContext ctx, CancellationToken ct, int? timeoutSeconds = null)
-    {
-        await using var cn = await _factory.OpenAsync(ctx, ct);
-        return await cn.ExecuteAsync(new CommandDefinition(sql, args, commandTimeout: timeoutSeconds, cancellationToken: ct));
-    }
+  async loadProfile(): Promise<void> {
+    this.profile = await firstValueFrom(this.http.get(`${this.base}/me`));
+  }
 }
 
-// ============================================================================
-// File: src/Api/Vehicle/IVehicle.cs
-// ============================================================================
-namespace Api.Vehicle;
+src/app/services/monitoring.service.ts (stub)
+import { Injectable } from '@angular/core';
+import { EnvironmentConfig } from '../environment-config.service';
 
-public interface IVehicle
-{
-    string VehicleType { get; }
+@Injectable({ providedIn: 'root' })
+export class MonitoringService {
+  private started = false;
+  constructor(private env: EnvironmentConfig) {}
+
+  async init(): Promise<void> {
+    if (this.started || !this.env.monitoring.enabled) return;
+    // register session, start beacons using this.env.monitoring.endpoint, etc.
+    this.started = true;
+  }
 }
 
-// ============================================================================
-// File: src/Api/Vehicle/VehicleTypeKeys.cs
-// ============================================================================
-namespace Api.Vehicle;
-
-public static class VehicleTypeKeys
-{
-    public const string Auto = "auto";
-    public const string Rv   = "rv";
-}
-
-// ============================================================================
-// File: src/Api/Vehicle/Dtos/AutoDto.cs
-// ============================================================================
-namespace Api.Vehicle.Dtos;
-
-public sealed class AutoDto : IVehicle
-{
-    public string VehicleType => VehicleTypeKeys.Auto;
-    public long   Id    { get; init; }
-    public string Vin   { get; init; } = string.Empty;
-    public string Make  { get; init; } = string.Empty;
-    public string Model { get; init; } = string.Empty;
-    public int    Year  { get; init; }
-    public int    Doors { get; init; }
-}
-
-// ============================================================================
-// File: src/Api/Vehicle/Dtos/RvDto.cs
-// ============================================================================
-namespace Api.Vehicle.Dtos;
-
-public sealed class RvDto : IVehicle
-{
-    public string VehicleType => VehicleTypeKeys.Rv;
-    public long   Id       { get; init; }
-    public string Vin      { get; init; } = string.Empty;
-    public string Make     { get; init; } = string.Empty;
-    public string Model    { get; init; } = string.Empty;
-    public int    Year     { get; init; }
-    public double LengthFt { get; init; }
-}
-
-// ============================================================================
-// File: src/Api/Vehicle/Providers/IVehicleProvider.cs
-// ============================================================================
-using Api.Data;
-
-namespace Api.Vehicle.Providers;
-
-public interface IVehicleProvider
-{
-    string Key { get; } // "auto", "rv", ...
-
-    Task<IVehicle?> GetByIdAsync(DataContext ctx, long id, CancellationToken ct);
-
-    Task<IReadOnlyList<IVehicle>> SearchAsync(
-        DataContext ctx,
-        string? vinOrHin,
-        string? make,
-        string? model,
-        int? year,
-        int take,
-        long? afterId,
-        CancellationToken ct);
-}
-
-// ============================================================================
-// File: src/Api/Vehicle/Providers/VehicleProviderKeyAttribute.cs
-// ============================================================================
-namespace Api.Vehicle.Providers;
-
-[AttributeUsage(AttributeTargets.Class, AllowMultiple = false, Inherited = false)]
-public sealed class VehicleProviderKeyAttribute : Attribute
-{
-    public string Key { get; }
-    public VehicleProviderKeyAttribute(string key) => Key = key;
-}
-
-// ============================================================================
-// File: src/Api/Vehicle/Providers/AutoProvider.cs
-// ============================================================================
-using Api.Data;
-using Api.Vehicle.Dtos;
-
-namespace Api.Vehicle.Providers;
-
-[VehicleProviderKey(VehicleTypeKeys.Auto)]
-public sealed class AutoProvider : IVehicleProvider
-{
-    private readonly IOracleDataProvider _db;
-    public AutoProvider(IOracleDataProvider db) => _db = db;
-    public string Key => VehicleTypeKeys.Auto;
-
-    public Task<IVehicle?> GetByIdAsync(DataContext ctx, long id, CancellationToken ct)
-        => _db.QuerySingleOrDefaultAsync<AutoDto>(
-               @"SELECT Id, Vin, Make, Model, Year, Doors FROM Auto WHERE Id = :Id",
-               new { Id = id }, ctx, ct)
-              .ContinueWith(t => (IVehicle?)t.Result, ct);
-
-    public async Task<IReadOnlyList<IVehicle>> SearchAsync(
-        DataContext ctx, string? vin, string? make, string? model, int? year, int take, long? afterId, CancellationToken ct)
-    {
-        const string sql = @"
-SELECT Id, Vin, Make, Model, Year, Doors
-FROM Auto
-WHERE (:AfterId IS NULL OR Id > :AfterId)
-  AND (:Vin   IS NULL OR Vin   LIKE :VinLike)
-  AND (:Make  IS NULL OR Make  LIKE :MakeLike)
-  AND (:Model IS NULL OR Model LIKE :ModelLike)
-  AND (:Year  IS NULL OR Year  = :Year)
-ORDER BY Id
-FETCH FIRST :Take ROWS ONLY";
-
-        var rows = await _db.QueryAsync<AutoDto>(sql, new {
-            AfterId = afterId,
-            Vin = vin,   VinLike = Like(vin),
-            Make = make, MakeLike = Like(make),
-            Model = model, ModelLike = Like(model),
-            Year = year,
-            Take = Math.Clamp(take, 1, 200)
-        }, ctx, ct);
-
-        return rows.Cast<IVehicle>().ToList();
-    }
-
-    private static string Like(string? s) => string.IsNullOrWhiteSpace(s) ? "%" : $"%{s.Trim()}%";
-}
-
-// ============================================================================
-// File: src/Api/Vehicle/Providers/RvProvider.cs
-// ============================================================================
-using Api.Data;
-using Api.Vehicle.Dtos;
-
-namespace Api.Vehicle.Providers;
-
-[VehicleProviderKey(VehicleTypeKeys.Rv)]
-public sealed class RvProvider : IVehicleProvider
-{
-    private readonly IOracleDataProvider _db;
-    public RvProvider(IOracleDataProvider db) => _db = db;
-    public string Key => VehicleTypeKeys.Rv;
-
-    public Task<IVehicle?> GetByIdAsync(DataContext ctx, long id, CancellationToken ct)
-        => _db.QuerySingleOrDefaultAsync<RvDto>(
-               @"SELECT Id, Vin, Make, Model, Year, LengthFt FROM Rv WHERE Id = :Id",
-               new { Id = id }, ctx, ct)
-              .ContinueWith(t => (IVehicle?)t.Result, ct);
-
-    public async Task<IReadOnlyList<IVehicle>> SearchAsync(
-        DataContext ctx, string? vin, string? make, string? model, int? year, int take, long? afterId, CancellationToken ct)
-    {
-        const string sql = @"
-SELECT Id, Vin, Make, Model, Year, LengthFt
-FROM Rv
-WHERE (:AfterId IS NULL OR Id > :AfterId)
-  AND (:Vin   IS NULL OR Vin   LIKE :VinLike)
-  AND (:Make  IS NULL OR Make  LIKE :MakeLike)
-  AND (:Model IS NULL OR Model LIKE :ModelLike)
-  AND (:Year  IS NULL OR Year  = :Year)
-ORDER BY Id
-FETCH FIRST :Take ROWS ONLY";
-
-        var rows = await _db.QueryAsync<RvDto>(sql, new {
-            AfterId = afterId,
-            Vin = vin,   VinLike = Like(vin),
-            Make = make, MakeLike = Like(make),
-            Model = model, ModelLike = Like(model),
-            Year = year,
-            Take = Math.Clamp(take, 1, 200)
-        }, ctx, ct);
-
-        return rows.Cast<IVehicle>().ToList();
-    }
-
-    private static string Like(string? s) => string.IsNullOrWhiteSpace(s) ? "%" : $"%{s.Trim()}%";
-}
-
-// ============================================================================
-// File: src/Api/Vehicle/Providers/IVehicleProviderFactory.cs
-// ============================================================================
-namespace Api.Vehicle.Providers;
-
-public interface IVehicleProviderFactory
-{
-    IVehicleProvider Resolve(string typeKey);
-}
-
-// ============================================================================
-// File: src/Api/Vehicle/Providers/VehicleProviderFactory.cs
-// ============================================================================
-using Microsoft.Extensions.DependencyInjection;
-
-namespace Api.Vehicle.Providers;
-
-public sealed class VehicleProviderFactory : IVehicleProviderFactory
-{
-    private readonly IServiceProvider _sp;
-    public VehicleProviderFactory(IServiceProvider sp) => _sp = sp;
-
-    public IVehicleProvider Resolve(string typeKey)
-        => _sp.GetRequiredKeyedService<IVehicleProvider>(typeKey.ToLowerInvariant());
-}
-
-// ============================================================================
-// File: src/Api/Funding/Dtos/CollateralInfoDto.cs
-// ============================================================================
-using Api.Vehicle;
-
-namespace Api.Funding.Dtos;
-
-public sealed class CollateralInfoDto
-{
-    public long   CollateralId   { get; init; }
-    public long   LoanId         { get; init; }
-    public string VehicleTypeKey { get; init; } = string.Empty; // "auto" | "rv" | ...
-    public long   VehicleId      { get; init; }
-    public IVehicle? Vehicle     { get; init; } // runtime type: AutoDto | RvDto
-}
-
-// ============================================================================
-// File: src/Api/Funding/Data/CollateralInfoRow.cs
-// ============================================================================
-namespace Api.Funding.Data;
-
-public sealed class CollateralInfoRow
-{
-    public long   CollateralId   { get; init; }
-    public long   LoanId         { get; init; }
-    public string VehicleTypeKey { get; init; } = string.Empty;
-    public long   VehicleId      { get; init; }
-}
-
-// ============================================================================
-// File: src/Api/Funding/Data/IFundingDataProvider.cs
-// ============================================================================
-using Api.Data;
-
-namespace Api.Funding.Data;
-
-public interface IFundingDataProvider
-{
-    Task<CollateralInfoRow?> GetCollateralRowAsync(DataContext ctx, long collateralId, CancellationToken ct);
-    Task<IReadOnlyList<CollateralInfoRow>> GetCollateralRowsAsync(DataContext ctx, IEnumerable<long> collateralIds, CancellationToken ct);
-}
-
-// ============================================================================
-// File: src/Api/Funding/Data/FundingDataProvider.cs
-// ============================================================================
-using Api.Data;
-using Dapper;
-
-namespace Api.Funding.Data;
-
-public sealed class FundingDataProvider : IFundingDataProvider
-{
-    private readonly IOracleConnectionFactory _conn;
-    public FundingDataProvider(IOracleConnectionFactory conn) => _conn = conn;
-
-    public async Task<CollateralInfoRow?> GetCollateralRowAsync(DataContext ctx, long collateralId, CancellationToken ct)
-    {
-        const string sql = @"
-SELECT  c.Id        AS CollateralId,
-        c.LoanId    AS LoanId,
-        c.VehicleTypeKey,
-        c.VehicleId
-FROM Collateral c
-WHERE c.Id = :Id";
-        await using var cn = await _conn.OpenAsync(ctx, ct);
-        return await cn.QuerySingleOrDefaultAsync<CollateralInfoRow>(new CommandDefinition(sql, new { Id = collateralId }, cancellationToken: ct));
-    }
-
-    public async Task<IReadOnlyList<CollateralInfoRow>> GetCollateralRowsAsync(DataContext ctx, IEnumerable<long> collateralIds, CancellationToken ct)
-    {
-        const string sql = @"
-SELECT  c.Id        AS CollateralId,
-        c.LoanId    AS LoanId,
-        c.VehicleTypeKey,
-        c.VehicleId
-FROM Collateral c
-WHERE c.Id IN :Ids";
-        await using var cn = await _conn.OpenAsync(ctx, ct);
-        var rows = await cn.QueryAsync<CollateralInfoRow>(new CommandDefinition(sql, new { Ids = collateralIds.ToArray() }, cancellationToken: ct));
-        return rows.AsList();
-    }
-}
-
-// ============================================================================
-// File: src/Api/Funding/Services/IFundingService.cs
-// ============================================================================
-using Api.Data;
-using Api.Funding.Dtos;
-
-namespace Api.Funding.Services;
-
-public interface IFundingService
-{
-    Task<CollateralInfoDto?> GetCollateralInfoAsync(DataContext ctx, long collateralId, CancellationToken ct);
-
-    Task<IReadOnlyList<CollateralInfoDto>> GetCollateralInfosAsync(DataContext ctx, IEnumerable<long> collateralIds, CancellationToken ct);
-}
-
-// ============================================================================
-// File: src/Api/Funding/Services/FundingService.cs
-// ============================================================================
-using Api.Data;
-using Api.Funding.Data;
-using Api.Funding.Dtos;
-using Api.Vehicle.Providers;
-
-namespace Api.Funding.Services;
-
-public sealed class FundingService : IFundingService
-{
-    private readonly IFundingDataProvider _fundingDb;
-    private readonly IVehicleProviderFactory _vehicleFactory;
-
-    public FundingService(IFundingDataProvider fundingDb, IVehicleProviderFactory vehicleFactory)
-    {
-        _fundingDb = fundingDb;
-        _vehicleFactory = vehicleFactory;
-    }
-
-    public async Task<CollateralInfoDto?> GetCollateralInfoAsync(DataContext ctx, long collateralId, CancellationToken ct)
-    {
-        var row = await _fundingDb.GetCollateralRowAsync(ctx, collateralId, ct);
-        if (row is null) return null;
-
-        var provider = _vehicleFactory.Resolve(row.VehicleTypeKey);
-        var vehicle = await provider.GetByIdAsync(ctx, row.VehicleId, ct);
-
-        return new CollateralInfoDto
-        {
-            CollateralId   = row.CollateralId,
-            LoanId         = row.LoanId,
-            VehicleTypeKey = row.VehicleTypeKey,
-            VehicleId      = row.VehicleId,
-            Vehicle        = vehicle
-        };
-    }
-
-    public async Task<IReadOnlyList<CollateralInfoDto>> GetCollateralInfosAsync(DataContext ctx, IEnumerable<long> collateralIds, CancellationToken ct)
-    {
-        var rows = await _fundingDb.GetCollateralRowsAsync(ctx, collateralIds, ct);
-        if (rows.Count == 0) return Array.Empty<CollateralInfoDto>();
-
-        // Group by type, then fetch per type
-        var byType = rows.GroupBy(r => r.VehicleTypeKey, StringComparer.OrdinalIgnoreCase);
-        var vehicleMap = new Dictionary<(string type, long id), Api.Vehicle.IVehicle?>();
-        foreach (var grp in byType)
-        {
-            var provider = _vehicleFactory.Resolve(grp.Key);
-            // Simple loop (implement GetByIdsAsync on provider later to batch)
-            foreach (var r in grp)
-            {
-                var v = await provider.GetByIdAsync(ctx, r.VehicleId, ct);
-                vehicleMap[(grp.Key, r.VehicleId)] = v;
-            }
-        }
-
-        return rows.Select(r => new CollateralInfoDto
-        {
-            CollateralId   = r.CollateralId,
-            LoanId         = r.LoanId,
-            VehicleTypeKey = r.VehicleTypeKey,
-            VehicleId      = r.VehicleId,
-            Vehicle        = vehicleMap[(r.VehicleTypeKey, r.VehicleId)]
-        }).ToList();
-    }
-}
-
-// ============================================================================
-// File: src/Api/Controllers/VehiclesController.cs
-// ============================================================================
-using Api.Data;
-using Api.Vehicle.Providers;
-using Microsoft.AspNetCore.Mvc;
-
-namespace Api.Controllers;
-
-[ApiController]
-[Route("api/vehicles/{contextType}/{typeKey}")]
-public sealed class VehiclesController : ControllerBase
-{
-    private readonly IVehicleProviderFactory _factory;
-    public VehiclesController(IVehicleProviderFactory factory) => _factory = factory;
-
-    private static bool TryParseCtx(string s, out DataContext ctx) => Enum.TryParse(s, true, out ctx);
-
-    [HttpGet("{id:long}")]
-    public async Task<IActionResult> GetById(string contextType, string typeKey, long id, CancellationToken ct)
-    {
-        if (!TryParseCtx(contextType, out var ctx)) return BadRequest("Invalid contextType.");
-        var provider = _factory.Resolve(typeKey);
-        var dto = await provider.GetByIdAsync(ctx, id, ct);
-        return dto is null ? NotFound() : Ok(dto);
-    }
-
-    // GET api/vehicles/{contextType}/{typeKey}?vinOrHin=&make=&model=&year=&take=&afterId=
-    [HttpGet]
-    public async Task<IActionResult> Search(
-        string contextType, string typeKey,
-        [FromQuery] string? vinOrHin,
-        [FromQuery] string? make,
-        [FromQuery] string? model,
-        [FromQuery] int? year,
-        [FromQuery] int take = 50,
-        [FromQuery] long? afterId = null,
-        CancellationToken ct = default)
-    {
-        if (!TryParseCtx(contextType, out var ctx)) return BadRequest("Invalid contextType.");
-        var provider = _factory.Resolve(typeKey);
-        var list = await provider.SearchAsync(ctx, vinOrHin, make, model, year, take, afterId, ct);
-        return Ok(list);
-    }
-}
-
-// ============================================================================
-// File: src/Api/Controllers/FundingController.cs
-// ============================================================================
-using Api.Data;
-using Api.Funding.Services;
-using Microsoft.AspNetCore.Mvc;
-
-namespace Api.Controllers;
-
-[ApiController]
-[Route("api/funding/{contextType}")]
-public sealed class FundingController : ControllerBase
-{
-    private readonly IFundingService _svc;
-    public FundingController(IFundingService svc) => _svc = svc;
-
-    private static bool TryParseCtx(string s, out DataContext ctx) => Enum.TryParse(s, true, out ctx);
-
-    // GET: /api/funding/{contextType}/collateral/{id}
-    [HttpGet("collateral/{id:long}")]
-    public async Task<IActionResult> GetCollateral(string contextType, long id, CancellationToken ct)
-    {
-        if (!TryParseCtx(contextType, out var ctx)) return BadRequest("Invalid contextType.");
-        var dto = await _svc.GetCollateralInfoAsync(ctx, id, ct);
-        return dto is null ? NotFound() : Ok(dto);
-    }
-
-    // POST: /api/funding/{contextType}/collateral/batch
-    [HttpPost("collateral/batch")]
-    public async Task<IActionResult> GetCollateralBatch(string contextType, [FromBody] long[] ids, CancellationToken ct)
-    {
-        if (!TryParseCtx(contextType, out var ctx)) return BadRequest("Invalid contextType.");
-        if (ids is null || ids.Length == 0) return BadRequest("ids required");
-        var list = await _svc.GetCollateralInfosAsync(ctx, ids, ct);
-        return Ok(list);
-    }
-}
-
-// ============================================================================
-// Notes
-// ----------------------------------------------------------------------------
-// 1) Providers use IOracleDataProvider which opens a pooled Oracle connection per call.
-//    This matches your current pattern and keeps FundingService orchestration simple.
-// 2) Vehicle providers are discovered via [VehicleProviderKey("auto|rv|...")]. Adding a new type
-//    requires only a new provider class + attribute; Program.cs stays unchanged.
-// 3) Keyset pagination: use afterId for paging (fast). For true text search, consider Oracle Text.
-// 4) Indexing (DB): ensure indexes on Auto(Vin), Rv(Vin) etc., plus Id ascending for paging.
-// 5) If you frequently need batch vehicle loads, add GetByIdsAsync(...) to IVehicleProvider and
-//    implement array binding (WHERE Id IN :Ids) to reduce round trips.
-// ============================================================================
+src/app/app.module.ts (using provideAppInitializer())
+import { NgModule, inject } from '@angular/core';
+import { BrowserModule } from '@angular/platform-browser';
+import { HttpClientModule, HTTP_INTERCEPTORS } from '@angular/common/http';
+import { OAuthModule } from 'angular-oauth2-oidc';
+import { provideAppInitializer } from '@angular/core';
+
+import { AppComponent } from './app.component';
+import { EnvironmentConfig } from './environment-config.service';
+import { AuthService } from './auth/auth.service';
+import { SessionBootstrapService } from './session-bootstrap.service';
+import { AuthInterceptor } from './auth/auth.interceptor';
+
+@NgModule({
+  declarations: [AppComponent],
+  imports: [BrowserModule, HttpClientModule, OAuthModule.forRoot()],
+  providers: [
+    // Startup order: 1) config.json  2) OAuth discovery/login  3) boot ONCE
+    provideAppInitializer(() => {
+      const env  = inject(EnvironmentConfig);
+      const auth = inject(AuthService);
+      const boot = inject(SessionBootstrapService);
+      return (async () => {
+        await env.load();        // ALWAYS first
+        await auth.init();       // uses env.ssoConfig
+        if (auth.hasValidAccessToken()) await boot.initOnce();
+      })();
+    }),
+    { provide: HTTP_INTERCEPTORS, useClass: AuthInterceptor, multi: true }
+  ],
+  bootstrap: [AppComponent]
+})
+export class AppModule {}
+
+src/app/app.component.ts (keep clean)
+import { Component } from '@angular/core';
+@Component({ selector: 'app-root', template: `<router-outlet></router-outlet>` })
+export class AppComponent {}
+
+What this guarantees
+
+/config.json loads before OAuth.
+
+Token refresh only swaps tokens. It does not re-load config or re-run UserService/MonitoringService.
+
+Heavy boot (SessionBootstrapService.initOnce()) runs once after the first valid token.
+
+Interceptor pre-empts expiry, does single-flight refresh, retries once, and hard-reauths if refresh isn’t possible.
+
+If your config.json keys differ, tell me the exact shape; I’ll tweak EnvironmentConfig.load() and toAuthConfig() accordingly.
