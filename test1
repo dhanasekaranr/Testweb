@@ -1,3 +1,55 @@
+// src/app/devtools/redux-devtools.service.ts
+import { Injectable, inject, isDevMode } from '@angular/core';
+import { FEATURE_FLAGS } from '../core/feature-flags';
+
+type DevTools = {
+  connect(options?: { name?: string; features?: Record<string, boolean> }): {
+    init: (state: unknown) => void;
+    send: (action: string | { type: string; payload?: unknown }, state: unknown) => void;
+    subscribe: (listener: (message: any) => void) => void;
+  };
+};
+
+export type DevtoolsConnection = {
+  init: (state: unknown) => void;
+  send: (action: any, state: unknown) => void;
+  subscribe: (listener: (message: any) => void) => void;
+};
+
+declare global { interface Window { __REDUX_DEVTOOLS_EXTENSION__?: DevTools; } }
+
+@Injectable({ providedIn: 'root' })
+export class ReduxDevtoolsService {
+  private connections = new Map<string, DevtoolsConnection>();
+  private _enabled = isDevMode() && inject(FEATURE_FLAGS).devtoolsEnabled;
+
+  get enabled() { return this._enabled; }
+
+  private static NOOP: DevtoolsConnection = {
+    init: () => {},
+    send: () => {},
+    subscribe: () => {},
+  };
+
+  connect(name: string): DevtoolsConnection {
+    // If disabled, always return NOOP (non-null)
+    if (!this._enabled) return ReduxDevtoolsService.NOOP;
+
+    const cached = this.connections.get(name);
+    if (cached) return cached;
+
+    const ext = window.__REDUX_DEVTOOLS_EXTENSION__;
+    const conn =
+      ext?.connect({ name, features: { jump: true, pause: true, export: true } }) ??
+      ReduxDevtoolsService.NOOP;
+
+    this.connections.set(name, conn);
+    return conn;
+  }
+}
+2) Feature: early no-op if disabled; otherwise use non-null conn
+ts
+Copy code
 // src/app/devtools/with-devtools-auto.feature.ts
 import { effect, inject } from '@angular/core';
 import {
@@ -11,36 +63,28 @@ import { ReduxDevtoolsService } from './redux-devtools.service';
 const safe = <T>(v: T): T => { try { return JSON.parse(JSON.stringify(v)); } catch { return v; } };
 const stableStr = (v: unknown) => { try { return JSON.stringify(v); } catch { return String(v); } };
 
-export type DevtoolsAutoFeature = {
-  /** Optional helper to push the current snapshot into DevTools on demand */
-  syncNow: () => void;
-};
-
-/**
- * Auto-instruments a SignalStore for Redux DevTools.
- * - No client audit.
- * - Only uses public NgRx feature helpers (withHooks/withMethods), so types match.
- */
 export function withDevtoolsAuto<State extends object>(
   name: string,
   initial: State,
 ): SignalStoreFeature {
-  // These live in the feature closure and get initialized in onInit:
-  let readSnapshot: () => State;
-  let devtools: { init: (s: unknown) => void; send: (a: any, s: unknown) => void } | null = null;
+  const devtoolsSvc = inject(ReduxDevtoolsService);
+
+  // If disabled, return an inert feature (no effects, no work).
+  if (!devtoolsSvc.enabled) {
+    return signalStoreFeature(
+      withMethods(() => ({ syncNow() {/* no-op */} }))
+    );
+  }
+
+  let readSnapshot!: () => State;
   let prevStr = '';
 
   return signalStoreFeature(
     withHooks({
       onInit(store) {
-        // connect (no-op if disabled by env/production inside the service)
-        const conn = inject(ReduxDevtoolsService).connect(name);
-        devtools = conn;
+        const devtools = devtoolsSvc.connect(name); // never null now
 
-        // compute which top-level keys to read from the store (based on initial)
         const keys = Object.keys(initial) as (keyof State)[];
-
-        // snapshot reader: calls signals (functions) to get raw values
         readSnapshot = () => {
           const out: any = {};
           for (const k of keys) {
@@ -51,27 +95,44 @@ export function withDevtoolsAuto<State extends object>(
         };
 
         const initSnap = readSnapshot();
-        devtools.init(initSnap);
+        devtools.init(initSnap);              // ✅ safe, never null
         prevStr = stableStr(initSnap);
 
-        // Watch for top-level changes and send to DevTools
         effect(() => {
           const curr = readSnapshot();
           const currStr = stableStr(curr);
           if (currStr !== prevStr) {
-            devtools!.send({ type: '@@change' }, curr);
+            devtools.send({ type: '@@change' }, curr); // ✅ safe
             prevStr = currStr;
           }
         });
       },
     }),
 
-    withMethods<DevtoolsAutoFeature>(() => ({
+    withMethods(() => ({
       syncNow() {
-        if (devtools && readSnapshot) {
-          devtools.send({ type: '@@sync' }, readSnapshot());
-        }
+        const devtools = devtoolsSvc.connect(name);
+        devtools.send({ type: '@@sync' }, readSnapshot());
       },
     })),
+  );
+}
+3) Store factory (unchanged ordering)
+ts
+Copy code
+// src/app/stores/store-factory.ts
+import { signalStore, withState, type SignalStoreFeature } from '@ngrx/signals';
+import { withDevtoolsAuto } from '../devtools/with-devtools-auto.feature';
+
+export function createSignalFeatureStore<State extends object>(
+  name: string,
+  initial: State,
+  ...features: SignalStoreFeature[]
+) {
+  return signalStore(
+    { providedIn: 'root' },
+    withState(initial),                // must come first
+    withDevtoolsAuto<State>(name, initial),
+    ...features
   );
 }
