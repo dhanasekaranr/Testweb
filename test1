@@ -1,127 +1,5 @@
-// src/app/devtools/redux-devtools.service.ts
-import { Injectable, inject, isDevMode } from '@angular/core';
-import { FEATURE_FLAGS } from '../core/feature-flags';
-
-type DevTools = {
-  connect(options?: { name?: string; features?: Record<string, boolean> }): {
-    init: (state: unknown) => void;
-    send: (action: string | { type: string; payload?: unknown }, state: unknown) => void;
-    subscribe: (listener: (message: any) => void) => void;
-  };
-};
-
-export type DevtoolsConnection = {
-  init: (state: unknown) => void;
-  send: (action: any, state: unknown) => void;
-  subscribe: (listener: (message: any) => void) => void;
-};
-
-declare global { interface Window { __REDUX_DEVTOOLS_EXTENSION__?: DevTools; } }
-
-@Injectable({ providedIn: 'root' })
-export class ReduxDevtoolsService {
-  private connections = new Map<string, DevtoolsConnection>();
-  private _enabled = isDevMode() && inject(FEATURE_FLAGS).devtoolsEnabled;
-
-  get enabled() { return this._enabled; }
-
-  private static NOOP: DevtoolsConnection = {
-    init: () => {},
-    send: () => {},
-    subscribe: () => {},
-  };
-
-  connect(name: string): DevtoolsConnection {
-    // If disabled, always return NOOP (non-null)
-    if (!this._enabled) return ReduxDevtoolsService.NOOP;
-
-    const cached = this.connections.get(name);
-    if (cached) return cached;
-
-    const ext = window.__REDUX_DEVTOOLS_EXTENSION__;
-    const conn =
-      ext?.connect({ name, features: { jump: true, pause: true, export: true } }) ??
-      ReduxDevtoolsService.NOOP;
-
-    this.connections.set(name, conn);
-    return conn;
-  }
-}
-2) Feature: early no-op if disabled; otherwise use non-null conn
-ts
-Copy code
-// src/app/devtools/with-devtools-auto.feature.ts
-import { effect, inject } from '@angular/core';
-import {
-  signalStoreFeature,
-  withHooks,
-  withMethods,
-  type SignalStoreFeature,
-} from '@ngrx/signals';
-import { ReduxDevtoolsService } from './redux-devtools.service';
-
-const safe = <T>(v: T): T => { try { return JSON.parse(JSON.stringify(v)); } catch { return v; } };
-const stableStr = (v: unknown) => { try { return JSON.stringify(v); } catch { return String(v); } };
-
-export function withDevtoolsAuto<State extends object>(
-  name: string,
-  initial: State,
-): SignalStoreFeature {
-  const devtoolsSvc = inject(ReduxDevtoolsService);
-
-  // If disabled, return an inert feature (no effects, no work).
-  if (!devtoolsSvc.enabled) {
-    return signalStoreFeature(
-      withMethods(() => ({ syncNow() {/* no-op */} }))
-    );
-  }
-
-  let readSnapshot!: () => State;
-  let prevStr = '';
-
-  return signalStoreFeature(
-    withHooks({
-      onInit(store) {
-        const devtools = devtoolsSvc.connect(name); // never null now
-
-        const keys = Object.keys(initial) as (keyof State)[];
-        readSnapshot = () => {
-          const out: any = {};
-          for (const k of keys) {
-            const v: any = (store as any)[k];
-            out[k as string] = typeof v === 'function' ? v() : v;
-          }
-          return safe(out);
-        };
-
-        const initSnap = readSnapshot();
-        devtools.init(initSnap);              // ✅ safe, never null
-        prevStr = stableStr(initSnap);
-
-        effect(() => {
-          const curr = readSnapshot();
-          const currStr = stableStr(curr);
-          if (currStr !== prevStr) {
-            devtools.send({ type: '@@change' }, curr); // ✅ safe
-            prevStr = currStr;
-          }
-        });
-      },
-    }),
-
-    withMethods(() => ({
-      syncNow() {
-        const devtools = devtoolsSvc.connect(name);
-        devtools.send({ type: '@@sync' }, readSnapshot());
-      },
-    })),
-  );
-}
-3) Store factory (unchanged ordering)
-ts
-Copy code
 // src/app/stores/store-factory.ts
-import { signalStore, withState, type SignalStoreFeature } from '@ngrx/signals';
+import { signalStore, withState, signalStoreFeature, type SignalStoreFeature } from '@ngrx/signals';
 import { withDevtoolsAuto } from '../devtools/with-devtools-auto.feature';
 
 export function createSignalFeatureStore<State extends object>(
@@ -129,10 +7,23 @@ export function createSignalFeatureStore<State extends object>(
   initial: State,
   ...features: SignalStoreFeature[]
 ) {
-  return signalStore(
-    { providedIn: 'root' },
-    withState(initial),                // must come first
-    withDevtoolsAuto<State>(name, initial),
-    ...features
-  );
+  // Compose all the optional features into ONE feature.
+  const bundled = features.length ? signalStoreFeature(...features) : null;
+
+  if (bundled) {
+    // No dynamic spreads into signalStore — just pass the bundle.
+    return signalStore(
+      { providedIn: 'root' },
+      withState(initial),                     // must come first
+      withDevtoolsAuto<State>(name, initial), // second
+      bundled                                 // the rest, composed
+    );
+  } else {
+    // No extras — simplest call, no spreads beyond the fixed args.
+    return signalStore(
+      { providedIn: 'root' },
+      withState(initial),
+      withDevtoolsAuto<State>(name, initial)
+    );
+  }
 }
