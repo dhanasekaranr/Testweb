@@ -1,316 +1,77 @@
-src/app/
-  core/
-    feature-flags.ts
-    logger.service.ts
-  data/
-    flight.service.ts
-  devtools/
-    redux-devtools.service.ts
-    with-devtools-auto.feature.ts
-  stores/
-    store-factory.ts
-    flight.store.ts
-  feature/
-    flight-edit.component.ts
-src/environments/
-  environment.ts
-  environment.prod.ts
-main.ts
-1) Feature flags (env-driven)
-ts
-Copy code
-// src/app/core/feature-flags.ts
-import { InjectionToken } from '@angular/core';
-
-export type FeatureFlags = {
-  devtoolsEnabled: boolean; // turn Redux DevTools wiring on/off
-};
-
-export const FEATURE_FLAGS = new InjectionToken<FeatureFlags>('FEATURE_FLAGS');
-ts
-Copy code
-// src/environments/environment.ts  (dev)
-export const environment = {
-  production: false,
-  devtoolsEnabled: true,  // set to false if you want zero DevTools overhead even in dev
-};
-ts
-Copy code
-// src/environments/environment.prod.ts  (prod)
-export const environment = {
-  production: true,
-  devtoolsEnabled: false, // keep off in prod
-};
-ts
-Copy code
-// src/main.ts
-import { bootstrapApplication } from '@angular/platform-browser';
-import { provideHttpClient } from '@angular/common/http';
-import { FEATURE_FLAGS } from './app/core/feature-flags';
-import { environment } from './environments/environment';
-// import your root component (or a routed shell)
-import { FlightEditComponent } from './app/feature/flight-edit.component';
-
-bootstrapApplication(FlightEditComponent, {
-  providers: [
-    provideHttpClient(),
-    { provide: FEATURE_FLAGS, useValue: { devtoolsEnabled: environment.devtoolsEnabled } },
-  ]
-});
-2) DevTools bridge (gated by flags + dev mode)
-ts
-Copy code
-// src/app/devtools/redux-devtools.service.ts
-import { Injectable, inject, isDevMode } from '@angular/core';
-import { FEATURE_FLAGS } from '../core/feature-flags';
-
-type DevTools = {
-  connect(options?: { name?: string; features?: Record<string, boolean> }): {
-    init: (state: unknown) => void;
-    send: (action: string | { type: string; payload?: unknown }, state: unknown) => void;
-    subscribe: (listener: (message: any) => void) => void;
-  };
-};
-
-declare global {
-  interface Window { __REDUX_DEVTOOLS_EXTENSION__?: DevTools; }
-}
-
-@Injectable({ providedIn: 'root' })
-export class ReduxDevtoolsService {
-  private connections = new Map<string, ReturnType<NonNullable<DevTools['connect']>>>();
-  private enabled = isDevMode() && inject(FEATURE_FLAGS).devtoolsEnabled;
-
-  connect(name: string) {
-    if (!this.enabled) {
-      const noop = { init: (_: unknown) => {}, send: (_a: unknown, _s: unknown) => {}, subscribe: (_: unknown) => {} } as const;
-      return noop as any;
-    }
-
-    if (this.connections.has(name)) return this.connections.get(name)!;
-
-    const ext = window.__REDUX_DEVTOOLS_EXTENSION__;
-    const conn = ext?.connect({ name, features: { jump: true, pause: true, export: true } }) ??
-                 ({ init: () => {}, send: () => {}, subscribe: () => {} } as any);
-    this.connections.set(name, conn);
-    return conn;
-  }
-}
-3) Auto-instrument feature (zero per-store plumbing)
-This observes top-level state fields and pushes snapshots to Redux DevTools when they change. It only runs if the service is enabled (dev + flag). No client audit here.
-
-ts
-Copy code
 // src/app/devtools/with-devtools-auto.feature.ts
 import { effect, inject } from '@angular/core';
-import { signalStoreFeature, type SignalStoreFeatureResult } from '@ngrx/signals';
+import {
+  signalStoreFeature,
+  withHooks,
+  withMethods,
+  type SignalStoreFeature,
+} from '@ngrx/signals';
 import { ReduxDevtoolsService } from './redux-devtools.service';
 
 const safe = <T>(v: T): T => { try { return JSON.parse(JSON.stringify(v)); } catch { return v; } };
 const stableStr = (v: unknown) => { try { return JSON.stringify(v); } catch { return String(v); } };
 
-export type DevtoolsAutoFeature = { syncNow: () => void };
+export type DevtoolsAutoFeature = {
+  /** Optional helper to push the current snapshot into DevTools on demand */
+  syncNow: () => void;
+};
 
+/**
+ * Auto-instruments a SignalStore for Redux DevTools.
+ * - No client audit.
+ * - Only uses public NgRx feature helpers (withHooks/withMethods), so types match.
+ */
 export function withDevtoolsAuto<State extends object>(
   name: string,
   initial: State,
-): SignalStoreFeatureResult<DevtoolsAutoFeature> {
-  return signalStoreFeature((store) => {
-    const devtools = inject(ReduxDevtoolsService).connect(name);
+): SignalStoreFeature {
+  // These live in the feature closure and get initialized in onInit:
+  let readSnapshot: () => State;
+  let devtools: { init: (s: unknown) => void; send: (a: any, s: unknown) => void } | null = null;
+  let prevStr = '';
 
-    const keys = Object.keys(initial) as (keyof State)[];
-    const readSnapshot = (): State => {
-      const out: any = {};
-      for (const k of keys) {
-        const v: any = (store as any)[k];
-        out[k as string] = typeof v === 'function' ? v() : v;
-      }
-      return safe(out);
-    };
+  return signalStoreFeature(
+    withHooks({
+      onInit(store) {
+        // connect (no-op if disabled by env/production inside the service)
+        const conn = inject(ReduxDevtoolsService).connect(name);
+        devtools = conn;
 
-    const init = readSnapshot();
-    devtools.init(init);
-    let prev = stableStr(init);
+        // compute which top-level keys to read from the store (based on initial)
+        const keys = Object.keys(initial) as (keyof State)[];
 
-    effect(() => {
-      const curr = readSnapshot();
-      const currStr = stableStr(curr);
-      if (currStr !== prev) {
-        devtools.send({ type: '@@change' }, curr);
-        prev = currStr;
-      }
-    });
+        // snapshot reader: calls signals (functions) to get raw values
+        readSnapshot = () => {
+          const out: any = {};
+          for (const k of keys) {
+            const v: any = (store as any)[k];
+            out[k as string] = typeof v === 'function' ? v() : v;
+          }
+          return safe(out);
+        };
 
-    const syncNow = () => devtools.send({ type: '@@sync' }, readSnapshot());
-    return { state: {}, methods: { syncNow } };
-  });
-}
-If devtoolsEnabled is false or you’re in prod, ReduxDevtoolsService returns a no-op connection, so this feature is effectively inert (no effects work besides cheap reads, and those get tree-shaken in prod builds).
+        const initSnap = readSnapshot();
+        devtools.init(initSnap);
+        prevStr = stableStr(initSnap);
 
-4) Store factory (adds DevTools only once)
-ts
-Copy code
-// src/app/stores/store-factory.ts
-import { signalStore, withState, type SignalStoreFeature } from '@ngrx/signals';
-import { withDevtoolsAuto } from '../devtools/with-devtools-auto.feature';
+        // Watch for top-level changes and send to DevTools
+        effect(() => {
+          const curr = readSnapshot();
+          const currStr = stableStr(curr);
+          if (currStr !== prevStr) {
+            devtools!.send({ type: '@@change' }, curr);
+            prevStr = currStr;
+          }
+        });
+      },
+    }),
 
-export function createSignalFeatureStore<State extends object>(
-  name: string,
-  initial: State,
-  ...features: SignalStoreFeature[]
-) {
-  return signalStore(
-    { providedIn: 'root' },
-    withState(initial),
-    withDevtoolsAuto<State>(name, initial), // no client audit here
-    ...features
+    withMethods<DevtoolsAutoFeature>(() => ({
+      syncNow() {
+        if (devtools && readSnapshot) {
+          devtools.send({ type: '@@sync' }, readSnapshot());
+        }
+      },
+    })),
   );
-}
-5) HTTP service (pure I/O; server does audit)
-ts
-Copy code
-// src/app/data/flight.service.ts
-import { HttpClient } from '@angular/common/http';
-import { Injectable } from '@angular/core';
-
-export type FlightDto = { id?: string; from: string; to: string };
-
-@Injectable({ providedIn: 'root' })
-export class FlightService {
-  constructor(private http: HttpClient) {}
-
-  getById(id: string) {
-    return this.http.get<FlightDto>(`/api/flights/${id}`);
-  }
-
-  create(dto: FlightDto) {
-    return this.http.post<FlightDto>('/api/flights', dto);
-  }
-
-  update(id: string, dto: FlightDto) {
-    return this.http.put<FlightDto>(`/api/flights/${id}`, dto);
-  }
-}
-6) SignalStore (does fetching & saving; no client audit)
-ts
-Copy code
-// src/app/stores/flight.store.ts
-import { createSignalFeatureStore } from './store-factory';
-import { withMethods, withComputed, patchState } from '@ngrx/signals';
-import { inject } from '@angular/core';
-import { FlightService, FlightDto } from '../data/flight.service';
-
-type State = {
-  entity?: FlightDto;
-  loading: boolean;
-  saving: boolean;
-  error?: string | null;
-};
-
-const initial: State = { loading: false, saving: false, error: null };
-
-export const FlightStore = createSignalFeatureStore<State>(
-  'flights',
-  initial,
-
-  withComputed((s) => ({
-    isNew: () => !s.entity()?.id,
-  })),
-
-  withMethods((s) => {
-    const api = inject(FlightService);
-
-    return {
-      load(id: string) {
-        patchState(s, { loading: true, error: null });
-        api.getById(id).subscribe({
-          next: (entity) => patchState(s, { entity, loading: false }),
-          error: (e) => patchState(s, { error: `${e?.message ?? e}`, loading: false }),
-        });
-      },
-
-      save(dto: FlightDto) {
-        patchState(s, { saving: true, error: null });
-        const call$ = dto.id ? api.update(dto.id, dto) : api.create(dto);
-
-        call$.subscribe({
-          next: (saved) => patchState(s, { entity: saved, saving: false }),
-          error: (e)   => patchState(s, { saving: false, error: `${e?.message ?? e}` }),
-        });
-      },
-
-      patchDraft(p: Partial<FlightDto>) {
-        patchState(s, (st) => ({ entity: { ...st.entity, ...p } as FlightDto }));
-      },
-
-      // Optional: push the current snapshot to DevTools on demand
-      syncDevtools() { (s as any).syncNow(); },
-    };
-  }),
-);
-7) Component (Reactive Form → store.save(form DTO))
-ts
-Copy code
-// src/app/feature/flight-edit.component.ts
-import { Component, OnInit, inject, effect } from '@angular/core';
-import { CommonModule } from '@angular/common';
-import { ReactiveFormsModule, FormBuilder, Validators, NonNullableFormBuilder } from '@angular/forms';
-import { FlightStore } from '../stores/flight.store';
-
-@Component({
-  selector: 'app-flight-edit',
-  standalone: true,
-  imports: [CommonModule, ReactiveFormsModule],
-  template: `
-    <form [formGroup]="form" (ngSubmit)="onSubmit()" novalidate>
-      <label>
-        From
-        <input formControlName="from" placeholder="From" />
-      </label>
-
-      <label>
-        To
-        <input formControlName="to" placeholder="To" />
-      </label>
-
-      <div class="actions">
-        <button type="submit" [disabled]="form.invalid || store.saving()">Save</button>
-        <button type="button" (click)="reload()" [disabled]="store.loading()">Reload</button>
-      </div>
-    </form>
-
-    <div *ngIf="store.loading()">Loading…</div>
-    <div *ngIf="store.saving()">Saving…</div>
-    <pre *ngIf="store.entity() as e">{{ e | json }}</pre>
-    <div *ngIf="store.error() as err" class="error">{{ err }}</div>
-  `,
-})
-export class FlightEditComponent implements OnInit {
-  readonly store = inject(FlightStore);
-  private fb: NonNullableFormBuilder = inject(FormBuilder).nonNullable;
-
-  form = this.fb.group({
-    id: this.fb.control<string | undefined>(undefined),
-    from: this.fb.control('', { validators: [Validators.required] }),
-    to:   this.fb.control('', { validators: [Validators.required] }),
-  });
-
-  ngOnInit(): void {
-    // Example: preload record
-    // this.store.load('A1');
-
-    effect(() => {
-      const e = this.store.entity();
-      if (e) this.form.patchValue(e, { emitEvent: false });
-    });
-  }
-
-  onSubmit() {
-    if (this.form.invalid) return;
-    this.store.save(this.form.getRawValue());
-  }
-
-  reload() {
-    // this.store.load('A1');
-  }
 }
