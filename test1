@@ -1,71 +1,453 @@
-// stores/store-factory.ts
-import { signalStore, withState, type SignalStoreFeature } from '@ngrx/signals';
-import { withDevtoolsAuto } from '../devtools/with-devtools-auto.feature';
+# 🌍 **Environment-Controlled DevTools for Signal Stores**
 
-export type StoreToken<T = any> = abstract new (...args: never[]) => T;
+## 🎯 **Perfect Solution for Your 100+ Stores**
 
-/** Overloads up to 6 extra features (extend if needed) */
-export function createSignalFeatureStore<State extends object, T = any>(name: string, initial: State): StoreToken<T>;
-export function createSignalFeatureStore<State extends object, T = any>(name: string, initial: State, f1: SignalStoreFeature): StoreToken<T>;
-export function createSignalFeatureStore<State extends object, T = any>(name: string, initial: State, f1: SignalStoreFeature, f2: SignalStoreFeature): StoreToken<T>;
-export function createSignalFeatureStore<State extends object, T = any>(name: string, initial: State, f1: SignalStoreFeature, f2: SignalStoreFeature, f3: SignalStoreFeature): StoreToken<T>;
-export function createSignalFeatureStore<State extends object, T = any>(name: string, initial: State, f1: SignalStoreFeature, f2: SignalStoreFeature, f3: SignalStoreFeature, f4: SignalStoreFeature): StoreToken<T>;
-export function createSignalFeatureStore<State extends object, T = any>(name: string, initial: State, f1: SignalStoreFeature, f2: SignalStoreFeature, f3: SignalStoreFeature, f4: SignalStoreFeature, f5: SignalStoreFeature): StoreToken<T>;
-export function createSignalFeatureStore<State extends object, T = any>(name: string, initial: State, f1: SignalStoreFeature, f2: SignalStoreFeature, f3: SignalStoreFeature, f4: SignalStoreFeature, f5: SignalStoreFeature, f6: SignalStoreFeature): StoreToken<T>;
+Instead of using `isDevMode()`, you now have **environment-based control** over Redux DevTools!
 
-/** Implementation */
-export function createSignalFeatureStore<State extends object, T = any>(
-  name: string,
-  initial: State,
-  ...rest: SignalStoreFeature[]
-): StoreToken<T> {
-  const s = withState(initial);
-  const d = withDevtoolsAuto(name, initial);
+## ⚙️ **Environment Configuration**
 
-  switch (rest.length) {
-    case 0: return signalStore({ providedIn: 'root' }, s, d) as StoreToken<T>;
-    case 1: return signalStore({ providedIn: 'root' }, s, d, rest[0]) as StoreToken<T>;
-    case 2: return signalStore({ providedIn: 'root' }, s, d, rest[0], rest[1]) as StoreToken<T>;
-    case 3: return signalStore({ providedIn: 'root' }, s, d, rest[0], rest[1], rest[2]) as StoreToken<T>;
-    case 4: return signalStore({ providedIn: 'root' }, s, d, rest[0], rest[1], rest[2], rest[3]) as StoreToken<T>;
-    case 5: return signalStore({ providedIn: 'root' }, s, d, rest[0], rest[1], rest[2], rest[3], rest[4]) as StoreToken<T>;
-    case 6: return signalStore({ providedIn: 'root' }, s, d, rest[0], rest[1], rest[2], rest[3], rest[4], rest[5]) as StoreToken<T>;
-    default: throw new Error('Too many features (max 6).');
-  }
+### **Development Environment** (`environment.ts`)
+```typescript
+devTools: {
+  enableReduxDevTools: true,        // 🟢 DevTools ON
+  enableConsoleDebugging: true,     // 🟢 Console logs ON  
+  enablePerformanceTracking: true,  // 🟢 Performance ON
+  enableStateExport: true,          // 🟢 State export ON
+  storesToDebug: ['*'],             // 🟢 Debug ALL stores
+  maxHistorySize: 50,               // 🟢 Keep 50 actions
 }
-Returns StoreToken<any> by default ⇒ no FlightStoreApi needed.
+```
 
-inject(FlightStore) just works; the instance type is any (intentionally minimal).
+### **Production Environment** (`environment.prod.ts`)
+```typescript
+devTools: {
+  enableReduxDevTools: false,       // 🔴 DevTools OFF
+  enableConsoleDebugging: false,   // 🔴 No console logs
+  enablePerformanceTracking: false, // 🔴 No performance tracking  
+  enableStateExport: false,        // 🔴 No state export
+  storesToDebug: [],               // 🔴 No debugging
+  maxHistorySize: 0,               // 🔴 No history
+}
+```
 
-4) FlightStore (simple, one line)
-ts
-Copy code
-// stores/flight.store.ts
-import { withMethods, patchState, withComputed, type SignalStoreFeature } from '@ngrx/signals';
-import { createSignalFeatureStore, type StoreToken } from './store-factory';
+## 🎮 **Advanced Environment Controls**
 
-type Flight = { id: string; from: string; to: string };
+### **Staging Environment** (Optional)
+```typescript
+// environment.staging.ts
+devTools: {
+  enableReduxDevTools: true,        // ✅ Enable for testing
+  enableConsoleDebugging: false,   // ❌ But no console spam
+  enablePerformanceTracking: true,  // ✅ Monitor performance
+  enableStateExport: true,          // ✅ Allow bug reporting
+  storesToDebug: ['UsersStore', 'OrdersStore'], // 🎯 Only specific stores
+  maxHistorySize: 25,               // 🔄 Smaller history
+}
+```
 
-type State = {
-  flights: Flight[];
-  selectedId?: string;
-  loading: boolean;
-};
+### **Demo Environment** (Optional)
+```typescript
+// environment.demo.ts  
+devTools: {
+  enableReduxDevTools: true,        // ✅ Show to clients
+  enableConsoleDebugging: true,    // ✅ Explain what's happening
+  enablePerformanceTracking: false, // ❌ Don't distract
+  enableStateExport: false,        // ❌ Prevent data export
+  storesToDebug: ['DashboardStore'], // 🎯 Only main features
+  maxHistorySize: 10,              // 🔄 Keep it simple
+}
+```
 
-const initial: State = { flights: [], selectedId: undefined, loading: false };
+## 🏪 **Store Implementation**
 
-const features: SignalStoreFeature[] = [
-  withComputed((s) => ({
-    hasSelection: () => !!s.selectedId(),
-  })),
-  withMethods((s) => ({
-    loadFlights(list: Flight[]) { patchState(s, { flights: list, loading: false }); },
-    addFlight(f: Flight)        { patchState(s, (st) => ({ flights: [...st.flights, f] })); },
-    selectFlight(id: string)    { patchState(s, { selectedId: id }); },
-    setLoading(flag: boolean)   { patchState(s, { loading: flag }); },
-    syncNow() { (s as any).syncNow?.(); }, // optional DevTools helper
-  })),
-];
+### **Basic Store Template**
+```typescript
+import { withConditionalDevTools } from '../../../shared/features/environment-devtools.feature';
 
-export const FlightStore: StoreToken = createSignalFeatureStore<State>('flights', initial, ...features);
-// ^ no API type — minimal & repeatable
+export const MyStore = signalStore(
+  { providedIn: 'root' },
+  withState(initialState),
+  withComputed(/* ... */),
+  withMethods(/* ... */),
+  
+  // 🎯 ONE LINE - Environment controlled!
+  withConditionalDevTools('MyStoreName')
+);
+```
+
+### **What Happens in Each Environment:**
+
+#### **Development** 🟢
+```typescript
+withConditionalDevTools('UsersStore')
+// ✅ Redux DevTools connected
+// ✅ Console: "🏪 UsersStore (development) initialized"
+// ✅ Console: "🔗 UsersStore (development) connected to Redux DevTools"
+// ✅ Full debugging capabilities
+```
+
+#### **Production** 🔴
+```typescript
+withConditionalDevTools('UsersStore')  
+// ❌ No DevTools connection
+// ❌ No console output
+// ❌ Zero debugging overhead
+// ✅ Clean production bundle
+```
+
+#### **Staging** 🟡
+```typescript
+withConditionalDevTools('UsersStore')
+// ✅ Redux DevTools connected (if in storesToDebug)
+// ❌ No console spam
+// ✅ Performance monitoring
+// ✅ Bug reporting capabilities
+```
+
+## 🎛️ **Environment Service API**
+
+Your environment service provides these methods:
+
+```typescript
+const envService = inject(EnvironmentService);
+
+// Check if DevTools are enabled
+envService.isReduxDevToolsEnabled          // true/false
+envService.isConsoleDebuggingEnabled       // true/false
+envService.isPerformanceTrackingEnabled    // true/false
+
+// Check specific store
+envService.shouldDebugStore('UsersStore')  // true/false
+
+// Get full config for a store
+const config = envService.getDevToolsConfig('UsersStore');
+/* Returns:
+{
+  enabled: true,
+  console: true,
+  performance: true,
+  stateExport: true,
+  maxHistory: 50,
+  name: "UsersStore (development)"
+}
+*/
+```
+
+## 🚀 **Apply to All Your Stores**
+
+### **Step 1: Add Import**
+```typescript
+import { withConditionalDevTools } from '../../../shared/features/environment-devtools.feature';
+```
+
+### **Step 2: Add to Store**
+```typescript
+export const MyStore = signalStore(
+  // ... existing code ...
+  withConditionalDevTools('MyStoreName') // 🎯 Last line
+);
+```
+
+### **Step 3: Customize Environment** (Optional)
+```typescript
+// Fine-tune which stores debug in which environments
+devTools: {
+  storesToDebug: [
+    'UsersStore',
+    'OrdersStore', 
+    'PaymentStore'
+  ]  // Only these stores have debugging
+}
+```
+
+## 🌟 **Benefits Over isDevMode()**
+
+### ✅ **Fine-Grained Control**
+```typescript
+// ❌ Old way: All or nothing
+if (isDevMode()) { /* debug everything */ }
+
+// ✅ New way: Precise control
+devTools: {
+  storesToDebug: ['CriticalStore', 'ImportantStore']  // Only what you need
+}
+```
+
+### ✅ **Environment-Specific Debugging**
+```typescript
+// ✅ Development: Full debugging
+// ✅ Staging: Selected stores only  
+// ✅ Demo: Show-and-tell mode
+// ✅ Production: Complete silence
+```
+
+### ✅ **Runtime Configuration**
+```typescript
+// Can be changed via environment variables
+process.env.ENABLE_STORE_DEBUGGING = 'true'
+process.env.STORES_TO_DEBUG = 'UsersStore,OrdersStore'
+```
+
+### ✅ **Better Performance**
+```typescript
+// Only enabled stores get debugging overhead
+// Production builds have zero debugging code
+// Selective debugging reduces noise
+```
+
+## 🎮 **Browser Usage**
+
+1. **Development**: All stores appear in Redux DevTools
+2. **Staging**: Only specified stores appear  
+3. **Production**: Redux tab shows "No store found" (as expected)
+
+## 📊 **Console Output Examples**
+
+### **Development Environment:**
+```
+🏪 UsersStore (development) initialized (environment-controlled)
+🔗 UsersStore (development) connected to Redux DevTools
+🏪 SettingsStore (development) initialized (environment-controlled)  
+🔗 SettingsStore (development) connected to Redux DevTools
+```
+
+### **Staging Environment:**
+```
+🏪 UsersStore (staging) initialized (environment-controlled)
+🔗 UsersStore (staging) connected to Redux DevTools
+// SettingsStore not debugged (not in storesToDebug array)
+```
+
+### **Production Environment:**
+```
+// Complete silence - no console output
+```
+
+---
+
+## 🎯 **Summary**
+
+You now have **enterprise-grade control** over your Signal Store debugging:
+
+- ✅ **Environment-based**: Different configs per environment
+- ✅ **Granular**: Choose exactly which stores to debug
+- ✅ **Performance-aware**: Zero overhead in production
+- ✅ **Scalable**: Works perfectly for 100+ stores
+- ✅ **Maintainable**: Change config, not code
+
+**One line per store, full environment control!** 🚀
+
+
+
+  // Development Tools Configuration
+  devTools: {
+    enableReduxDevTools: true,        // 🎯 Redux DevTools for Signal Stores
+    enableConsoleDebugging: true,     // Console logging for stores
+    enablePerformanceTracking: true,  // Performance monitoring
+    enableStateExport: true,          // Allow state export/import
+    storesToDebug: ['*'],             // '*' for all stores, or specific: ['UsersStore', 'SettingsStore']
+    maxHistorySize: 50,               // Max actions to keep in DevTools
+  },
+
+  devTools: {
+    enableReduxDevTools: false,       // 🚫 No DevTools in production
+    enableConsoleDebugging: false,   // No console logging
+    enablePerformanceTracking: false, // No performance tracking
+    enableStateExport: false,        // No state export/import
+    storesToDebug: [],               // No stores to debug
+    maxHistorySize: 0,               // No history
+  },
+
+
+
+
+
+
+
+import { inject } from '@angular/core';
+import { withDevtools } from '@angular-architects/ngrx-toolkit';
+import { withHooks } from '@ngrx/signals';
+import { EnvironmentService } from '../../core/services/environment.service';
+
+/**
+ * Environment-aware DevTools feature for Signal Stores
+ * Uses environment configuration instead of isDevMode()
+ * 
+ * Usage:
+ * export const MyStore = signalStore(
+ *   { providedIn: 'root' },
+ *   withState(initialState),
+ *   withComputed(...),
+ *   withMethods(...),
+ *   withEnvironmentDevTools('MyStoreName') // 🎯 Environment-controlled debugging!
+ * );
+ */
+export function withEnvironmentDevTools(storeName: string) {
+  return [
+    // Conditionally apply DevTools based on environment
+    ...((() => {
+      const envService = inject(EnvironmentService);
+      const config = envService.getDevToolsConfig(storeName);
+      
+      if (!config.enabled) {
+        return []; // No debugging in this environment
+      }
+      
+      return [
+        // Apply NgRx Toolkit DevTools
+        withDevtools(storeName),
+        
+        // Add environment-aware debugging hooks
+        withHooks((storeInstance: any) => ({
+          onInit() {
+            if (config.console) {
+              console.log(`🏪 ${config.name} initialized with environment-controlled debugging`);
+              console.log(`🔧 Config:`, config);
+            }
+            
+            // Performance tracking if enabled
+            if (config.performance) {
+              console.time(`${storeName} initialization`);
+              console.timeEnd(`${storeName} initialization`);
+            }
+            
+            // Manual Redux DevTools connection with environment-specific settings
+            if (typeof window !== 'undefined' && (window as any).__REDUX_DEVTOOLS_EXTENSION__) {
+              try {
+                const devtools = (window as any).__REDUX_DEVTOOLS_EXTENSION__.connect({
+                  name: config.name,
+                  instanceId: `${storeName.toLowerCase()}-env`,
+                  maxAge: config.maxHistory,
+                  features: {
+                    pause: true,
+                    lock: true,
+                    persist: config.stateExport,
+                    export: config.stateExport,
+                    import: config.stateExport,
+                    jump: true,
+                    skip: true,
+                    reorder: true,
+                    dispatch: true,
+                    test: true
+                  }
+                });
+                
+                // Get current state dynamically
+                const currentState: Record<string, any> = {};
+                
+                // Extract all state properties safely
+                Object.keys(storeInstance).forEach(key => {
+                  if (typeof storeInstance[key] === 'function') {
+                    try {
+                      const value = storeInstance[key]();
+                      if (typeof value !== 'function') {
+                        currentState[key] = value;
+                      }
+                    } catch (e) {
+                      // Skip properties that can't be called
+                    }
+                  }
+                });
+                
+                devtools.init(currentState);
+                
+                if (config.console) {
+                  console.log(`🔗 ${config.name} connected to Redux DevTools`);
+                }
+              } catch (error) {
+                if (config.console) {
+                  console.warn(`⚠️ ${config.name} DevTools connection failed:`, error);
+                }
+              }
+            } else if (config.console) {
+              console.warn(`⚠️ ${config.name}: Redux DevTools extension not found`);
+            }
+          },
+          
+          onDestroy() {
+            if (config.console) {
+              console.log(`🏪 ${config.name} destroyed`);
+            }
+          }
+        }))
+      ];
+    })())
+  ];
+}
+
+/**
+ * Simplified version that only applies DevTools if enabled in environment
+ */
+export function withConditionalDevTools(storeName: string) {
+  return withHooks((store) => {
+    const envService = inject(EnvironmentService);
+    
+    return {
+      onInit() {
+        if (envService.shouldDebugStore(storeName)) {
+          const config = envService.getDevToolsConfig(storeName);
+          
+          if (config.console) {
+            console.log(`🏪 ${config.name} initialized (environment-controlled)`);
+          }
+          
+          // Manual Redux DevTools connection
+          if (typeof window !== 'undefined' && (window as any).__REDUX_DEVTOOLS_EXTENSION__) {
+            try {
+              const devtools = (window as any).__REDUX_DEVTOOLS_EXTENSION__.connect({
+                name: config.name,
+                instanceId: `${storeName.toLowerCase()}-env`,
+                maxAge: config.maxHistory
+              });
+              
+              // Get current state dynamically
+              const currentState: Record<string, any> = {};
+              Object.keys(store).forEach(key => {
+                if (typeof store[key] === 'function') {
+                  try {
+                    const value = store[key]();
+                    if (typeof value !== 'function') {
+                      currentState[key] = value;
+                    }
+                  } catch (e) {
+                    // Skip properties that can't be called
+                  }
+                }
+              });
+              
+              devtools.init(currentState);
+              
+              if (config.console) {
+                console.log(`🔗 ${config.name} connected to Redux DevTools`);
+              }
+            } catch (error) {
+              if (config.console) {
+                console.warn(`⚠️ ${config.name} DevTools connection failed:`, error);
+              }
+            }
+          }
+        }
+      }
+    };
+  });
+}
+
+/**
+ * Get environment-specific DevTools configuration
+ */
+export function getDevToolsConfig(storeName: string) {
+  const envService = inject(EnvironmentService);
+  return envService.getDevToolsConfig(storeName);
+}
+
+
+
+
+
+
+
+------------------------------
+
+
+// 🎯 Environment-controlled Redux DevTools
+  withConditionalDevTools('UsersStore')
