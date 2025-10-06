@@ -1,20 +1,71 @@
-// store-factory.ts
+// stores/store-factory.ts
 import { signalStore, withState, type SignalStoreFeature } from '@ngrx/signals';
+import { withDevtoolsAuto } from '../devtools/with-devtools-auto.feature';
 
-// A constructor-like type Angular DI will accept
-export type StoreToken<Api> = abstract new (...args: never[]) => Api;
+export type StoreToken<T = any> = abstract new (...args: never[]) => T;
 
-export function createSignalFeatureStore<State extends object>(
+/** Overloads up to 6 extra features (extend if needed) */
+export function createSignalFeatureStore<State extends object, T = any>(name: string, initial: State): StoreToken<T>;
+export function createSignalFeatureStore<State extends object, T = any>(name: string, initial: State, f1: SignalStoreFeature): StoreToken<T>;
+export function createSignalFeatureStore<State extends object, T = any>(name: string, initial: State, f1: SignalStoreFeature, f2: SignalStoreFeature): StoreToken<T>;
+export function createSignalFeatureStore<State extends object, T = any>(name: string, initial: State, f1: SignalStoreFeature, f2: SignalStoreFeature, f3: SignalStoreFeature): StoreToken<T>;
+export function createSignalFeatureStore<State extends object, T = any>(name: string, initial: State, f1: SignalStoreFeature, f2: SignalStoreFeature, f3: SignalStoreFeature, f4: SignalStoreFeature): StoreToken<T>;
+export function createSignalFeatureStore<State extends object, T = any>(name: string, initial: State, f1: SignalStoreFeature, f2: SignalStoreFeature, f3: SignalStoreFeature, f4: SignalStoreFeature, f5: SignalStoreFeature): StoreToken<T>;
+export function createSignalFeatureStore<State extends object, T = any>(name: string, initial: State, f1: SignalStoreFeature, f2: SignalStoreFeature, f3: SignalStoreFeature, f4: SignalStoreFeature, f5: SignalStoreFeature, f6: SignalStoreFeature): StoreToken<T>;
+
+/** Implementation */
+export function createSignalFeatureStore<State extends object, T = any>(
   name: string,
   initial: State,
-  ...features: SignalStoreFeature[]
-): StoreToken<State & { [key: string]: any }> {
-  const token = signalStore(
-    { providedIn: 'root' },
-    withState(initial),
-    ...features
-  );
+  ...rest: SignalStoreFeature[]
+): StoreToken<T> {
+  const s = withState(initial);
+  const d = withDevtoolsAuto(name, initial);
 
-  // Cast so Angular sees this as a DI token
-  return token as StoreToken<State & { [key: string]: any }>;
+  switch (rest.length) {
+    case 0: return signalStore({ providedIn: 'root' }, s, d) as StoreToken<T>;
+    case 1: return signalStore({ providedIn: 'root' }, s, d, rest[0]) as StoreToken<T>;
+    case 2: return signalStore({ providedIn: 'root' }, s, d, rest[0], rest[1]) as StoreToken<T>;
+    case 3: return signalStore({ providedIn: 'root' }, s, d, rest[0], rest[1], rest[2]) as StoreToken<T>;
+    case 4: return signalStore({ providedIn: 'root' }, s, d, rest[0], rest[1], rest[2], rest[3]) as StoreToken<T>;
+    case 5: return signalStore({ providedIn: 'root' }, s, d, rest[0], rest[1], rest[2], rest[3], rest[4]) as StoreToken<T>;
+    case 6: return signalStore({ providedIn: 'root' }, s, d, rest[0], rest[1], rest[2], rest[3], rest[4], rest[5]) as StoreToken<T>;
+    default: throw new Error('Too many features (max 6).');
+  }
 }
+Returns StoreToken<any> by default ⇒ no FlightStoreApi needed.
+
+inject(FlightStore) just works; the instance type is any (intentionally minimal).
+
+4) FlightStore (simple, one line)
+ts
+Copy code
+// stores/flight.store.ts
+import { withMethods, patchState, withComputed, type SignalStoreFeature } from '@ngrx/signals';
+import { createSignalFeatureStore, type StoreToken } from './store-factory';
+
+type Flight = { id: string; from: string; to: string };
+
+type State = {
+  flights: Flight[];
+  selectedId?: string;
+  loading: boolean;
+};
+
+const initial: State = { flights: [], selectedId: undefined, loading: false };
+
+const features: SignalStoreFeature[] = [
+  withComputed((s) => ({
+    hasSelection: () => !!s.selectedId(),
+  })),
+  withMethods((s) => ({
+    loadFlights(list: Flight[]) { patchState(s, { flights: list, loading: false }); },
+    addFlight(f: Flight)        { patchState(s, (st) => ({ flights: [...st.flights, f] })); },
+    selectFlight(id: string)    { patchState(s, { selectedId: id }); },
+    setLoading(flag: boolean)   { patchState(s, { loading: flag }); },
+    syncNow() { (s as any).syncNow?.(); }, // optional DevTools helper
+  })),
+];
+
+export const FlightStore: StoreToken = createSignalFeatureStore<State>('flights', initial, ...features);
+// ^ no API type — minimal & repeatable
