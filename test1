@@ -1,347 +1,316 @@
-public/config.json
-{
-  "apiUrl": "https://api-dev.example.com",
-  "ssoConfig": {
-    "issuer": "https://idp.example.com/realms/dev",
-    "clientId": "spa-dev",
-    "scope": "openid profile email offline_access api.read",
-    "requireHttps": true
-  },
-  "monitoring": {
-    "endpoint": "https://mon-dev.example.com/events",
-    "enabled": true
-  },
-  "security": {
-    "contentSecurityPolicy": "default-src 'self';",
-    "featurePolicy": "geolocation 'none'"
-  }
+src/app/
+  core/
+    feature-flags.ts
+    logger.service.ts
+  data/
+    flight.service.ts
+  devtools/
+    redux-devtools.service.ts
+    with-devtools-auto.feature.ts
+  stores/
+    store-factory.ts
+    flight.store.ts
+  feature/
+    flight-edit.component.ts
+src/environments/
+  environment.ts
+  environment.prod.ts
+main.ts
+1) Feature flags (env-driven)
+ts
+Copy code
+// src/app/core/feature-flags.ts
+import { InjectionToken } from '@angular/core';
+
+export type FeatureFlags = {
+  devtoolsEnabled: boolean; // turn Redux DevTools wiring on/off
+};
+
+export const FEATURE_FLAGS = new InjectionToken<FeatureFlags>('FEATURE_FLAGS');
+ts
+Copy code
+// src/environments/environment.ts  (dev)
+export const environment = {
+  production: false,
+  devtoolsEnabled: true,  // set to false if you want zero DevTools overhead even in dev
+};
+ts
+Copy code
+// src/environments/environment.prod.ts  (prod)
+export const environment = {
+  production: true,
+  devtoolsEnabled: false, // keep off in prod
+};
+ts
+Copy code
+// src/main.ts
+import { bootstrapApplication } from '@angular/platform-browser';
+import { provideHttpClient } from '@angular/common/http';
+import { FEATURE_FLAGS } from './app/core/feature-flags';
+import { environment } from './environments/environment';
+// import your root component (or a routed shell)
+import { FlightEditComponent } from './app/feature/flight-edit.component';
+
+bootstrapApplication(FlightEditComponent, {
+  providers: [
+    provideHttpClient(),
+    { provide: FEATURE_FLAGS, useValue: { devtoolsEnabled: environment.devtoolsEnabled } },
+  ]
+});
+2) DevTools bridge (gated by flags + dev mode)
+ts
+Copy code
+// src/app/devtools/redux-devtools.service.ts
+import { Injectable, inject, isDevMode } from '@angular/core';
+import { FEATURE_FLAGS } from '../core/feature-flags';
+
+type DevTools = {
+  connect(options?: { name?: string; features?: Record<string, boolean> }): {
+    init: (state: unknown) => void;
+    send: (action: string | { type: string; payload?: unknown }, state: unknown) => void;
+    subscribe: (listener: (message: any) => void) => void;
+  };
+};
+
+declare global {
+  interface Window { __REDUX_DEVTOOLS_EXTENSION__?: DevTools; }
 }
-
-angular.json (assets mapping)
-"assets": [
-  "src/favicon.ico",
-  "src/assets",
-  { "input": "public", "glob": "**/*", "output": "/" }
-]
-
-src/app/environment-config.service.ts
-import { Injectable } from '@angular/core';
-
-export class SSOConfig {
-  issuer!: string;
-  clientId!: string;
-  scope?: string;
-  requireHttps?: boolean;
-
-  static fromJSON(j: any): SSOConfig {
-    const x = new SSOConfig();
-    x.issuer = String(j?.issuer ?? '');
-    x.clientId = String(j?.clientId ?? '');
-    x.scope = j?.scope ?? 'openid profile email';
-    x.requireHttps = j?.requireHttps ?? true;
-    if (!x.issuer || !x.clientId) throw new Error('ssoConfig.issuer/clientId required');
-    return x;
-  }
-}
-
-export class MonitoringConfig {
-  endpoint!: string;
-  enabled = false;
-  static fromJSON(j: any): MonitoringConfig {
-    const x = new MonitoringConfig();
-    x.endpoint = String(j?.endpoint ?? '');
-    x.enabled = Boolean(j?.enabled ?? false);
-    return x;
-  }
-}
-
-export class SecurityConfig {
-  contentSecurityPolicy?: string;
-  featurePolicy?: string;
-  static fromJSON(j: any): SecurityConfig {
-    const x = new SecurityConfig();
-    x.contentSecurityPolicy = j?.contentSecurityPolicy ?? undefined;
-    x.featurePolicy = j?.featurePolicy ?? undefined;
-    return x;
-  }
-}
-
-/** Your existing EnvironmentConfig, now injectable and loaded from /config.json */
-@Injectable({ providedIn: 'root' })
-export class EnvironmentConfig {
-  apiUrl!: string;
-  ssoConfig!: SSOConfig;
-  monitoring!: MonitoringConfig;
-  security!: SecurityConfig;
-
-  async load(): Promise<void> {
-    const base = document.baseURI?.replace(/\/+$/, '') ?? '';
-    const url = `${base}/config.json?v=${Date.now()}`;
-    const resp = await fetch(url, { cache: 'no-store' });
-    if (!resp.ok) throw new Error(`config.json load failed: ${resp.status}`);
-    const j = await resp.json();
-
-    this.apiUrl = String(j?.apiUrl ?? '');
-    if (!this.apiUrl) throw new Error('config.json: apiUrl required');
-
-    this.ssoConfig = SSOConfig.fromJSON(j?.ssoConfig ?? {});
-    this.monitoring = MonitoringConfig.fromJSON(j?.monitoring ?? {});
-    this.security = SecurityConfig.fromJSON(j?.security ?? {});
-  }
-}
-
-src/app/auth/auth.service.ts
-import { Injectable } from '@angular/core';
-import { OAuthService, AuthConfig } from 'angular-oauth2-oidc';
-import { EnvironmentConfig } from '../environment-config.service';
-import { BehaviorSubject, firstValueFrom } from 'rxjs';
-import { filter, take } from 'rxjs/operators';
 
 @Injectable({ providedIn: 'root' })
-export class AuthService {
-  private refreshInProgress$ = new BehaviorSubject<boolean>(false);
-  private refreshDone$       = new BehaviorSubject<boolean>(true);
-  private firstLoginResolved = false;
+export class ReduxDevtoolsService {
+  private connections = new Map<string, ReturnType<NonNullable<DevTools['connect']>>>();
+  private enabled = isDevMode() && inject(FEATURE_FLAGS).devtoolsEnabled;
 
-  constructor(private oauth: OAuthService, private env: EnvironmentConfig) {}
+  connect(name: string) {
+    if (!this.enabled) {
+      const noop = { init: (_: unknown) => {}, send: (_a: unknown, _s: unknown) => {}, subscribe: (_: unknown) => {} } as const;
+      return noop as any;
+    }
 
-  /** Called from provideAppInitializer after env.load() */
-  async init(): Promise<void> {
-    this.oauth.configure(this.toAuthConfig());
-    await this.oauth.loadDiscoveryDocument();
-    await this.oauth.tryLoginCodeFlow();
+    if (this.connections.has(name)) return this.connections.get(name)!;
 
-    const maybeResolveFirst = () => {
-      if (!this.firstLoginResolved && this.oauth.hasValidAccessToken()) this.firstLoginResolved = true;
+    const ext = window.__REDUX_DEVTOOLS_EXTENSION__;
+    const conn = ext?.connect({ name, features: { jump: true, pause: true, export: true } }) ??
+                 ({ init: () => {}, send: () => {}, subscribe: () => {} } as any);
+    this.connections.set(name, conn);
+    return conn;
+  }
+}
+3) Auto-instrument feature (zero per-store plumbing)
+This observes top-level state fields and pushes snapshots to Redux DevTools when they change. It only runs if the service is enabled (dev + flag). No client audit here.
+
+ts
+Copy code
+// src/app/devtools/with-devtools-auto.feature.ts
+import { effect, inject } from '@angular/core';
+import { signalStoreFeature, type SignalStoreFeatureResult } from '@ngrx/signals';
+import { ReduxDevtoolsService } from './redux-devtools.service';
+
+const safe = <T>(v: T): T => { try { return JSON.parse(JSON.stringify(v)); } catch { return v; } };
+const stableStr = (v: unknown) => { try { return JSON.stringify(v); } catch { return String(v); } };
+
+export type DevtoolsAutoFeature = { syncNow: () => void };
+
+export function withDevtoolsAuto<State extends object>(
+  name: string,
+  initial: State,
+): SignalStoreFeatureResult<DevtoolsAutoFeature> {
+  return signalStoreFeature((store) => {
+    const devtools = inject(ReduxDevtoolsService).connect(name);
+
+    const keys = Object.keys(initial) as (keyof State)[];
+    const readSnapshot = (): State => {
+      const out: any = {};
+      for (const k of keys) {
+        const v: any = (store as any)[k];
+        out[k as string] = typeof v === 'function' ? v() : v;
+      }
+      return safe(out);
     };
-    maybeResolveFirst();
 
-    this.oauth.events.subscribe((e: any) => {
-      if (e.type === 'token_received' || e.type === 'token_refreshed') this.schedulePreemptive();
-      maybeResolveFirst();
+    const init = readSnapshot();
+    devtools.init(init);
+    let prev = stableStr(init);
+
+    effect(() => {
+      const curr = readSnapshot();
+      const currStr = stableStr(curr);
+      if (currStr !== prev) {
+        devtools.send({ type: '@@change' }, curr);
+        prev = currStr;
+      }
     });
 
-    if (this.oauth.hasValidAccessToken()) this.schedulePreemptive();
-  }
-
-  async waitForFirstLogin(): Promise<void> {
-    if (this.firstLoginResolved) return;
-    await firstValueFrom((this.oauth.events as any).pipe(
-      filter(() => this.oauth.hasValidAccessToken()),
-      take(1)
-    ));
-  }
-
-  login(): void { this.oauth.initLoginFlow(); }
-  logout(): void { this.oauth.logOut(true); }
-
-  get accessToken(): string | null { return this.oauth.getAccessToken() || null; }
-  hasValidAccessToken(): boolean { return this.oauth.hasValidAccessToken(); }
-
-  async ensureFreshToken(): Promise<void> {
-    const msLeft = this.oauth.getAccessTokenExpiration() - Date.now();
-    if (!this.oauth.hasValidAccessToken() || msLeft < 60_000) await this.refreshIfPossible();
-  }
-
-  async refreshIfPossible(): Promise<void> {
-    if (this.refreshInProgress$.value) {
-      await firstValueFrom(this.refreshDone$.pipe(filter(v => v === true), take(1)));
-      return;
-    }
-    const hasRT = !!this.oauth.getRefreshToken();
-    if (!hasRT) throw new Error('NO_REFRESH_TOKEN');
-
-    this.refreshInProgress$.next(true);
-    this.refreshDone$.next(false);
-    try {
-      const ok = await this.oauth.refreshToken();
-      if (!ok) throw new Error('REFRESH_FAILED');
-    } finally {
-      this.refreshInProgress$.next(false);
-      this.refreshDone$.next(true);
-    }
-  }
-
-  private schedulePreemptive(): void {
-    const exp = this.oauth.getAccessTokenExpiration();
-    const ms = Math.max(exp - Date.now() - 60_000, 0);
-    setTimeout(() => {
-      if (this.oauth.getAccessTokenExpiration() <= Date.now() + 90_000) {
-        this.refreshIfPossible().catch(() => {});
-      }
-    }, ms);
-  }
-
-  private toAuthConfig(): AuthConfig {
-    const a = this.env.ssoConfig;
-    return {
-      issuer: a.issuer,
-      clientId: a.clientId,
-      responseType: 'code',
-      oidc: true,
-      scope: a.scope ?? 'openid profile email',
-      requireHttps: a.requireHttps ?? true,
-      useSilentRefresh: false,      // per your requirement
-      sessionChecksEnabled: false,
-      disableAtHashCheck: true
-    };
-  }
+    const syncNow = () => devtools.send({ type: '@@sync' }, readSnapshot());
+    return { state: {}, methods: { syncNow } };
+  });
 }
+If devtoolsEnabled is false or you’re in prod, ReduxDevtoolsService returns a no-op connection, so this feature is effectively inert (no effects work besides cheap reads, and those get tree-shaken in prod builds).
 
-src/app/auth/auth.interceptor.ts
-import { Injectable } from '@angular/core';
-import {
-  HttpInterceptor, HttpRequest, HttpHandler, HttpEvent, HttpErrorResponse
-} from '@angular/common/http';
-import { Observable, from } from 'rxjs';
-import { switchMap, catchError, throwError } from 'rxjs';
-import { AuthService } from './auth.service';
+4) Store factory (adds DevTools only once)
+ts
+Copy code
+// src/app/stores/store-factory.ts
+import { signalStore, withState, type SignalStoreFeature } from '@ngrx/signals';
+import { withDevtoolsAuto } from '../devtools/with-devtools-auto.feature';
 
-@Injectable()
-export class AuthInterceptor implements HttpInterceptor {
-  constructor(private auth: AuthService) {}
-
-  intercept(req: HttpRequest<any>, next: HttpHandler): Observable<HttpEvent<any>> {
-    const addAuth = (r: HttpRequest<any>) => {
-      const t = this.auth.accessToken;
-      return t ? r.clone({ setHeaders: { Authorization: `Bearer ${t}` } }) : r;
-    };
-
-    return from(this.auth.ensureFreshToken()).pipe(
-      switchMap(() => next.handle(addAuth(req))),
-      catchError(err => {
-        if (!this.isExpired(err)) return throwError(() => err);
-        return from(this.auth.refreshIfPossible()).pipe(
-          switchMap(() => next.handle(addAuth(req))),
-          catchError(err2 => {
-            this.auth.logout();
-            this.auth.login();
-            return throwError(() => err2);
-          })
-        );
-      })
-    );
-  }
-
-  private isExpired(err: any): boolean {
-    if (err instanceof HttpErrorResponse) {
-      if (err.status === 401) return true;
-      const hdr = err.headers?.get('WWW-Authenticate') ?? '';
-      if (hdr.includes('invalid_token') || hdr.includes('expired')) return true;
-      const msg = ((err.error && (err.error.error || err.error.message)) || '') + '';
-      if (msg.includes('invalid_token') || msg.includes('expired')) return true;
-    }
-    return false;
-  }
+export function createSignalFeatureStore<State extends object>(
+  name: string,
+  initial: State,
+  ...features: SignalStoreFeature[]
+) {
+  return signalStore(
+    { providedIn: 'root' },
+    withState(initial),
+    withDevtoolsAuto<State>(name, initial), // no client audit here
+    ...features
+  );
 }
-
-src/app/session-bootstrap.service.ts
-import { Injectable } from '@angular/core';
-import { AuthService } from './auth/auth.service';
-import { UserService } from './services/user.service';
-import { MonitoringService } from './services/monitoring.service';
-
-@Injectable({ providedIn: 'root' })
-export class SessionBootstrapService {
-  private booted = false;
-
-  constructor(
-    private auth: AuthService,
-    private user: UserService,
-    private mon: MonitoringService
-  ) {}
-
-  /** Run heavy stuff once after the FIRST valid token. Never on refresh. */
-  async initOnce(): Promise<void> {
-    if (this.booted) return;
-    await this.auth.waitForFirstLogin();
-    await this.user.loadProfile();
-    await this.mon.init();
-    this.booted = true;
-  }
-}
-
-src/app/services/user.service.ts (stub)
-import { Injectable } from '@angular/core';
+5) HTTP service (pure I/O; server does audit)
+ts
+Copy code
+// src/app/data/flight.service.ts
 import { HttpClient } from '@angular/common/http';
-import { EnvironmentConfig } from '../environment-config.service';
-import { firstValueFrom } from 'rxjs';
-
-@Injectable({ providedIn: 'root' })
-export class UserService {
-  profile: any;
-  private base = this.env.apiUrl;
-
-  constructor(private http: HttpClient, private env: EnvironmentConfig) {}
-
-  async loadProfile(): Promise<void> {
-    this.profile = await firstValueFrom(this.http.get(`${this.base}/me`));
-  }
-}
-
-src/app/services/monitoring.service.ts (stub)
 import { Injectable } from '@angular/core';
-import { EnvironmentConfig } from '../environment-config.service';
+
+export type FlightDto = { id?: string; from: string; to: string };
 
 @Injectable({ providedIn: 'root' })
-export class MonitoringService {
-  private started = false;
-  constructor(private env: EnvironmentConfig) {}
+export class FlightService {
+  constructor(private http: HttpClient) {}
 
-  async init(): Promise<void> {
-    if (this.started || !this.env.monitoring.enabled) return;
-    // register session, start beacons using this.env.monitoring.endpoint, etc.
-    this.started = true;
+  getById(id: string) {
+    return this.http.get<FlightDto>(`/api/flights/${id}`);
+  }
+
+  create(dto: FlightDto) {
+    return this.http.post<FlightDto>('/api/flights', dto);
+  }
+
+  update(id: string, dto: FlightDto) {
+    return this.http.put<FlightDto>(`/api/flights/${id}`, dto);
   }
 }
+6) SignalStore (does fetching & saving; no client audit)
+ts
+Copy code
+// src/app/stores/flight.store.ts
+import { createSignalFeatureStore } from './store-factory';
+import { withMethods, withComputed, patchState } from '@ngrx/signals';
+import { inject } from '@angular/core';
+import { FlightService, FlightDto } from '../data/flight.service';
 
-src/app/app.module.ts (using provideAppInitializer())
-import { NgModule, inject } from '@angular/core';
-import { BrowserModule } from '@angular/platform-browser';
-import { HttpClientModule, HTTP_INTERCEPTORS } from '@angular/common/http';
-import { OAuthModule } from 'angular-oauth2-oidc';
-import { provideAppInitializer } from '@angular/core';
+type State = {
+  entity?: FlightDto;
+  loading: boolean;
+  saving: boolean;
+  error?: string | null;
+};
 
-import { AppComponent } from './app.component';
-import { EnvironmentConfig } from './environment-config.service';
-import { AuthService } from './auth/auth.service';
-import { SessionBootstrapService } from './session-bootstrap.service';
-import { AuthInterceptor } from './auth/auth.interceptor';
+const initial: State = { loading: false, saving: false, error: null };
 
-@NgModule({
-  declarations: [AppComponent],
-  imports: [BrowserModule, HttpClientModule, OAuthModule.forRoot()],
-  providers: [
-    // Startup order: 1) config.json  2) OAuth discovery/login  3) boot ONCE
-    provideAppInitializer(() => {
-      const env  = inject(EnvironmentConfig);
-      const auth = inject(AuthService);
-      const boot = inject(SessionBootstrapService);
-      return (async () => {
-        await env.load();        // ALWAYS first
-        await auth.init();       // uses env.ssoConfig
-        if (auth.hasValidAccessToken()) await boot.initOnce();
-      })();
-    }),
-    { provide: HTTP_INTERCEPTORS, useClass: AuthInterceptor, multi: true }
-  ],
-  bootstrap: [AppComponent]
+export const FlightStore = createSignalFeatureStore<State>(
+  'flights',
+  initial,
+
+  withComputed((s) => ({
+    isNew: () => !s.entity()?.id,
+  })),
+
+  withMethods((s) => {
+    const api = inject(FlightService);
+
+    return {
+      load(id: string) {
+        patchState(s, { loading: true, error: null });
+        api.getById(id).subscribe({
+          next: (entity) => patchState(s, { entity, loading: false }),
+          error: (e) => patchState(s, { error: `${e?.message ?? e}`, loading: false }),
+        });
+      },
+
+      save(dto: FlightDto) {
+        patchState(s, { saving: true, error: null });
+        const call$ = dto.id ? api.update(dto.id, dto) : api.create(dto);
+
+        call$.subscribe({
+          next: (saved) => patchState(s, { entity: saved, saving: false }),
+          error: (e)   => patchState(s, { saving: false, error: `${e?.message ?? e}` }),
+        });
+      },
+
+      patchDraft(p: Partial<FlightDto>) {
+        patchState(s, (st) => ({ entity: { ...st.entity, ...p } as FlightDto }));
+      },
+
+      // Optional: push the current snapshot to DevTools on demand
+      syncDevtools() { (s as any).syncNow(); },
+    };
+  }),
+);
+7) Component (Reactive Form → store.save(form DTO))
+ts
+Copy code
+// src/app/feature/flight-edit.component.ts
+import { Component, OnInit, inject, effect } from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { ReactiveFormsModule, FormBuilder, Validators, NonNullableFormBuilder } from '@angular/forms';
+import { FlightStore } from '../stores/flight.store';
+
+@Component({
+  selector: 'app-flight-edit',
+  standalone: true,
+  imports: [CommonModule, ReactiveFormsModule],
+  template: `
+    <form [formGroup]="form" (ngSubmit)="onSubmit()" novalidate>
+      <label>
+        From
+        <input formControlName="from" placeholder="From" />
+      </label>
+
+      <label>
+        To
+        <input formControlName="to" placeholder="To" />
+      </label>
+
+      <div class="actions">
+        <button type="submit" [disabled]="form.invalid || store.saving()">Save</button>
+        <button type="button" (click)="reload()" [disabled]="store.loading()">Reload</button>
+      </div>
+    </form>
+
+    <div *ngIf="store.loading()">Loading…</div>
+    <div *ngIf="store.saving()">Saving…</div>
+    <pre *ngIf="store.entity() as e">{{ e | json }}</pre>
+    <div *ngIf="store.error() as err" class="error">{{ err }}</div>
+  `,
 })
-export class AppModule {}
+export class FlightEditComponent implements OnInit {
+  readonly store = inject(FlightStore);
+  private fb: NonNullableFormBuilder = inject(FormBuilder).nonNullable;
 
-src/app/app.component.ts (keep clean)
-import { Component } from '@angular/core';
-@Component({ selector: 'app-root', template: `<router-outlet></router-outlet>` })
-export class AppComponent {}
+  form = this.fb.group({
+    id: this.fb.control<string | undefined>(undefined),
+    from: this.fb.control('', { validators: [Validators.required] }),
+    to:   this.fb.control('', { validators: [Validators.required] }),
+  });
 
-What this guarantees
+  ngOnInit(): void {
+    // Example: preload record
+    // this.store.load('A1');
 
-/config.json loads before OAuth.
+    effect(() => {
+      const e = this.store.entity();
+      if (e) this.form.patchValue(e, { emitEvent: false });
+    });
+  }
 
-Token refresh only swaps tokens. It does not re-load config or re-run UserService/MonitoringService.
+  onSubmit() {
+    if (this.form.invalid) return;
+    this.store.save(this.form.getRawValue());
+  }
 
-Heavy boot (SessionBootstrapService.initOnce()) runs once after the first valid token.
-
-Interceptor pre-empts expiry, does single-flight refresh, retries once, and hard-reauths if refresh isn’t possible.
-
-If your config.json keys differ, tell me the exact shape; I’ll tweak EnvironmentConfig.load() and toAuthConfig() accordingly.
+  reload() {
+    // this.store.load('A1');
+  }
+}
