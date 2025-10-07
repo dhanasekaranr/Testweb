@@ -1,453 +1,196 @@
-# 🌍 **Environment-Controlled DevTools for Signal Stores**
-
-## 🎯 **Perfect Solution for Your 100+ Stores**
-
-Instead of using `isDevMode()`, you now have **environment-based control** over Redux DevTools!
-
-## ⚙️ **Environment Configuration**
-
-### **Development Environment** (`environment.ts`)
-```typescript
-devTools: {
-  enableReduxDevTools: true,        // 🟢 DevTools ON
-  enableConsoleDebugging: true,     // 🟢 Console logs ON  
-  enablePerformanceTracking: true,  // 🟢 Performance ON
-  enableStateExport: true,          // 🟢 State export ON
-  storesToDebug: ['*'],             // 🟢 Debug ALL stores
-  maxHistorySize: 50,               // 🟢 Keep 50 actions
-}
-```
-
-### **Production Environment** (`environment.prod.ts`)
-```typescript
-devTools: {
-  enableReduxDevTools: false,       // 🔴 DevTools OFF
-  enableConsoleDebugging: false,   // 🔴 No console logs
-  enablePerformanceTracking: false, // 🔴 No performance tracking  
-  enableStateExport: false,        // 🔴 No state export
-  storesToDebug: [],               // 🔴 No debugging
-  maxHistorySize: 0,               // 🔴 No history
-}
-```
-
-## 🎮 **Advanced Environment Controls**
-
-### **Staging Environment** (Optional)
-```typescript
-// environment.staging.ts
-devTools: {
-  enableReduxDevTools: true,        // ✅ Enable for testing
-  enableConsoleDebugging: false,   // ❌ But no console spam
-  enablePerformanceTracking: true,  // ✅ Monitor performance
-  enableStateExport: true,          // ✅ Allow bug reporting
-  storesToDebug: ['UsersStore', 'OrdersStore'], // 🎯 Only specific stores
-  maxHistorySize: 25,               // 🔄 Smaller history
-}
-```
-
-### **Demo Environment** (Optional)
-```typescript
-// environment.demo.ts  
-devTools: {
-  enableReduxDevTools: true,        // ✅ Show to clients
-  enableConsoleDebugging: true,    // ✅ Explain what's happening
-  enablePerformanceTracking: false, // ❌ Don't distract
-  enableStateExport: false,        // ❌ Prevent data export
-  storesToDebug: ['DashboardStore'], // 🎯 Only main features
-  maxHistorySize: 10,              // 🔄 Keep it simple
-}
-```
-
-## 🏪 **Store Implementation**
-
-### **Basic Store Template**
-```typescript
+import { computed, inject } from '@angular/core';
+import {
+  patchState,
+  signalStore,
+  withComputed,
+  withMethods,
+  withState,
+} from '@ngrx/signals';
+import { rxMethod } from '@ngrx/signals/rxjs-interop';
+import { catchError, of, pipe, switchMap, tap } from 'rxjs';
 import { withConditionalDevTools } from '../../../shared/features/environment-devtools.feature';
+import { UsersApiService } from './api/users-api.service';
+import { User } from './state/users.state';
 
-export const MyStore = signalStore(
+// Define the state interface
+interface UsersState {
+  users: User[];
+  selectedUser: User | null;
+  loading: boolean;
+  error: string | null;
+}
+
+// Initial state
+const initialState: UsersState = {
+  users: [],
+  selectedUser: null,
+  loading: false,
+  error: null,
+};
+
+export const UsersStore = signalStore(
   { providedIn: 'root' },
+
+  // Define state with debugging name
   withState(initialState),
-  withComputed(/* ... */),
-  withMethods(/* ... */),
-  
-  // 🎯 ONE LINE - Environment controlled!
-  withConditionalDevTools('MyStoreName')
-);
-```
 
-### **What Happens in Each Environment:**
+  // Define computed signals
+  withComputed(({ users, selectedUser, error }) => ({
+    usersCount: computed(() => users().length),
+    activeUsers: computed(() =>
+      users().filter((user) => user.status === 'Active')
+    ),
+    inactiveUsers: computed(() =>
+      users().filter((user) => user.status === 'Inactive')
+    ),
+    suspendedUsers: computed(() =>
+      users().filter((user) => user.status === 'Suspended')
+    ),
+    hasUsers: computed(() => users().length > 0),
+    hasError: computed(() => !!error()),
+  })),
 
-#### **Development** 🟢
-```typescript
-withConditionalDevTools('UsersStore')
-// ✅ Redux DevTools connected
-// ✅ Console: "🏪 UsersStore (development) initialized"
-// ✅ Console: "🔗 UsersStore (development) connected to Redux DevTools"
-// ✅ Full debugging capabilities
-```
-
-#### **Production** 🔴
-```typescript
-withConditionalDevTools('UsersStore')  
-// ❌ No DevTools connection
-// ❌ No console output
-// ❌ Zero debugging overhead
-// ✅ Clean production bundle
-```
-
-#### **Staging** 🟡
-```typescript
-withConditionalDevTools('UsersStore')
-// ✅ Redux DevTools connected (if in storesToDebug)
-// ❌ No console spam
-// ✅ Performance monitoring
-// ✅ Bug reporting capabilities
-```
-
-## 🎛️ **Environment Service API**
-
-Your environment service provides these methods:
-
-```typescript
-const envService = inject(EnvironmentService);
-
-// Check if DevTools are enabled
-envService.isReduxDevToolsEnabled          // true/false
-envService.isConsoleDebuggingEnabled       // true/false
-envService.isPerformanceTrackingEnabled    // true/false
-
-// Check specific store
-envService.shouldDebugStore('UsersStore')  // true/false
-
-// Get full config for a store
-const config = envService.getDevToolsConfig('UsersStore');
-/* Returns:
-{
-  enabled: true,
-  console: true,
-  performance: true,
-  stateExport: true,
-  maxHistory: 50,
-  name: "UsersStore (development)"
-}
-*/
-```
-
-## 🚀 **Apply to All Your Stores**
-
-### **Step 1: Add Import**
-```typescript
-import { withConditionalDevTools } from '../../../shared/features/environment-devtools.feature';
-```
-
-### **Step 2: Add to Store**
-```typescript
-export const MyStore = signalStore(
-  // ... existing code ...
-  withConditionalDevTools('MyStoreName') // 🎯 Last line
-);
-```
-
-### **Step 3: Customize Environment** (Optional)
-```typescript
-// Fine-tune which stores debug in which environments
-devTools: {
-  storesToDebug: [
-    'UsersStore',
-    'OrdersStore', 
-    'PaymentStore'
-  ]  // Only these stores have debugging
-}
-```
-
-## 🌟 **Benefits Over isDevMode()**
-
-### ✅ **Fine-Grained Control**
-```typescript
-// ❌ Old way: All or nothing
-if (isDevMode()) { /* debug everything */ }
-
-// ✅ New way: Precise control
-devTools: {
-  storesToDebug: ['CriticalStore', 'ImportantStore']  // Only what you need
-}
-```
-
-### ✅ **Environment-Specific Debugging**
-```typescript
-// ✅ Development: Full debugging
-// ✅ Staging: Selected stores only  
-// ✅ Demo: Show-and-tell mode
-// ✅ Production: Complete silence
-```
-
-### ✅ **Runtime Configuration**
-```typescript
-// Can be changed via environment variables
-process.env.ENABLE_STORE_DEBUGGING = 'true'
-process.env.STORES_TO_DEBUG = 'UsersStore,OrdersStore'
-```
-
-### ✅ **Better Performance**
-```typescript
-// Only enabled stores get debugging overhead
-// Production builds have zero debugging code
-// Selective debugging reduces noise
-```
-
-## 🎮 **Browser Usage**
-
-1. **Development**: All stores appear in Redux DevTools
-2. **Staging**: Only specified stores appear  
-3. **Production**: Redux tab shows "No store found" (as expected)
-
-## 📊 **Console Output Examples**
-
-### **Development Environment:**
-```
-🏪 UsersStore (development) initialized (environment-controlled)
-🔗 UsersStore (development) connected to Redux DevTools
-🏪 SettingsStore (development) initialized (environment-controlled)  
-🔗 SettingsStore (development) connected to Redux DevTools
-```
-
-### **Staging Environment:**
-```
-🏪 UsersStore (staging) initialized (environment-controlled)
-🔗 UsersStore (staging) connected to Redux DevTools
-// SettingsStore not debugged (not in storesToDebug array)
-```
-
-### **Production Environment:**
-```
-// Complete silence - no console output
-```
-
----
-
-## 🎯 **Summary**
-
-You now have **enterprise-grade control** over your Signal Store debugging:
-
-- ✅ **Environment-based**: Different configs per environment
-- ✅ **Granular**: Choose exactly which stores to debug
-- ✅ **Performance-aware**: Zero overhead in production
-- ✅ **Scalable**: Works perfectly for 100+ stores
-- ✅ **Maintainable**: Change config, not code
-
-**One line per store, full environment control!** 🚀
-
-
-
-  // Development Tools Configuration
-  devTools: {
-    enableReduxDevTools: true,        // 🎯 Redux DevTools for Signal Stores
-    enableConsoleDebugging: true,     // Console logging for stores
-    enablePerformanceTracking: true,  // Performance monitoring
-    enableStateExport: true,          // Allow state export/import
-    storesToDebug: ['*'],             // '*' for all stores, or specific: ['UsersStore', 'SettingsStore']
-    maxHistorySize: 50,               // Max actions to keep in DevTools
-  },
-
-  devTools: {
-    enableReduxDevTools: false,       // 🚫 No DevTools in production
-    enableConsoleDebugging: false,   // No console logging
-    enablePerformanceTracking: false, // No performance tracking
-    enableStateExport: false,        // No state export/import
-    storesToDebug: [],               // No stores to debug
-    maxHistorySize: 0,               // No history
-  },
-
-
-
-
-
-
-
-import { inject } from '@angular/core';
-import { withDevtools } from '@angular-architects/ngrx-toolkit';
-import { withHooks } from '@ngrx/signals';
-import { EnvironmentService } from '../../core/services/environment.service';
-
-/**
- * Environment-aware DevTools feature for Signal Stores
- * Uses environment configuration instead of isDevMode()
- * 
- * Usage:
- * export const MyStore = signalStore(
- *   { providedIn: 'root' },
- *   withState(initialState),
- *   withComputed(...),
- *   withMethods(...),
- *   withEnvironmentDevTools('MyStoreName') // 🎯 Environment-controlled debugging!
- * );
- */
-export function withEnvironmentDevTools(storeName: string) {
-  return [
-    // Conditionally apply DevTools based on environment
-    ...((() => {
-      const envService = inject(EnvironmentService);
-      const config = envService.getDevToolsConfig(storeName);
-      
-      if (!config.enabled) {
-        return []; // No debugging in this environment
-      }
-      
-      return [
-        // Apply NgRx Toolkit DevTools
-        withDevtools(storeName),
-        
-        // Add environment-aware debugging hooks
-        withHooks((storeInstance: any) => ({
-          onInit() {
-            if (config.console) {
-              console.log(`🏪 ${config.name} initialized with environment-controlled debugging`);
-              console.log(`🔧 Config:`, config);
-            }
-            
-            // Performance tracking if enabled
-            if (config.performance) {
-              console.time(`${storeName} initialization`);
-              console.timeEnd(`${storeName} initialization`);
-            }
-            
-            // Manual Redux DevTools connection with environment-specific settings
-            if (typeof window !== 'undefined' && (window as any).__REDUX_DEVTOOLS_EXTENSION__) {
-              try {
-                const devtools = (window as any).__REDUX_DEVTOOLS_EXTENSION__.connect({
-                  name: config.name,
-                  instanceId: `${storeName.toLowerCase()}-env`,
-                  maxAge: config.maxHistory,
-                  features: {
-                    pause: true,
-                    lock: true,
-                    persist: config.stateExport,
-                    export: config.stateExport,
-                    import: config.stateExport,
-                    jump: true,
-                    skip: true,
-                    reorder: true,
-                    dispatch: true,
-                    test: true
-                  }
-                });
-                
-                // Get current state dynamically
-                const currentState: Record<string, any> = {};
-                
-                // Extract all state properties safely
-                Object.keys(storeInstance).forEach(key => {
-                  if (typeof storeInstance[key] === 'function') {
-                    try {
-                      const value = storeInstance[key]();
-                      if (typeof value !== 'function') {
-                        currentState[key] = value;
-                      }
-                    } catch (e) {
-                      // Skip properties that can't be called
-                    }
-                  }
-                });
-                
-                devtools.init(currentState);
-                
-                if (config.console) {
-                  console.log(`🔗 ${config.name} connected to Redux DevTools`);
-                }
-              } catch (error) {
-                if (config.console) {
-                  console.warn(`⚠️ ${config.name} DevTools connection failed:`, error);
-                }
-              }
-            } else if (config.console) {
-              console.warn(`⚠️ ${config.name}: Redux DevTools extension not found`);
-            }
-          },
-          
-          onDestroy() {
-            if (config.console) {
-              console.log(`🏪 ${config.name} destroyed`);
-            }
-          }
-        }))
-      ];
-    })())
-  ];
-}
-
-/**
- * Simplified version that only applies DevTools if enabled in environment
- */
-export function withConditionalDevTools(storeName: string) {
-  return withHooks((store) => {
-    const envService = inject(EnvironmentService);
-    
-    return {
-      onInit() {
-        if (envService.shouldDebugStore(storeName)) {
-          const config = envService.getDevToolsConfig(storeName);
-          
-          if (config.console) {
-            console.log(`🏪 ${config.name} initialized (environment-controlled)`);
-          }
-          
-          // Manual Redux DevTools connection
-          if (typeof window !== 'undefined' && (window as any).__REDUX_DEVTOOLS_EXTENSION__) {
-            try {
-              const devtools = (window as any).__REDUX_DEVTOOLS_EXTENSION__.connect({
-                name: config.name,
-                instanceId: `${storeName.toLowerCase()}-env`,
-                maxAge: config.maxHistory
+  // Define methods
+  withMethods((store, usersApi = inject(UsersApiService)) => ({
+    // Load users from API
+    loadUsers: rxMethod<void>(
+      pipe(
+        tap(() => patchState(store, { loading: true, error: null })),
+        switchMap(() =>
+          usersApi.getUsers().pipe(
+            tap((users: User[]) => {
+              console.log(
+                '✅ Users loaded successfully:',
+                users.length,
+                'users'
+              );
+              patchState(store, {
+                users,
+                loading: false,
+                error: null,
               });
-              
-              // Get current state dynamically
-              const currentState: Record<string, any> = {};
-              Object.keys(store).forEach(key => {
-                if (typeof store[key] === 'function') {
-                  try {
-                    const value = store[key]();
-                    if (typeof value !== 'function') {
-                      currentState[key] = value;
-                    }
-                  } catch (e) {
-                    // Skip properties that can't be called
-                  }
-                }
+            }),
+            catchError((error: any) => {
+              console.error('❌ Error loading users:', error);
+              patchState(store, {
+                loading: false,
+                error: error.message || 'Failed to load users',
               });
-              
-              devtools.init(currentState);
-              
-              if (config.console) {
-                console.log(`🔗 ${config.name} connected to Redux DevTools`);
-              }
-            } catch (error) {
-              if (config.console) {
-                console.warn(`⚠️ ${config.name} DevTools connection failed:`, error);
-              }
-            }
-          }
-        }
-      }
-    };
-  });
-}
+              return of([]);
+            })
+          )
+        )
+      )
+    ),
 
-/**
- * Get environment-specific DevTools configuration
- */
-export function getDevToolsConfig(storeName: string) {
-  const envService = inject(EnvironmentService);
-  return envService.getDevToolsConfig(storeName);
-}
+    // Add a new user
+    addUser: rxMethod<User>(
+      pipe(
+        tap(() => patchState(store, { loading: true, error: null })),
+        switchMap((user) =>
+          usersApi.addUser(user).pipe(
+            tap((newUser: User) => {
+              console.log('✅ User added successfully:', newUser);
+              patchState(store, {
+                users: [...store.users(), newUser],
+                loading: false,
+                error: null,
+              });
+            }),
+            catchError((error: any) => {
+              console.error('❌ Error adding user:', error);
+              patchState(store, {
+                loading: false,
+                error: error.message || 'Failed to add user',
+              });
+              return of();
+            })
+          )
+        )
+      )
+    ),
 
+    // Update an existing user
+    updateUser: rxMethod<User>(
+      pipe(
+        tap(() => patchState(store, { loading: true, error: null })),
+        switchMap((user) =>
+          usersApi.updateUser(user).pipe(
+            tap((updatedUser: User) => {
+              console.log('✅ User updated successfully:', updatedUser);
+              const users = store
+                .users()
+                .map((u) => (u.id === updatedUser.id ? updatedUser : u));
+              patchState(store, {
+                users,
+                selectedUser:
+                  store.selectedUser()?.id === updatedUser.id
+                    ? updatedUser
+                    : store.selectedUser(),
+                loading: false,
+                error: null,
+              });
+            }),
+            catchError((error: any) => {
+              console.error('❌ Error updating user:', error);
+              patchState(store, {
+                loading: false,
+                error: error.message || 'Failed to update user',
+              });
+              return of();
+            })
+          )
+        )
+      )
+    ),
 
+    // Delete a user
+    deleteUser: rxMethod<number>(
+      pipe(
+        tap(() => patchState(store, { loading: true, error: null })),
+        switchMap((id) =>
+          usersApi.deleteUser(id).pipe(
+            tap(() => {
+              console.log('✅ User deleted successfully:', id);
+              const users = store.users().filter((u) => u.id !== id);
+              const selectedUser =
+                store.selectedUser()?.id === id ? null : store.selectedUser();
+              patchState(store, {
+                users,
+                selectedUser,
+                loading: false,
+                error: null,
+              });
+            }),
+            catchError((error: any) => {
+              console.error('❌ Error deleting user:', error);
+              patchState(store, {
+                loading: false,
+                error: error.message || 'Failed to delete user',
+              });
+              return of();
+            })
+          )
+        )
+      )
+    ),
 
+    // Select a user (local state only)
+    selectUser(user: User | null): void {
+      patchState(store, { selectedUser: user });
+    },
 
+    // Clear error state
+    clearError(): void {
+      patchState(store, { error: null });
+    },
 
+    // Reset state to initial values
+    reset(): void {
+      patchState(store, initialState);
+    },
+  })),
 
-
-------------------------------
-
-
-// 🎯 Environment-controlled Redux DevTools
+  // 🎯 Environment-controlled Redux DevTools
   withConditionalDevTools('UsersStore')
+);
