@@ -1,196 +1,136 @@
-import { computed, inject } from '@angular/core';
-import {
-  patchState,
-  signalStore,
-  withComputed,
-  withMethods,
-  withState,
-} from '@ngrx/signals';
-import { rxMethod } from '@ngrx/signals/rxjs-interop';
-import { catchError, of, pipe, switchMap, tap } from 'rxjs';
-import { withConditionalDevTools } from '../../../shared/features/environment-devtools.feature';
-import { UsersApiService } from './api/users-api.service';
-import { User } from './state/users.state';
+ool—here’s the “no silent refresh, hard re-auth on expiry” setup, end-to-end. It’s simple, predictable, and bulletproof.
 
-// Define the state interface
-interface UsersState {
-  users: User[];
-  selectedUser: User | null;
-  loading: boolean;
-  error: string | null;
-}
+What you remove
 
-// Initial state
-const initialState: UsersState = {
-  users: [],
-  selectedUser: null,
-  loading: false,
-  error: null,
+No useSilentRefresh: true
+
+No silentRefreshRedirectUri
+
+No /silent-refresh.html
+
+Don’t ever call refreshToken() or silentRefresh()
+
+AuthConfig (PKCE, no silent)
+// AuthService.toAuthConfig()
+const a = this.env.ssoConfig;
+return {
+  issuer: a.issuer,
+  clientId: a.clientId,
+  responseType: 'code',
+  scope: a.scope ?? 'openid profile email', // no offline_access
+  requireHttps: a.requireHttps ?? true,
+  redirectUri: window.location.origin + '/auth/callback',
+  useSilentRefresh: false,
+  sessionChecksEnabled: false,
+  disableAtHashCheck: true,
+  // showDebugInformation: true, // optional while tuning
 };
 
-export const UsersStore = signalStore(
-  { providedIn: 'root' },
+Init (one-shot discovery+tryLogin)
+// AuthService.init()
+this.oauth.configure(this.toAuthConfig());
+this.oauth.setStorage(localStorage); // or sessionStorage
+await this.oauth.loadDiscoveryDocumentAndTryLogin();
 
-  // Define state with debugging name
-  withState(initialState),
+if (this.oauth.hasValidAccessToken()) this.scheduleExpiryWarning(); // optional UX
 
-  // Define computed signals
-  withComputed(({ users, selectedUser, error }) => ({
-    usersCount: computed(() => users().length),
-    activeUsers: computed(() =>
-      users().filter((user) => user.status === 'Active')
-    ),
-    inactiveUsers: computed(() =>
-      users().filter((user) => user.status === 'Inactive')
-    ),
-    suspendedUsers: computed(() =>
-      users().filter((user) => user.status === 'Suspended')
-    ),
-    hasUsers: computed(() => users().length > 0),
-    hasError: computed(() => !!error()),
-  })),
+Ensure freshness (trigger full login when needed)
+// AuthService
+ensureFreshToken = async (returnUrl?: string): Promise<void> => {
+  const msLeft = this.oauth.getAccessTokenExpiration() - Date.now();
+  const needsLogin = !this.oauth.hasValidAccessToken() || msLeft < 15_000; // 15s buffer
 
-  // Define methods
-  withMethods((store, usersApi = inject(UsersApiService)) => ({
-    // Load users from API
-    loadUsers: rxMethod<void>(
-      pipe(
-        tap(() => patchState(store, { loading: true, error: null })),
-        switchMap(() =>
-          usersApi.getUsers().pipe(
-            tap((users: User[]) => {
-              console.log(
-                '✅ Users loaded successfully:',
-                users.length,
-                'users'
-              );
-              patchState(store, {
-                users,
-                loading: false,
-                error: null,
-              });
-            }),
-            catchError((error: any) => {
-              console.error('❌ Error loading users:', error);
-              patchState(store, {
-                loading: false,
-                error: error.message || 'Failed to load users',
-              });
-              return of([]);
-            })
-          )
-        )
-      )
-    ),
+  if (!needsLogin) return;
 
-    // Add a new user
-    addUser: rxMethod<User>(
-      pipe(
-        tap(() => patchState(store, { loading: true, error: null })),
-        switchMap((user) =>
-          usersApi.addUser(user).pipe(
-            tap((newUser: User) => {
-              console.log('✅ User added successfully:', newUser);
-              patchState(store, {
-                users: [...store.users(), newUser],
-                loading: false,
-                error: null,
-              });
-            }),
-            catchError((error: any) => {
-              console.error('❌ Error adding user:', error);
-              patchState(store, {
-                loading: false,
-                error: error.message || 'Failed to add user',
-              });
-              return of();
-            })
-          )
-        )
-      )
-    ),
+  if (returnUrl) sessionStorage.setItem('returnUrl', returnUrl);
+  this.oauth.initLoginFlow(); // full redirect to IdP
+  throw new Error('REAUTH_TRIGGERED'); // caller should bail
+};
 
-    // Update an existing user
-    updateUser: rxMethod<User>(
-      pipe(
-        tap(() => patchState(store, { loading: true, error: null })),
-        switchMap((user) =>
-          usersApi.updateUser(user).pipe(
-            tap((updatedUser: User) => {
-              console.log('✅ User updated successfully:', updatedUser);
-              const users = store
-                .users()
-                .map((u) => (u.id === updatedUser.id ? updatedUser : u));
-              patchState(store, {
-                users,
-                selectedUser:
-                  store.selectedUser()?.id === updatedUser.id
-                    ? updatedUser
-                    : store.selectedUser(),
-                loading: false,
-                error: null,
-              });
-            }),
-            catchError((error: any) => {
-              console.error('❌ Error updating user:', error);
-              patchState(store, {
-                loading: false,
-                error: error.message || 'Failed to update user',
-              });
-              return of();
-            })
-          )
-        )
-      )
-    ),
+Guard (recover or reauth)
+// AuthGuard
+async canActivate(route: ActivatedRouteSnapshot, state: RouterStateSnapshot) {
+  try {
+    await this.auth.ensureFreshToken(state.url); // stores returnUrl if reauth needed
+    return true;
+  } catch {
+    return false; // navigation will be interrupted by redirect
+  }
+}
 
-    // Delete a user
-    deleteUser: rxMethod<number>(
-      pipe(
-        tap(() => patchState(store, { loading: true, error: null })),
-        switchMap((id) =>
-          usersApi.deleteUser(id).pipe(
-            tap(() => {
-              console.log('✅ User deleted successfully:', id);
-              const users = store.users().filter((u) => u.id !== id);
-              const selectedUser =
-                store.selectedUser()?.id === id ? null : store.selectedUser();
-              patchState(store, {
-                users,
-                selectedUser,
-                loading: false,
-                error: null,
-              });
-            }),
-            catchError((error: any) => {
-              console.error('❌ Error deleting user:', error);
-              patchState(store, {
-                loading: false,
-                error: error.message || 'Failed to delete user',
-              });
-              return of();
-            })
-          )
-        )
-      )
-    ),
+Interceptor (retry once on 401, else reauth)
+// Auth interceptor
+intercept(req, next) {
+  const addAuth = (r: HttpRequest<any>) => {
+    const t = this.auth.accessToken;
+    return t ? r.clone({ setHeaders: { Authorization: `Bearer ${t}` } }) : r;
+  };
 
-    // Select a user (local state only)
-    selectUser(user: User | null): void {
-      patchState(store, { selectedUser: user });
-    },
+  // Pre-check just before sending
+  return from(this.auth.ensureFreshToken()).pipe(
+    switchMap(() => next.handle(addAuth(req))),
+    catchError(err => {
+      if (!isAuthExpired(err)) return throwError(() => err);
 
-    // Clear error state
-    clearError(): void {
-      patchState(store, { error: null });
-    },
+      // On 401, hard reauth (don’t loop)
+      try { this.auth.logout?.(); } catch {}
+      const url = this.router?.url ?? '/';
+      sessionStorage.setItem('returnUrl', url);
+      this.auth.login(); // initLoginFlow()
+      return throwError(() => err);
+    })
+  );
+}
 
-    // Reset state to initial values
-    reset(): void {
-      patchState(store, initialState);
-    },
-  })),
 
-  // 🎯 Environment-controlled Redux DevTools
-  withConditionalDevTools('UsersStore')
-);
+isAuthExpired = your existing 401/WWW-Authenticate: invalid_token checker.
+
+Callback route (unguarded) + returnUrl resume
+// routes
+{ path: 'auth/callback', component: OidcCallbackComponent } // unguarded
+
+// OidcCallbackComponent (very small)
+ngOnInit() {
+  // tokens are parsed by loadDiscoveryDocumentAndTryLogin() during init()
+  const back = sessionStorage.getItem('returnUrl') || '/';
+  sessionStorage.removeItem('returnUrl');
+  this.router.navigateByUrl(back);
+}
+
+Optional: pre-expiry heads-up (nice UX)
+// AuthService
+private scheduleExpiryWarning() {
+  const ms = this.oauth.getAccessTokenExpiration() - Date.now() - 60_000; // warn 60s early
+  if (ms <= 0) return;
+  setTimeout(() => {
+    // show a toast/snackbar: “Session expiring. Continue?”
+    // If user clicks: this.oauth.initLoginFlow(); // round-trip now, not during a save
+  }, ms);
+}
+
+Important guardrails
+
+Router should wait for init:
+
+RouterModule.forRoot(routes, { initialNavigation: 'enabledBlocking' })
+
+
+Never mutate IdP calls in your interceptors (no extra headers/params/content-type on /authorize or /token).
+
+Do not guard /auth/callback.
+
+Don’t cache env.apiUrl in field initializers. Use a getter.
+
+What the flow looks like
+
+App loads → loadDiscoveryDocumentAndTryLogin() runs.
+
+First visit has no token → guard/interceptor call initLoginFlow() → user signs in.
+
+IdP redirects to /auth/callback?code=… → lib exchanges code → tokens saved.
+
+You navigate to returnUrl.
+
+When token nears 40-min expiry or a 401 comes back, you immediately call initLoginFlow() again. No iframe shenanigans.
+
+That’s it. It’s noisy (full-page redirect), but it’s reliable and compliant with an IdP that refuses refresh tokens. If you later get RTs enabled, flip back to RT flow: set offline_access, keep useSilentRefresh:false, and call refreshToken() in ensureFreshToken().
