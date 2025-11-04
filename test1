@@ -10,7 +10,7 @@ import path from 'path';
 const libs = ['core', 'shared', 'feature'];
 
 function copyRecursive(src, dest) {
-  if (!fs.existsSync(src)) return;
+  if (!fs.existsSync(src)) return false;
   
   if (fs.statSync(src).isDirectory()) {
     if (!fs.existsSync(dest)) {
@@ -22,6 +22,7 @@ function copyRecursive(src, dest) {
   } else {
     fs.copyFileSync(src, dest);
   }
+  return true;
 }
 
 function buildLibrary(libName) {
@@ -29,9 +30,9 @@ function buildLibrary(libName) {
   
   const projectPath = path.join(process.cwd(), 'projects', libName);
   const distPath = path.join(process.cwd(), 'dist', libName);
-  const outTscPath = path.join(process.cwd(), 'out-tsc', 'lib', libName, 'src');
+  const outTscPath = path.join(process.cwd(), 'out-tsc', 'lib', libName);  // Changed: removed /src
   
-  // Compile TypeScript to out-tsc
+  // Compile TypeScript
   try {
     execSync('npx tsc -p tsconfig.lib.json --skipLibCheck', {
       cwd: projectPath,
@@ -46,7 +47,7 @@ function buildLibrary(libName) {
     fs.mkdirSync(distPath, { recursive: true });
   }
   
-  // Copy compiled files from out-tsc/lib/{libName}/src to dist (flattening src/ directory)
+  // Copy compiled files
   if (fs.existsSync(outTscPath)) {
     copyRecursive(outTscPath, distPath);
   }
