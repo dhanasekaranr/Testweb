@@ -6,21 +6,36 @@
 import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const libs = ['core', 'shared', 'feature'];
+
+function copyRecursive(src, dest) {
+  if (!fs.existsSync(src)) return;
+  
+  if (fs.statSync(src).isDirectory()) {
+    if (!fs.existsSync(dest)) {
+      fs.mkdirSync(dest, { recursive: true });
+    }
+    fs.readdirSync(src).forEach(item => {
+      copyRecursive(path.join(src, item), path.join(dest, item));
+    });
+  } else {
+    fs.copyFileSync(src, dest);
+  }
+}
 
 function buildLibrary(libName) {
   console.log(`Building ${libName}...`);
   
   const projectPath = path.join(process.cwd(), 'projects', libName);
   const distPath = path.join(process.cwd(), 'dist', libName);
+  const outTscPath = path.join(process.cwd(), 'out-tsc', 'lib', libName);
   
-  // Create dist folder
-  if (!fs.existsSync(distPath)) {
-    fs.mkdirSync(distPath, { recursive: true });
-  }
-  
-  // Compile TypeScript directly to dist
+  // Compile TypeScript
   try {
     execSync('npx tsc -p tsconfig.lib.json --skipLibCheck', {
       cwd: projectPath,
@@ -28,6 +43,16 @@ function buildLibrary(libName) {
     });
   } catch (error) {
     console.log(`⚠ ${libName} compiled with warnings`);
+  }
+  
+  // Create dist folder
+  if (!fs.existsSync(distPath)) {
+    fs.mkdirSync(distPath, { recursive: true });
+  }
+  
+  // Copy compiled files from out-tsc to dist
+  if (fs.existsSync(outTscPath)) {
+    copyRecursive(outTscPath, distPath);
   }
   
   // Copy package.json
