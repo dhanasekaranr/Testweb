@@ -9,47 +9,26 @@ import path from 'path';
 
 const libs = ['core', 'shared', 'feature'];
 
-function copyRecursive(src, dest) {
-  if (!fs.existsSync(src)) return false;
-  
-  if (fs.statSync(src).isDirectory()) {
-    if (!fs.existsSync(dest)) {
-      fs.mkdirSync(dest, { recursive: true });
-    }
-    fs.readdirSync(src).forEach(item => {
-      copyRecursive(path.join(src, item), path.join(dest, item));
-    });
-  } else {
-    fs.copyFileSync(src, dest);
-  }
-  return true;
-}
-
 function buildLibrary(libName) {
   console.log(`Building ${libName}...`);
   
   const projectPath = path.join(process.cwd(), 'projects', libName);
   const distPath = path.join(process.cwd(), 'dist', libName);
-  const outTscPath = path.join(process.cwd(), 'out-tsc', 'lib', libName);  // Changed: removed /src
   
-  // Compile TypeScript
+  // Clean dist for this library
+  if (fs.existsSync(distPath)) {
+    fs.rmSync(distPath, { recursive: true, force: true });
+  }
+  fs.mkdirSync(distPath, { recursive: true });
+  
+  // Compile TypeScript directly to dist
   try {
-    execSync('npx tsc -p tsconfig.lib.json --skipLibCheck', {
+    execSync(`npx tsc -p tsconfig.lib.json --outDir ../../dist/${libName} --rootDir ./src --skipLibCheck`, {
       cwd: projectPath,
-      stdio: 'pipe'
+      stdio: 'inherit'
     });
   } catch (error) {
     console.log(`⚠ ${libName} compiled with warnings`);
-  }
-  
-  // Create dist folder
-  if (!fs.existsSync(distPath)) {
-    fs.mkdirSync(distPath, { recursive: true });
-  }
-  
-  // Copy compiled files
-  if (fs.existsSync(outTscPath)) {
-    copyRecursive(outTscPath, distPath);
   }
   
   // Copy package.json
@@ -64,21 +43,10 @@ function buildLibrary(libName) {
     fs.copyFileSync(readmePath, path.join(distPath, 'README.md'));
   }
   
-  console.log(`✓ ${libName} built successfully`);
-}
-
-// Clean dist folders
-const distPath = path.join(process.cwd(), 'dist');
-if (fs.existsSync(distPath)) {
-  libs.forEach(lib => {
-    const libPath = path.join(distPath, lib);
-    if (fs.existsSync(libPath)) {
-      fs.rmSync(libPath, { recursive: true, force: true });
-    }
-  });
+  console.log(`✓ ${libName} built successfully\n`);
 }
 
 // Build all libraries
 console.log('Building libraries...\n');
 libs.forEach(buildLibrary);
-console.log('\n✓ All libraries built successfully');
+console.log('✓ All libraries built successfully');
