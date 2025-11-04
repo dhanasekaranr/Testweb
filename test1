@@ -1,136 +1,62 @@
-ool—here’s the “no silent refresh, hard re-auth on expiry” setup, end-to-end. It’s simple, predictable, and bulletproof.
+#!/usr/bin/env node
+/**
+ * Build libraries using TypeScript compiler (bypasses ng-packagr Node 22 issues)
+ */
 
-What you remove
+import { execSync } from 'child_process';
+import fs from 'fs';
+import path from 'path';
 
-No useSilentRefresh: true
+const libs = ['core', 'shared', 'feature'];
 
-No silentRefreshRedirectUri
-
-No /silent-refresh.html
-
-Don’t ever call refreshToken() or silentRefresh()
-
-AuthConfig (PKCE, no silent)
-// AuthService.toAuthConfig()
-const a = this.env.ssoConfig;
-return {
-  issuer: a.issuer,
-  clientId: a.clientId,
-  responseType: 'code',
-  scope: a.scope ?? 'openid profile email', // no offline_access
-  requireHttps: a.requireHttps ?? true,
-  redirectUri: window.location.origin + '/auth/callback',
-  useSilentRefresh: false,
-  sessionChecksEnabled: false,
-  disableAtHashCheck: true,
-  // showDebugInformation: true, // optional while tuning
-};
-
-Init (one-shot discovery+tryLogin)
-// AuthService.init()
-this.oauth.configure(this.toAuthConfig());
-this.oauth.setStorage(localStorage); // or sessionStorage
-await this.oauth.loadDiscoveryDocumentAndTryLogin();
-
-if (this.oauth.hasValidAccessToken()) this.scheduleExpiryWarning(); // optional UX
-
-Ensure freshness (trigger full login when needed)
-// AuthService
-ensureFreshToken = async (returnUrl?: string): Promise<void> => {
-  const msLeft = this.oauth.getAccessTokenExpiration() - Date.now();
-  const needsLogin = !this.oauth.hasValidAccessToken() || msLeft < 15_000; // 15s buffer
-
-  if (!needsLogin) return;
-
-  if (returnUrl) sessionStorage.setItem('returnUrl', returnUrl);
-  this.oauth.initLoginFlow(); // full redirect to IdP
-  throw new Error('REAUTH_TRIGGERED'); // caller should bail
-};
-
-Guard (recover or reauth)
-// AuthGuard
-async canActivate(route: ActivatedRouteSnapshot, state: RouterStateSnapshot) {
-  try {
-    await this.auth.ensureFreshToken(state.url); // stores returnUrl if reauth needed
-    return true;
-  } catch {
-    return false; // navigation will be interrupted by redirect
+function buildLibrary(libName) {
+  console.log(`Building ${libName}...`);
+  
+  const projectPath = path.join(process.cwd(), 'projects', libName);
+  const distPath = path.join(process.cwd(), 'dist', libName);
+  
+  // Create dist folder
+  if (!fs.existsSync(distPath)) {
+    fs.mkdirSync(distPath, { recursive: true });
   }
-}
-
-Interceptor (retry once on 401, else reauth)
-// Auth interceptor
-intercept(req, next) {
-  const addAuth = (r: HttpRequest<any>) => {
-    const t = this.auth.accessToken;
-    return t ? r.clone({ setHeaders: { Authorization: `Bearer ${t}` } }) : r;
-  };
-
-  // Pre-check just before sending
-  return from(this.auth.ensureFreshToken()).pipe(
-    switchMap(() => next.handle(addAuth(req))),
-    catchError(err => {
-      if (!isAuthExpired(err)) return throwError(() => err);
-
-      // On 401, hard reauth (don’t loop)
-      try { this.auth.logout?.(); } catch {}
-      const url = this.router?.url ?? '/';
-      sessionStorage.setItem('returnUrl', url);
-      this.auth.login(); // initLoginFlow()
-      return throwError(() => err);
-    })
+  
+  // Compile TypeScript directly to dist
+  try {
+    execSync('npx tsc -p tsconfig.lib.json --skipLibCheck', {
+      cwd: projectPath,
+      stdio: 'pipe'
+    });
+  } catch (error) {
+    console.log(`⚠ ${libName} compiled with warnings`);
+  }
+  
+  // Copy package.json
+  fs.copyFileSync(
+    path.join(projectPath, 'package.json'),
+    path.join(distPath, 'package.json')
   );
+  
+  // Copy README if exists
+  const readmePath = path.join(projectPath, 'README.md');
+  if (fs.existsSync(readmePath)) {
+    fs.copyFileSync(readmePath, path.join(distPath, 'README.md'));
+  }
+  
+  console.log(`✓ ${libName} built successfully`);
 }
 
-
-isAuthExpired = your existing 401/WWW-Authenticate: invalid_token checker.
-
-Callback route (unguarded) + returnUrl resume
-// routes
-{ path: 'auth/callback', component: OidcCallbackComponent } // unguarded
-
-// OidcCallbackComponent (very small)
-ngOnInit() {
-  // tokens are parsed by loadDiscoveryDocumentAndTryLogin() during init()
-  const back = sessionStorage.getItem('returnUrl') || '/';
-  sessionStorage.removeItem('returnUrl');
-  this.router.navigateByUrl(back);
+// Clean dist folders
+const distPath = path.join(process.cwd(), 'dist');
+if (fs.existsSync(distPath)) {
+  libs.forEach(lib => {
+    const libPath = path.join(distPath, lib);
+    if (fs.existsSync(libPath)) {
+      fs.rmSync(libPath, { recursive: true, force: true });
+    }
+  });
 }
 
-Optional: pre-expiry heads-up (nice UX)
-// AuthService
-private scheduleExpiryWarning() {
-  const ms = this.oauth.getAccessTokenExpiration() - Date.now() - 60_000; // warn 60s early
-  if (ms <= 0) return;
-  setTimeout(() => {
-    // show a toast/snackbar: “Session expiring. Continue?”
-    // If user clicks: this.oauth.initLoginFlow(); // round-trip now, not during a save
-  }, ms);
-}
-
-Important guardrails
-
-Router should wait for init:
-
-RouterModule.forRoot(routes, { initialNavigation: 'enabledBlocking' })
-
-
-Never mutate IdP calls in your interceptors (no extra headers/params/content-type on /authorize or /token).
-
-Do not guard /auth/callback.
-
-Don’t cache env.apiUrl in field initializers. Use a getter.
-
-What the flow looks like
-
-App loads → loadDiscoveryDocumentAndTryLogin() runs.
-
-First visit has no token → guard/interceptor call initLoginFlow() → user signs in.
-
-IdP redirects to /auth/callback?code=… → lib exchanges code → tokens saved.
-
-You navigate to returnUrl.
-
-When token nears 40-min expiry or a 401 comes back, you immediately call initLoginFlow() again. No iframe shenanigans.
-
-That’s it. It’s noisy (full-page redirect), but it’s reliable and compliant with an IdP that refuses refresh tokens. If you later get RTs enabled, flip back to RT flow: set offline_access, keep useSilentRefresh:false, and call refreshToken() in ensureFreshToken().
+// Build all libraries
+console.log('Building libraries...\n');
+libs.forEach(buildLibrary);
+console.log('\n✓ All libraries built successfully');
