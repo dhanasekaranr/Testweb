@@ -6,10 +6,6 @@
 import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 const libs = ['core', 'shared', 'feature'];
 
@@ -33,9 +29,9 @@ function buildLibrary(libName) {
   
   const projectPath = path.join(process.cwd(), 'projects', libName);
   const distPath = path.join(process.cwd(), 'dist', libName);
-  const outTscPath = path.join(process.cwd(), 'out-tsc', 'lib', libName);
+  const outTscPath = path.join(process.cwd(), 'out-tsc', 'lib', libName, 'src');
   
-  // Compile TypeScript
+  // Compile TypeScript to out-tsc
   try {
     execSync('npx tsc -p tsconfig.lib.json --skipLibCheck', {
       cwd: projectPath,
@@ -50,7 +46,7 @@ function buildLibrary(libName) {
     fs.mkdirSync(distPath, { recursive: true });
   }
   
-  // Copy compiled files from out-tsc to dist
+  // Copy compiled files from out-tsc/lib/{libName}/src to dist (flattening src/ directory)
   if (fs.existsSync(outTscPath)) {
     copyRecursive(outTscPath, distPath);
   }
