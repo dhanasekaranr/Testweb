@@ -9,26 +9,141 @@ import path from 'path';
 
 const libs = ['core', 'shared', 'feature'];
 
+function copyRecursive(src, dest) {
+  if (!fs.existsSync(src)) return false;
+  
+  if (fs.statSync(src).isDirectory()) {
+    if (!fs.existsSync(dest)) {
+      fs.mkdirSync(dest, { recursive: true });
+    }
+    fs.readdirSync(src).forEach(item => {
+      copyRecursive(path.join(src, item), path.join(dest, item));
+    });
+  } else {
+    fs.copyFileSync(src, dest);
+  }
+  return true;
+}
+
+function copyLibraryFiles(libName, outTscLibPath, distPath) {
+  // Ensure destination exists
+  if (!fs.existsSync(distPath)) {
+    fs.mkdirSync(distPath, { recursive: true });
+  }
+  
+  // Strategy: Look for the library's own compiled files and copy them
+  // The structure varies by library, so we need to check multiple locations
+  
+  let copied = false;
+  
+  // First, try to copy the public-api files from the root of the outTscLibPath
+  const publicApiFiles = ['public-api.d.ts', 'public-api.d.ts.map', 'public-api.js', 'public-api.js.map'];
+  publicApiFiles.forEach(file => {
+    const srcFile = path.join(outTscLibPath, file);
+    const destFile = path.join(distPath, file);
+    if (fs.existsSync(srcFile)) {
+      fs.copyFileSync(srcFile, destFile);
+      copied = true;
+    }
+  });
+  
+  // Next, look for the lib directory and copy it
+  const libPath = path.join(outTscLibPath, 'lib');
+  if (fs.existsSync(libPath)) {
+    const destLibPath = path.join(distPath, 'lib');
+    copyRecursive(libPath, destLibPath);
+    copied = true;
+  }
+  
+  // For shared library, handle the nested structure
+  if (libName === 'shared') {
+    const sharedSrcPath = path.join(outTscLibPath, 'shared', 'src');
+    if (fs.existsSync(sharedSrcPath)) {
+      // Copy additional files from shared/src
+      const additionalPublicApiFiles = ['public-api.d.ts', 'public-api.d.ts.map', 'public-api.js', 'public-api.js.map'];
+      additionalPublicApiFiles.forEach(file => {
+        const srcFile = path.join(sharedSrcPath, file);
+        const destFile = path.join(distPath, file);
+        if (fs.existsSync(srcFile)) {
+          fs.copyFileSync(srcFile, destFile);
+          copied = true;
+        }
+      });
+      
+      // Copy lib directory from shared/src/lib
+      const sharedLibPath = path.join(sharedSrcPath, 'lib');
+      if (fs.existsSync(sharedLibPath)) {
+        const destLibPath = path.join(distPath, 'lib');
+        copyRecursive(sharedLibPath, destLibPath);
+        copied = true;
+      }
+    }
+  }
+  
+  // For feature library, check the src subdirectory
+  if (libName === 'feature') {
+    const featureSrcPath = path.join(outTscLibPath, 'src');
+    if (fs.existsSync(featureSrcPath)) {
+      // Copy public-api files from feature/src
+      const featurePublicApiFiles = ['public-api.d.ts', 'public-api.d.ts.map', 'public-api.js', 'public-api.js.map'];
+      featurePublicApiFiles.forEach(file => {
+        const srcFile = path.join(featureSrcPath, file);
+        const destFile = path.join(distPath, file);
+        if (fs.existsSync(srcFile)) {
+          fs.copyFileSync(srcFile, destFile);
+          copied = true;
+        }
+      });
+      
+      // Copy lib directory from feature/src/lib
+      const featureLibPath = path.join(featureSrcPath, 'lib');
+      if (fs.existsSync(featureLibPath)) {
+        const destLibPath = path.join(distPath, 'lib');
+        copyRecursive(featureLibPath, destLibPath);
+        copied = true;
+      }
+    }
+  }
+  
+  if (!copied) {
+    console.log(`⚠ No compiled files found for ${libName} in ${outTscLibPath}`);
+    return false;
+  }
+  
+  return true;
+}
+
 function buildLibrary(libName) {
   console.log(`Building ${libName}...`);
   
   const projectPath = path.join(process.cwd(), 'projects', libName);
   const distPath = path.join(process.cwd(), 'dist', libName);
+  const outTscLibPath = path.join(process.cwd(), 'out-tsc', 'lib', libName);
   
-  // Clean dist for this library
+  // Clean out-tsc for this library before building
+  if (fs.existsSync(outTscLibPath)) {
+    fs.rmSync(outTscLibPath, { recursive: true, force: true });
+  }
+  
+  // Compile TypeScript
+  try {
+    execSync('npx tsc -p tsconfig.lib.json --skipLibCheck', {
+      cwd: projectPath,
+      stdio: 'pipe'
+    });
+  } catch (error) {
+    console.log(`⚠ ${libName} compiled with warnings`);
+  }
+  
+  // Create dist folder (clean it first)
   if (fs.existsSync(distPath)) {
     fs.rmSync(distPath, { recursive: true, force: true });
   }
   fs.mkdirSync(distPath, { recursive: true });
   
-  // Compile TypeScript directly to dist
-  try {
-    execSync(`npx tsc -p tsconfig.lib.json --outDir ../../dist/${libName} --rootDir ./src --skipLibCheck`, {
-      cwd: projectPath,
-      stdio: 'inherit'
-    });
-  } catch (error) {
-    console.log(`⚠ ${libName} compiled with warnings`);
+  // Copy only the library's own compiled files
+  if (fs.existsSync(outTscLibPath)) {
+    copyLibraryFiles(libName, outTscLibPath, distPath);
   }
   
   // Copy package.json
@@ -43,10 +158,72 @@ function buildLibrary(libName) {
     fs.copyFileSync(readmePath, path.join(distPath, 'README.md'));
   }
   
-  console.log(`✓ ${libName} built successfully\n`);
+  console.log(`✓ ${libName} built successfully`);
+}
+
+// Clean dist and out-tsc folders
+const distPath = path.join(process.cwd(), 'dist');
+const outTscPath = path.join(process.cwd(), 'out-tsc');
+
+if (fs.existsSync(distPath)) {
+  libs.forEach(lib => {
+    const libPath = path.join(distPath, lib);
+    if (fs.existsSync(libPath)) {
+      fs.rmSync(libPath, { recursive: true, force: true });
+    }
+  });
+}
+
+// Clean out-tsc completely
+if (fs.existsSync(outTscPath)) {
+  fs.rmSync(outTscPath, { recursive: true, force: true });
 }
 
 // Build all libraries
 console.log('Building libraries...\n');
 libs.forEach(buildLibrary);
-console.log('✓ All libraries built successfully');
+console.log('\n✓ All libraries built successfully');
+
+
+
+
+
+#!/usr/bin/env node
+/**
+ * Clean build artifacts
+ */
+
+import fs from 'fs';
+import path from 'path';
+
+const libs = ['core', 'shared', 'feature'];
+const distPath = path.join(process.cwd(), 'dist');
+const sharedlibsPath = path.join(process.cwd(), 'sharedlibs');
+const outtsclibspath = path.join(process.cwd(), 'out-tsc');
+// Clean library folders in dist
+if (fs.existsSync(distPath)) {
+  libs.forEach(lib => {
+    const libPath = path.join(distPath, lib);
+    if (fs.existsSync(libPath)) {
+      fs.rmSync(libPath, { recursive: true, force: true });
+    }
+  });
+  console.log('✓ Cleaned dist/core, dist/shared, dist/feature');
+}
+
+// Clean sharedlibs
+if (fs.existsSync(sharedlibsPath)) {
+  fs.rmSync(sharedlibsPath, { recursive: true, force: true });
+  console.log('✓ Cleaned sharedlibs');
+}
+
+//clean out-tsc/lib
+if (fs.existsSync(outtsclibspath)) {
+  fs.rmSync(outtsclibspath, { recursive: true, force: true });
+  console.log('✓ Cleaned out-tsc/lib');
+}
+
+
+
+- **Build output**: Clean library structure with `public-api.*` files at root and `lib/` directory containing the library code
+- **Cross-library dependencies**: Handled by TypeScript compiler with proper path resolution during compilation
