@@ -1,148 +1,1300 @@
-# Developer Guide: Generic Lookup Service & Component in Angular 20+
+# Angular 20+ Reusable Popover (CDK Overlay)
 
-This guide gives a high-level overview of implementing a robust, reusable lookup feature in Angular with NgRx, covering single- and multi-lookup scenarios, dynamic reloading, required placeholders, and form integration.
+Production‑ready popover with:
 
----
+* **Service API** (`PopoverService`) to open programmatically with string, `TemplateRef`, or a **custom component**.
+* **Directive API** (`popoverTrigger`) to attach to any element with rich inputs for trigger, placement, offset, auto‑close (outside click / hover / timeout), and **copy/close controls**.
+* **A11y**: focus management, ESC to close, ARIA roles, outside‑click dismissal, tab trapping (optional), return‑focus to trigger.
+* **Styling**: Shadow, arrow, max width/height, responsive; respects reduced‑motion.
+* **Clipboard**: Copy content button with visual feedback.
+* **Signals** for internal state; fully **standalone** (no NgModule).
 
-## 1. Core Concepts
-
-### 1.1 Model
-
-* **`LookupItem`**: a simple interface with `name`, `value`, and optional `additionalData`.
-
-### 1.2 NgRx State Management
-
-* **Actions**:
-
-  * `loadLookup` / `loadLookupSuccess` / `loadLookupFailure` for single-endpoint calls.
-  * `loadLookups` / `loadLookupsSuccess` to batch multiple lookups in one API request.
-  * `reloadLookup` / `reloadLookups` to force a refresh of existing data.
-* **Reducer**:
-
-  * Maintains a dictionary of `entities: Record<string, LookupItem[]>`.
-  * Tracks `loading` & `error` flags.
-  * Handles clearing specific entries on reload actions.
-* **Selectors**:
-
-  * `selectLookupByName(name, params?)` to grab and optionally filter results from state.
-  * `selectLoading` / `selectError` for UI feedback.
-* **Effects**:
-
-  * Calls the API via `LookupService`, dispatches success/failure.
-  * Uses `forkJoin` for multi-lookup requests.
-  * Maps reload actions back to load actions to re-trigger fetches.
-
-### 1.3 Service Layer
-
-* **`LookupService`** wraps `HttpClient`:
-
-  * `getLookup(name, params)` → calls `/commonapi/lookup?name=…`.
-  * Server can also accept `names=csv` for multi-lookups.
+> **Install**: `npm i @angular/cdk`
 
 ---
 
-## 2. Feature Module Setup
+## Files
 
-1. **`LookupModule`**
+> You can drop these under `src/app/shared/popover/` (or your shared lib) and import the directive in any feature.
 
-   ```ts
-   @NgModule({
-     imports: [
-       StoreModule.forFeature('lookup', lookupReducer, { metaReducers: [clearStateMetaReducer] }),
-       EffectsModule.forFeature([LookupEffects])
-     ]
-   })
-   export class LookupModule {}
-   ```
-2. Import `LookupModule` wherever lookups are needed in your app.
+### `popover.types.ts`
+
+````ts
+import { TemplateRef, Type } from '@angular/core';
+
+export type PopoverContent = string | TemplateRef<unknown> | Type<unknown>;
+
+export type PopoverTrigger = 'click' | 'hover' | 'manual';
+export type PopoverPlacement =
+  | 'top' | 'bottom' | 'left' | 'right'
+  | 'top-start' | 'top-end' | 'bottom-start' | 'bottom-end'
+  | 'left-start' | 'left-end' | 'right-start' | 'right-end' ;
+
+export type PopoverAutoClose = 'none' | 'outside' | 'hover' | 'timeout';
+
+export interface PopoverConfig {
+  trigger?: PopoverTrigger;           // default: 'click'
+  placement?: PopoverPlacement;       // default: 'bottom'
+  offset?: number;                    // default: 8
+  width?: string;                     // e.g. '360px'
+  maxWidth?: string;                  // e.g. 'min(90vw, 420px)'
+  maxHeight?: string;                 // e.g. '60vh'
+  hasArrow?: boolean;                 // default: true
+  role?: 'dialog' | 'tooltip';        // default: 'dialog'
+  autoClose?: PopoverAutoClose;       // default: 'outside'
+  hoverCloseDelayMs?: number;         // default: 200
+  openDelayMs?: number;               // default: 0
+  timeoutMs?: number;                 // for autoClose='timeout'
+  closeOnNavigation?: boolean;        // default: true
+  disableBackdrop?: boolean;          // default: false
+  trapFocus?: boolean;                // default: false
+  showHeader?: boolean;               // default: false
+  headerText?: string;
+  showCopy?: boolean;                 // default: true (string content only)
+  showClose?: boolean;                // default: true
+  data?: unknown;                     // context for templates/components (unknown for Sonar)
+}
+```ts
+import { TemplateRef, Type } from '@angular/core';
+
+export type PopoverContent = string | TemplateRef<unknown> | Type<unknown>;
+
+export type PopoverTrigger = 'click' | 'hover' | 'manual';
+export type PopoverPlacement =
+  | 'top' | 'bottom' | 'left' | 'right'
+  | 'top-start' | 'top-end' | 'bottom-start' | 'bottom-end'
+  | 'left-start' | 'left-end' | 'right-start' | 'right-end' ;
+
+export type PopoverAutoClose = 'none' | 'outside' | 'hover' | 'timeout';
+
+export interface PopoverConfig {
+  trigger?: PopoverTrigger;           // default: 'click'
+  placement?: PopoverPlacement;       // default: 'bottom'
+  offset?: number;                    // default: 8
+  width?: string;                     // e.g. '360px'
+  maxWidth?: string;                  // e.g. 'min(90vw, 420px)'
+  maxHeight?: string;                 // e.g. '60vh'
+  hasArrow?: boolean;                 // default: true
+  role?: 'dialog' | 'tooltip';        // default: 'dialog'
+  autoClose?: PopoverAutoClose;       // default: 'outside'
+  hoverCloseDelayMs?: number;         // default: 200
+  openDelayMs?: number;               // default: 0
+  timeoutMs?: number;                 // for autoClose='timeout'
+  closeOnNavigation?: boolean;        // default: true
+  disableBackdrop?: boolean;          // default: false
+  trapFocus?: boolean;                // default: false
+  showHeader?: boolean;               // default: false
+  headerText?: string;
+  showCopy?: boolean;                 // default: true (string content only)
+  showClose?: boolean;                // default: true
+  data?: any;                         // context for templates/components
+}
+````
 
 ---
 
-## 3. `LookupSelectComponent`
+### `popover-ref.ts`
 
-A generic, form-compatible dropdown that:
+```ts
+import { OverlayRef } from '@angular/cdk/overlay';
 
-* Reads from NgRx state (`selectLookupByName`, `selectLoading`, `selectError`).
-* Emits `selectedChange` when user picks an option.
-* Emits `reload` when the reload button is clicked.
-* Supports:
+export class PopoverRef<T = any> {
+  constructor(private overlayRef: OverlayRef, public data?: T) {}
+  close(result?: any) {
+    this.overlayRef.dispose();
+    this.afterClosedResolver?.(result);
+  }
+  private afterClosedResolver?: (value: any) => void;
+  afterClosed() {
+    return new Promise<any>(res => (this.afterClosedResolver = res));
+  }
+}
+```
 
-  * **`required`**: shows a top placeholder `-- Please Select --` only when truthy.
-  * **`dynamic`**: if true, re-fetches options when `lookupName` or `params` inputs change.
+---
 
-### 3.1 Key Inputs & Outputs
+### `popover.tokens.ts`
 
-| Input         | Type                  | Description                                       |
-| ------------- | --------------------- | ------------------------------------------------- |
-| `lookupName`  | `string`              | Key to select from NgRx state                     |
-| `params`      | `Record<string,any>`? | Optional filters applied in selector              |
-| `value`       | `string`              | Selected value (works with Angular forms API)     |
-| `required`    | `boolean`             | Show `-- Please Select --` placeholder at top     |
-| `dynamic`     | `boolean`             | If true, watches input changes to re-select items |
-| `allowReload` | `boolean`             | Show reload button                                |
+```ts
+import { InjectionToken } from '@angular/core';
+import { PopoverConfig } from './popover.types';
 
-| Output           | Type                   | Description                                 |
-| ---------------- | ---------------------- | ------------------------------------------- |
-| `selectedChange` | `EventEmitter<string>` | Emits when user selects an option (`value`) |
-| `reload`         | `EventEmitter<void>`   | Emits when reload button is clicked         |
+export const POPOVER_CONFIG = new InjectionToken<PopoverConfig>('POPOVER_CONFIG');
+```
 
-### 3.2 Usage Example
+---
+
+### `popover.component.ts`
+
+````ts
+import {
+  Component, ChangeDetectionStrategy, inject, ElementRef, ViewChild,
+  TemplateRef, ViewContainerRef, signal, computed, OnDestroy, Input
+} from '@angular/core';
+import { PortalModule, ComponentPortal } from '@angular/cdk/portal';
+import { A11yModule, FocusTrapFactory } from '@angular/cdk/a11y';
+import { NgIf, NgTemplateOutlet } from '@angular/common';
+import { POPOVER_CONFIG } from './popover.tokens';
+import { PopoverConfig, PopoverContent } from './popover.types';
+
+@Component({
+  selector: 'shared-popover',
+  standalone: true,
+  imports: [PortalModule, A11yModule, NgIf, NgTemplateOutlet],
+  template: `
+  <div class="popover"
+       [attr.role]="cfg.role ?? 'dialog'"
+       [attr.aria-modal]="(cfg.role ?? 'dialog') === 'dialog' ? 'true' : null"
+       [attr.aria-labelledby]="(cfg.showHeader && titleId) ? titleId : null"
+       tabindex="-1">
+    <div class="popover-header" *ngIf="cfg.showHeader || cfg.showClose">
+      <div class="title" *ngIf="cfg.showHeader" [attr.id]="titleId">{{ cfg.headerText }}</div>
+      <div class="spacer"></div>
+      <button type="button" class="icon-btn"
+              *ngIf="showCopy()"
+              (click)="copy()"
+              [attr.aria-label]="copyAriaLabel">
+        <span class="icon" aria-hidden="true">📋</span>
+      </button>
+      <button type="button" class="icon-btn"
+              *ngIf="cfg.showClose !== false"
+              (click)="close()"
+              aria-label="Close popover">
+        <span class="icon" aria-hidden="true">✕</span>
+      </button>
+    </div>
+
+    <div class="popover-content" #contentContainer
+         [style.maxHeight]="cfg.maxHeight || '60vh'"
+         [style.maxWidth]="cfg.maxWidth || 'min(90vw, 420px)'"
+         [style.width]="cfg.width || 'auto'">
+      <!-- String -->
+      <ng-container *ngIf="typeof content === 'string'; else nonString">
+        <pre class="text">{{ content }}</pre>
+      </ng-container>
+      <ng-template #nonString>
+        <!-- TemplateRef -->
+        <ng-container *ngIf="isTemplate(); else maybeComponent">
+          <ng-container *ngTemplateOutlet="content as TemplateRef; context: {$implicit: cfg.data}"></ng-container>
+        </ng-container>
+        <ng-template #maybeComponent>
+          <ng-template [cdkPortalOutlet]="componentPortal"></ng-template>
+        </ng-template>
+      </ng-template>
+    </div>
+
+    <div class="arrow" *ngIf="cfg.hasArrow !== false" aria-hidden="true"></div>
+
+    <!-- SR-only live region for feedback (copy, etc.) -->
+    <div class="sr-only" aria-live="polite">{{ liveMessage() }}</div>
+  </div>
+  `,
+  styles: [`
+  :host { display: block; }
+  .popover { background: var(--popover-bg, #111827); color: var(--popover-fg, #e5e7eb);
+    border: 1px solid color-mix(in oklab, var(--popover-bg, #111827), white 20%);
+    box-shadow: 0 10px 30px rgba(0,0,0,.35); border-radius: 12px; overflow: hidden; min-width: 220px; }
+  .popover:focus { outline: 3px solid #3b82f6; outline-offset: 2px; }
+  .popover-header { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.08); background: color-mix(in oklab, var(--popover-bg, #111827), black 15%); }
+  .title { font-weight: 700; font-size: 14px; }
+  .spacer { flex: 1; }
+  .icon-btn { background: transparent; border: none; cursor: pointer; font-size: 14px; line-height: 1; padding: 6px; border-radius: 8px; }
+  .icon-btn:hover, .icon-btn:focus { background: rgba(255,255,255,.08); outline: 2px solid transparent; }
+  .icon-btn:focus-visible { outline: 3px solid #3b82f6; }
+  .popover-content { padding: 12px; max-width: min(90vw, 420px); max-height: 60vh; overflow: auto; }
+  .text { white-space: pre-wrap; word-wrap: break-word; margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 12.5px; }
+  .arrow { position: absolute; width: 14px; height: 14px; background: var(--popover-bg, #111827); transform: rotate(45deg); box-shadow: -1px -1px 0 0 rgba(255,255,255,.08); }
+  .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
+  @media (prefers-reduced-motion: no-preference) { .popover { transition: opacity .12s ease, transform .12s ease; } }
+  `],
+  changeDetection: ChangeDetectionStrategy.OnPush
+})
+export class PopoverComponent implements OnDestroy {
+  cfg: PopoverConfig = inject(POPOVER_CONFIG);
+  private host = inject(ElementRef<HTMLElement>);
+  private vcr = inject(ViewContainerRef);
+  private focusTrapFactory = inject(FocusTrapFactory);
+
+  @Input() titleId = `popover-title-${Math.random().toString(36).slice(2)}`;
+  @ViewChild('contentContainer', { static: true }) contentEl?: ElementRef<HTMLElement>;
+
+  content!: PopoverContent;
+  componentPortal?: ComponentPortal<unknown>;
+
+  private _copyOk = signal<boolean>(false);
+  private _live = signal<string>('');
+  copyOk = computed(() => this._copyOk());
+  liveMessage = computed(() => this._live());
+
+  private trap?: ReturnType<FocusTrapFactory['create']>;
+
+  init(content: PopoverContent): void {
+    this.content = content;
+    if (this.isComponent()) {
+      const cmp = content as unknown as any; // Sonar: intentional downcast at boundary
+      this.componentPortal = new ComponentPortal(cmp, this.vcr, undefined, undefined);
+    }
+    if (this.cfg.trapFocus) {
+      this.trap = this.focusTrapFactory.create(this.host.nativeElement);
+      this.trap.focusInitialElementWhenReady();
+    } else {
+      // Ensure container is focusable for ESC and screen readers
+      queueMicrotask(() => this.host.nativeElement.querySelector('.popover')?.focus());
+    }
+  }
+
+  isTemplate(): boolean { return (this.content as unknown) instanceof TemplateRef; }
+  isComponent(): boolean { return typeof this.content === 'function'; }
+
+  showCopy(): boolean { return this.cfg.showCopy !== false && typeof this.content === 'string'; }
+
+  async copy(): Promise<void> {
+    if (typeof this.content !== 'string') return;
+    try {
+      await navigator.clipboard.writeText(this.content);
+      this.announce('Copied to clipboard');
+    } catch {
+      // Fallback (execCommand may be deprecated; used only as last resort)
+      const ta = document.createElement('textarea');
+      ta.value = this.content; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); this.announce('Copied to clipboard'); }
+      finally { document.body.removeChild(ta); }
+    }
+  }
+
+  private announce(msg: string): void {
+    this._copyOk.set(true);
+    this._live.set(msg);
+    setTimeout(() => { this._copyOk.set(false); this._live.set(''); }, 1200);
+  }
+
+  close(): void {
+    this.host.nativeElement.dispatchEvent(new CustomEvent('shared-popover-close', { bubbles: true }));
+  }
+
+  ngOnDestroy(): void { this.trap?.destroy(); }
+}
+```ts
+import {
+  Component, ChangeDetectionStrategy, inject, ElementRef, ViewChild,
+  TemplateRef, ViewContainerRef, effect, computed, signal, OnDestroy
+} from '@angular/core';
+import { PortalModule, TemplatePortal, ComponentPortal } from '@angular/cdk/portal';
+import { A11yModule, FocusTrapFactory } from '@angular/cdk/a11y';
+import { NgIf, NgTemplateOutlet } from '@angular/common';
+import { POPOVER_CONFIG } from './popover.tokens';
+import { PopoverConfig, PopoverContent } from './popover.types';
+
+@Component({
+  selector: 'shared-popover',
+  standalone: true,
+  imports: [PortalModule, A11yModule, NgIf, NgTemplateOutlet],
+  template: `
+  <div class="popover" [attr.role]="cfg.role ?? 'dialog'" [attr.aria-modal]="cfg.role === 'dialog' ? 'true' : null">
+    <div class="popover-header" *ngIf="cfg.showHeader || cfg.showClose">
+      <div class="title" *ngIf="cfg.showHeader">{{ cfg.headerText }}</div>
+      <div class="spacer"></div>
+      <button type="button" class="icon-btn" *ngIf="showCopy()" (click)="copy()" aria-label="Copy">
+        <span class="icon">📋</span>
+      </button>
+      <button type="button" class="icon-btn" *ngIf="cfg.showClose !== false" (click)="close()" aria-label="Close">
+        <span class="icon">✕</span>
+      </button>
+    </div>
+
+    <div class="popover-content" #contentContainer
+         [style.maxHeight]="cfg.maxHeight || '60vh'"
+         [style.maxWidth]="cfg.maxWidth || 'min(90vw, 420px)'"
+         [style.width]="cfg.width || 'auto'">
+      <!-- String -->
+      <ng-container *ngIf="typeof content === 'string'; else nonString">
+        <pre class="text">{{ content }}</pre>
+      </ng-container>
+      <ng-template #nonString>
+        <!-- TemplateRef -->
+        <ng-container *ngIf="isTemplate(); else maybeComponent">
+          <ng-container *ngTemplateOutlet="content as TemplateRef; context: {$implicit: cfg.data}"></ng-container>
+        </ng-container>
+        <ng-template #maybeComponent>
+          <ng-template [cdkPortalOutlet]="componentPortal"></ng-template>
+        </ng-template>
+      </ng-template>
+    </div>
+
+    <div class="arrow" *ngIf="cfg.hasArrow !== false"></div>
+  </div>
+  `,
+  styles: [`
+  :host { display: block; }
+  .popover { background: var(--popover-bg, #111827); color: var(--popover-fg, #e5e7eb);
+    border: 1px solid color-mix(in oklab, var(--popover-bg, #111827), white 20%);
+    box-shadow: 0 10px 30px rgba(0,0,0,.35); border-radius: 12px; overflow: hidden; min-width: 220px; }
+  .popover-header { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid rgba(255,255,255,.08); background: color-mix(in oklab, var(--popover-bg, #111827), black 15%); }
+  .title { font-weight: 600; font-size: 14px; }
+  .spacer { flex: 1; }
+  .icon-btn { background: transparent; border: none; cursor: pointer; font-size: 14px; line-height: 1; padding: 6px; border-radius: 8px; }
+  .icon-btn:hover { background: rgba(255,255,255,.05); }
+  .popover-content { padding: 12px; max-width: min(90vw, 420px); max-height: 60vh; overflow: auto; }
+  .text { white-space: pre-wrap; word-wrap: break-word; margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size: 12.5px; }
+  .arrow { position: absolute; width: 14px; height: 14px; background: var(--popover-bg, #111827); transform: rotate(45deg); box-shadow: -1px -1px 0 0 rgba(255,255,255,.08); }
+  @media (prefers-reduced-motion: no-preference) { .popover { transition: opacity .12s ease, transform .12s ease; } }
+  `],
+  changeDetection: ChangeDetectionStrategy.OnPush
+})
+export class PopoverComponent implements OnDestroy {
+  cfg = inject(POPOVER_CONFIG);
+  private host = inject(ElementRef<HTMLElement>);
+  private vcr = inject(ViewContainerRef);
+  private focusTrapFactory = inject(FocusTrapFactory);
+
+  @ViewChild('contentContainer', { static: true }) contentEl?: ElementRef<HTMLElement>;
+
+  content!: PopoverContent;
+  componentPortal?: ComponentPortal<any>;
+
+  private _copyOk = signal<boolean>(false);
+  copyOk = computed(() => this._copyOk());
+
+  private trap?: ReturnType<FocusTrapFactory['create']>;
+
+  init(content: PopoverContent) {
+    this.content = content;
+    if (this.isComponent()) {
+      const cmp = content as any;
+      this.componentPortal = new ComponentPortal(cmp, this.vcr, undefined, undefined);
+    }
+    if (this.cfg.trapFocus) {
+      this.trap = this.focusTrapFactory.create(this.host.nativeElement);
+      this.trap.focusInitialElementWhenReady();
+    }
+    // Position arrow via style attr; container sets arrow placement in service.
+  }
+
+  isTemplate(): boolean {
+    return (this.content as any) instanceof TemplateRef;
+  }
+  isComponent(): boolean {
+    return typeof this.content === 'function';
+  }
+
+  showCopy() {
+    return this.cfg.showCopy !== false && typeof this.content === 'string';
+  }
+
+  async copy() {
+    if (typeof this.content !== 'string') return;
+    try {
+      await navigator.clipboard.writeText(this.content);
+      this._copyOk.set(true);
+      setTimeout(() => this._copyOk.set(false), 1200);
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = this.content; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); this._copyOk.set(true); setTimeout(() => this._copyOk.set(false), 1200); }
+      finally { document.body.removeChild(ta); }
+    }
+  }
+
+  close() {
+    this.host.nativeElement.dispatchEvent(new CustomEvent('shared-popover-close', { bubbles: true }));
+  }
+
+  ngOnDestroy(): void {
+    this.trap?.destroy();
+  }
+}
+````
+
+---
+
+### `popover.service.ts`
+
+````ts
+import { Injectable, Injector, TemplateRef, inject } from '@angular/core';
+import { Overlay, OverlayConfig, OverlayRef, ConnectedPosition } from '@angular/cdk/overlay';
+import { ComponentPortal } from '@angular/cdk/portal';
+import { PopoverComponent } from './popover.component';
+import { PopoverConfig, PopoverContent, PopoverPlacement } from './popover.types';
+import { POPOVER_CONFIG } from './popover.tokens';
+import { PopoverRef } from './popover-ref';
+
+const ARROW_SIZE = 10; // centralize magic numbers (Sonar)
+
+@Injectable({ providedIn: 'root' })
+export class PopoverService {
+  private overlay = inject(Overlay);
+  private injector = inject(Injector);
+  private idCounter = 0;
+
+  open(target: HTMLElement, content: PopoverContent, config?: PopoverConfig) {
+    const cfg = this.withDefaults(config);
+
+    const overlayRef = this.overlay.create(this.overlayConfigFor(target, cfg));
+
+    const injector = Injector.create({
+      providers: [{ provide: POPOVER_CONFIG, useValue: cfg }],
+      parent: this.injector
+    });
+
+    const portal = new ComponentPortal(PopoverComponent, undefined, injector);
+    const cmpRef = overlayRef.attach(portal);
+    cmpRef.instance.init(content);
+
+    // Assign an id for ARIA and return it via PopoverRef
+    const panelId = `shared-popover-panel-${++this.idCounter}`;
+    overlayRef.overlayElement.id = panelId;
+
+    const popRef = new PopoverRef(overlayRef, cfg.data);
+    (popRef as any).panelId = panelId; // expose for directive (typed any at boundary)
+
+    // Arrow + placement positioning
+    this.applyArrowAndPlacement(overlayRef, cfg);
+
+    // Dismissals
+    const subs: Array<() => void> = [];
+
+    if (!cfg.disableBackdrop && cfg.autoClose !== 'hover') {
+      const s = overlayRef.backdropClick().subscribe(() => popRef.close());
+      subs.push(() => s.unsubscribe());
+    }
+
+    if (cfg.autoClose === 'outside') {
+      const s = overlayRef.outsidePointerEvents().subscribe(() => popRef.close());
+      subs.push(() => s.unsubscribe());
+    }
+
+    const escSub = overlayRef.keydownEvents().subscribe(ev => {
+      if (ev.key === 'Escape') popRef.close();
+    });
+    subs.push(() => escSub.unsubscribe());
+
+    if (cfg.closeOnNavigation !== false) {
+      this.overlay.scrollStrategies.close().attach(overlayRef);
+    }
+
+    if (cfg.autoClose === 'timeout' && cfg.timeoutMs && cfg.timeoutMs > 0) {
+      const t = setTimeout(() => popRef.close(), cfg.timeoutMs);
+      subs.push(() => clearTimeout(t));
+    }
+
+    overlayRef.detachments().subscribe(() => subs.forEach(fn => fn()));
+
+    return popRef;
+  }
+
+  private overlayConfigFor(target: HTMLElement, cfg: PopoverConfig): OverlayConfig {
+    const positionStrategy = this.overlay.position()
+      .flexibleConnectedTo(target)
+      .withPositions(this.mapPlacement(cfg.placement ?? 'bottom', cfg.offset ?? 8))
+      .withFlexibleDimensions(true)
+      .withPush(true);
+
+    return new OverlayConfig({
+      hasBackdrop: !cfg.disableBackdrop && cfg.trigger === 'click',
+      backdropClass: 'cdk-overlay-transparent-backdrop',
+      positionStrategy,
+      scrollStrategy: this.overlay.scrollStrategies.reposition(),
+      panelClass: ['shared-popover-panel']
+    });
+  }
+
+  private mapPlacement(place: PopoverPlacement, offset: number): ConnectedPosition[] {
+    const base: Record<string, ConnectedPosition> = {
+      top:    { originX: 'center', originY: 'top',    overlayX: 'center', overlayY: 'bottom', offsetY: -offset },
+      bottom: { originX: 'center', originY: 'bottom', overlayX: 'center', overlayY: 'top',    offsetY:  offset },
+      left:   { originX: 'start',  originY: 'center', overlayX: 'end',    overlayY: 'center', offsetX: -offset },
+      right:  { originX: 'end',    originY: 'center', overlayX: 'start',  overlayY: 'center', offsetX:  offset },
+    };
+    const startEnd = (p: 'top'|'bottom'|'left'|'right', se: 'start'|'end'): ConnectedPosition => {
+      const b = base[p];
+      if (p === 'top' || p === 'bottom') {
+        return { ...b, originX: se === 'start' ? 'start' : 'end', overlayX: se === 'start' ? 'start' : 'end' };
+      }
+      return { ...b, originY: se === 'start' ? 'top' : 'bottom', overlayY: se === 'start' ? 'top' : 'bottom' };
+    };
+
+    switch (place) {
+      case 'top': return [base.top, base.bottom, base.left, base.right];
+      case 'bottom': return [base.bottom, base.top, base.left, base.right];
+      case 'left': return [base.left, base.right, base.top, base.bottom];
+      case 'right': return [base.right, base.left, base.top, base.bottom];
+      case 'top-start': return [startEnd('top','start'), startEnd('top','end'), base.top];
+      case 'top-end': return [startEnd('top','end'), startEnd('top','start'), base.top];
+      case 'bottom-start': return [startEnd('bottom','start'), startEnd('bottom','end'), base.bottom];
+      case 'bottom-end': return [startEnd('bottom','end'), startEnd('bottom','start'), base.bottom];
+      case 'left-start': return [startEnd('left','start'), startEnd('left','end'), base.left];
+      case 'left-end': return [startEnd('left','end'), startEnd('left','start'), base.left];
+      case 'right-start': return [startEnd('right','start'), startEnd('right','end'), base.right];
+      case 'right-end': return [startEnd('right','end'), startEnd('right','start'), base.right];
+    }
+  }
+
+  private applyArrowAndPlacement(ref: OverlayRef, cfg: PopoverConfig): void {
+    const panel = ref.overlayElement as HTMLElement;
+    panel.style.setProperty('--arrow-size', `${ARROW_SIZE}px`);
+    panel.classList.add('shared-popover-panel--' + (cfg.placement ?? 'bottom'));
+  }
+
+  private withDefaults(config?: PopoverConfig): PopoverConfig {
+    return {
+      trigger: 'click',
+      placement: 'bottom',
+      offset: 8,
+      hasArrow: true,
+      role: 'dialog',
+      autoClose: 'outside',
+      hoverCloseDelayMs: 200,
+      openDelayMs: 0,
+      closeOnNavigation: true,
+      showCopy: true,
+      showClose: true,
+      ...config,
+    } satisfies PopoverConfig;
+  }
+}
+```ts
+import { Injectable, Injector, TemplateRef, inject } from '@angular/core';
+import { Overlay, OverlayConfig, OverlayRef, ConnectedPosition, FlexibleConnectedPositionStrategy } from '@angular/cdk/overlay';
+import { ComponentPortal, TemplatePortal } from '@angular/cdk/portal';
+import { PopoverComponent } from './popover.component';
+import { PopoverConfig, PopoverContent, PopoverPlacement } from './popover.types';
+import { POPOVER_CONFIG } from './popover.tokens';
+import { PopoverRef } from './popover-ref';
+
+@Injectable({ providedIn: 'root' })
+export class PopoverService {
+  private overlay = inject(Overlay);
+  private injector = inject(Injector);
+
+  open(target: HTMLElement, content: PopoverContent, config?: PopoverConfig) {
+    const cfg = this.withDefaults(config);
+
+    const overlayRef = this.overlay.create(this.overlayConfigFor(target, cfg));
+
+    const injector = Injector.create({
+      providers: [{ provide: POPOVER_CONFIG, useValue: cfg }],
+      parent: this.injector
+    });
+
+    const portal = new ComponentPortal(PopoverComponent, undefined, injector);
+    const cmpRef = overlayRef.attach(portal);
+    cmpRef.instance.init(content);
+
+    const popRef = new PopoverRef(overlayRef, cfg.data);
+
+    // Arrow + placement positioning
+    this.applyArrowAndPlacement(overlayRef, cfg);
+
+    // Dismissals
+    const detachSubs: Array<() => void> = [];
+
+    if (!cfg.disableBackdrop && cfg.autoClose !== 'hover') {
+      detachSubs.push(overlayRef.backdropClick().subscribe(() => popRef.close()));
+    }
+
+    if (cfg.autoClose === 'outside') {
+      detachSubs.push(overlayRef.outsidePointerEvents().subscribe(() => popRef.close()));
+    }
+
+    const escSub = overlayRef.keydownEvents().subscribe(ev => {
+      if (ev.key === 'Escape') popRef.close();
+    });
+    detachSubs.push(() => escSub.unsubscribe());
+
+    if (cfg.closeOnNavigation !== false) {
+      const navSub = this.overlay.scrollStrategies.close().attach(overlayRef);
+      // No explicit unsubscribe needed; disposal cleans it.
+    }
+
+    if (cfg.autoClose === 'timeout' && cfg.timeoutMs && cfg.timeoutMs > 0) {
+      const t = setTimeout(() => popRef.close(), cfg.timeoutMs);
+      detachSubs.push(() => clearTimeout(t));
+    }
+
+    overlayRef.detachments().subscribe(() => detachSubs.forEach(fn => fn()));
+
+    return popRef;
+  }
+
+  private overlayConfigFor(target: HTMLElement, cfg: PopoverConfig): OverlayConfig {
+    const positionStrategy = this.overlay.position()
+      .flexibleConnectedTo(target)
+      .withPositions(this.mapPlacement(cfg.placement ?? 'bottom', cfg.offset ?? 8))
+      .withFlexibleDimensions(true)
+      .withPush(true);
+
+    return new OverlayConfig({
+      hasBackdrop: !cfg.disableBackdrop && cfg.trigger === 'click',
+      backdropClass: 'cdk-overlay-transparent-backdrop',
+      positionStrategy,
+      scrollStrategy: this.overlay.scrollStrategies.reposition(),
+      panelClass: ['shared-popover-panel']
+    });
+  }
+
+  private mapPlacement(place: PopoverPlacement, offset: number): ConnectedPosition[] {
+    const base: Record<string, ConnectedPosition> = {
+      top:    { originX: 'center', originY: 'top',    overlayX: 'center', overlayY: 'bottom', offsetY: -offset },
+      bottom: { originX: 'center', originY: 'bottom', overlayX: 'center', overlayY: 'top',    offsetY:  offset },
+      left:   { originX: 'start',  originY: 'center', overlayX: 'end',    overlayY: 'center', offsetX: -offset },
+      right:  { originX: 'end',    originY: 'center', overlayX: 'start',  overlayY: 'center', offsetX:  offset },
+    };
+    const startEnd = (p: 'top'|'bottom'|'left'|'right', se: 'start'|'end'): ConnectedPosition => {
+      const b = base[p];
+      if (p === 'top' || p === 'bottom') {
+        return { ...b, originX: se === 'start' ? 'start' : 'end', overlayX: se === 'start' ? 'start' : 'end' };
+      } else {
+        return { ...b, originY: se === 'start' ? 'top' : 'bottom', overlayY: se === 'start' ? 'top' : 'bottom' };
+      }
+    };
+
+    switch (place) {
+      case 'top': return [base.top, base.bottom, base.left, base.right];
+      case 'bottom': return [base.bottom, base.top, base.left, base.right];
+      case 'left': return [base.left, base.right, base.top, base.bottom];
+      case 'right': return [base.right, base.left, base.top, base.bottom];
+      case 'top-start': return [startEnd('top','start'), startEnd('top','end'), base.top];
+      case 'top-end': return [startEnd('top','end'), startEnd('top','start'), base.top];
+      case 'bottom-start': return [startEnd('bottom','start'), startEnd('bottom','end'), base.bottom];
+      case 'bottom-end': return [startEnd('bottom','end'), startEnd('bottom','start'), base.bottom];
+      case 'left-start': return [startEnd('left','start'), startEnd('left','end'), base.left];
+      case 'left-end': return [startEnd('left','end'), startEnd('left','start'), base.left];
+      case 'right-start': return [startEnd('right','start'), startEnd('right','end'), base.right];
+      case 'right-end': return [startEnd('right','end'), startEnd('right','start'), base.right];
+    }
+  }
+
+  private applyArrowAndPlacement(ref: OverlayRef, cfg: PopoverConfig) {
+    const panel = ref.overlayElement as HTMLElement;
+    panel.style.setProperty('--arrow-size', '10px');
+    panel.classList.add('shared-popover-panel--' + (cfg.placement ?? 'bottom'));
+  }
+
+  private withDefaults(config?: PopoverConfig): PopoverConfig {
+    return {
+      trigger: 'click',
+      placement: 'bottom',
+      offset: 8,
+      hasArrow: true,
+      role: 'dialog',
+      autoClose: 'outside',
+      hoverCloseDelayMs: 200,
+      openDelayMs: 0,
+      closeOnNavigation: true,
+      showCopy: true,
+      showClose: true,
+      ...config,
+    };
+  }
+}
+````
+
+---
+
+### `popover-trigger.directive.ts`
+
+````ts
+import { Directive, Input, ElementRef, HostListener, TemplateRef, OnDestroy, inject, DestroyRef, effect, signal } from '@angular/core';
+import { PopoverService } from './popover.service';
+import { PopoverConfig, PopoverContent, PopoverTrigger } from './popover.types';
+
+@Directive({
+  selector: '[popoverTrigger]',
+  standalone: true
+})
+export class PopoverTriggerDirective implements OnDestroy {
+  private host = inject(ElementRef<HTMLElement>);
+  private svc = inject(PopoverService);
+  private destroyRef = inject(DestroyRef);
+
+  @Input('popoverTrigger') content!: PopoverContent; // string | TemplateRef | Component
+  @Input() popoverConfig?: PopoverConfig;
+
+  private isOpen = false;
+  private currentRef?: ReturnType<PopoverService['open']>;
+  private hoverTimer?: ReturnType<typeof setTimeout>;
+  private closeTimer?: ReturnType<typeof setTimeout>;
+  private controlledId?: string;
+
+  constructor() {
+    // Ensure trigger has button-like semantics for SR when used on spans/icons
+    const el = this.host.nativeElement;
+    if (!['BUTTON', 'A', 'INPUT'].includes(el.tagName)) {
+      el.setAttribute('tabindex', el.getAttribute('tabindex') ?? '0');
+      el.setAttribute('role', el.getAttribute('role') ?? 'button');
+    }
+  }
+
+  ngOnDestroy(): void {
+    this.clearTimers();
+    this.currentRef?.close();
+    this.removeAria();
+  }
+
+  private open(): void {
+    if (this.isOpen) return;
+    const cfg = this.popoverConfig ?? {};
+    this.currentRef = this.svc.open(this.host.nativeElement, this.normalizeContent(), cfg);
+    this.isOpen = true;
+
+    // Manage ARIA on trigger
+    const role = (cfg.role ?? 'dialog');
+    this.host.nativeElement.setAttribute('aria-haspopup', role);
+    this.host.nativeElement.setAttribute('aria-expanded', 'true');
+
+    // Link aria-controls
+    const panelId = (this.currentRef as any).panelId as string | undefined;
+    if (panelId) {
+      this.controlledId = panelId;
+      this.host.nativeElement.setAttribute('aria-controls', panelId);
+      // For tooltip role also add aria-describedby when no header
+      if ((cfg.role ?? 'dialog') === 'tooltip') {
+        this.host.nativeElement.setAttribute('aria-describedby', panelId);
+      }
+    }
+
+    // Close coordination
+    const onClose = () => this.close();
+    this.host.nativeElement.addEventListener('shared-popover-close', onClose, { once: true });
+    this.currentRef.afterClosed().then(() => this.afterCloseCleanup());
+  }
+
+  private afterCloseCleanup(): void {
+    this.isOpen = false;
+    this.host.nativeElement.setAttribute('aria-expanded', 'false');
+    // Return focus to trigger for dialog role
+    const cfg = this.popoverConfig ?? {};
+    if ((cfg.role ?? 'dialog') === 'dialog') {
+      this.host.nativeElement.focus({ preventScroll: true });
+    }
+  }
+
+  private close(): void {
+    if (!this.isOpen) return;
+    this.currentRef?.close();
+  }
+
+  private normalizeContent(): PopoverContent {
+    const c = this.content;
+    if (c instanceof TemplateRef) return c as TemplateRef<unknown>;
+    return c;
+  }
+
+  private clearTimers(): void {
+    if (this.hoverTimer) { clearTimeout(this.hoverTimer); this.hoverTimer = undefined; }
+    if (this.closeTimer) { clearTimeout(this.closeTimer); this.closeTimer = undefined; }
+  }
+
+  private removeAria(): void {
+    const el = this.host.nativeElement;
+    el.removeAttribute('aria-expanded');
+    if (this.controlledId) {
+      el.removeAttribute('aria-controls');
+      el.removeAttribute('aria-describedby');
+      this.controlledId = undefined;
+    }
+  }
+
+  // === Trigger Behaviors ===
+  @HostListener('click', ['$event'])
+  onClick(ev: MouseEvent): void {
+    const trig: PopoverTrigger | undefined = this.popoverConfig?.trigger ?? 'click';
+    if (trig !== 'click') return;
+    ev.stopPropagation();
+    this.isOpen ? this.close() : this.open();
+  }
+
+  @HostListener('keydown', ['$event'])
+  onKeydown(ev: KeyboardEvent): void {
+    const trig = this.popoverConfig?.trigger ?? 'click';
+    if (trig === 'click' && (ev.key === 'Enter' || ev.key === ' ')) {
+      ev.preventDefault();
+      this.isOpen ? this.close() : this.open();
+    }
+    if (ev.key === 'Escape') {
+      this.close();
+    }
+  }
+
+  @HostListener('mouseenter') onMouseEnter(): void {
+    const cfg = this.popoverConfig ?? {};
+    if ((cfg.trigger ?? 'click') !== 'hover') return;
+    this.clearTimers();
+    this.hoverTimer = setTimeout(() => this.open(), cfg.openDelayMs ?? 0);
+  }
+
+  @HostListener('mouseleave') onMouseLeave(): void {
+    const cfg = this.popoverConfig ?? {};
+    if ((cfg.trigger ?? 'click') !== 'hover') return;
+    this.clearTimers();
+    const delay = cfg.hoverCloseDelayMs ?? 200;
+    this.closeTimer = setTimeout(() => this.close(), delay);
+  }
+
+  // Keyboard-accessible hover via focus/blur
+  @HostListener('focus') onFocus(): void {
+    const cfg = this.popoverConfig ?? {};
+    if ((cfg.trigger ?? 'click') !== 'hover') return;
+    this.clearTimers();
+    this.hoverTimer = setTimeout(() => this.open(), cfg.openDelayMs ?? 0);
+  }
+
+  @HostListener('blur') onBlur(): void {
+    const cfg = this.popoverConfig ?? {};
+    if ((cfg.trigger ?? 'click') !== 'hover') return;
+    this.clearTimers();
+    const delay = cfg.hoverCloseDelayMs ?? 200;
+    this.closeTimer = setTimeout(() => this.close(), delay);
+  }
+}
+```ts
+import { Directive, Input, ElementRef, HostListener, TemplateRef, OnDestroy, inject, DestroyRef } from '@angular/core';
+import { PopoverService } from './popover.service';
+import { PopoverConfig, PopoverContent, PopoverTrigger } from './popover.types';
+
+@Directive({
+  selector: '[popoverTrigger]',
+  standalone: true
+})
+export class PopoverTriggerDirective implements OnDestroy {
+  private host = inject(ElementRef<HTMLElement>);
+  private svc = inject(PopoverService);
+  private destroyRef = inject(DestroyRef);
+
+  @Input('popoverTrigger') content!: PopoverContent; // string | TemplateRef | Component
+  @Input() popoverConfig?: PopoverConfig;
+
+  private isOpen = false;
+  private currentRef?: ReturnType<PopoverService['open']>;
+  private hoverTimer?: any; // open delay
+  private closeTimer?: any; // hover close delay
+
+  ngOnDestroy(): void {
+    this.clearTimers();
+    this.currentRef?.close();
+  }
+
+  private open() {
+    if (this.isOpen) return;
+    const cfg = this.popoverConfig ?? {};
+    this.currentRef = this.svc.open(this.host.nativeElement, this.normalizeContent(), cfg);
+    this.isOpen = true;
+    const sub = this.host.nativeElement.addEventListener('shared-popover-close', () => this.close());
+    this.currentRef.afterClosed().then(() => this.isOpen = false);
+  }
+
+  private close() {
+    if (!this.isOpen) return;
+    this.currentRef?.close();
+    this.isOpen = false;
+  }
+
+  private normalizeContent(): PopoverContent {
+    const c = this.content;
+    if (c instanceof TemplateRef) return c as TemplateRef<any>;
+    return c;
+  }
+
+  private clearTimers() {
+    if (this.hoverTimer) { clearTimeout(this.hoverTimer); this.hoverTimer = undefined; }
+    if (this.closeTimer) { clearTimeout(this.closeTimer); this.closeTimer = undefined; }
+  }
+
+  // === Trigger Behaviors ===
+  @HostListener('click', ['$event'])
+  onClick(ev: MouseEvent) {
+    const trig: PopoverTrigger | undefined = this.popoverConfig?.trigger ?? 'click';
+    if (trig !== 'click') return;
+    ev.stopPropagation();
+    this.isOpen ? this.close() : this.open();
+  }
+
+  @HostListener('mouseenter') onMouseEnter() {
+    const cfg = this.popoverConfig ?? {};
+    if ((cfg.trigger ?? 'click') !== 'hover') return;
+    this.clearTimers();
+    this.hoverTimer = setTimeout(() => this.open(), cfg.openDelayMs ?? 0);
+  }
+
+  @HostListener('mouseleave') onMouseLeave() {
+    const cfg = this.popoverConfig ?? {};
+    if ((cfg.trigger ?? 'click') !== 'hover') return;
+    this.clearTimers();
+    const delay = cfg.hoverCloseDelayMs ?? 200;
+    this.closeTimer = setTimeout(() => this.close(), delay);
+  }
+}
+````
+
+---
+
+### Global styles (optional)
+
+Add to your `styles.css` (or the theme file) to place the arrow and panel polish.
+
+```css
+.shared-popover-panel { position: relative; }
+.shared-popover-panel .arrow { position: absolute; width: var(--arrow-size,10px); height: var(--arrow-size,10px); }
+.shared-popover-panel--top .arrow { bottom: -7px; left: 50%; transform: translateX(-50%) rotate(45deg); }
+.shared-popover-panel--bottom .arrow { top: -7px; left: 50%; transform: translateX(-50%) rotate(45deg); }
+.shared-popover-panel--left .arrow { right: -7px; top: 50%; transform: translateY(-50%) rotate(45deg); }
+.shared-popover-panel--right .arrow { left: -7px; top: 50%; transform: translateY(-50%) rotate(45deg); }
+```
+
+> You can further map `*-start` / `*-end` variants if you need exact arrow alignment.
+
+---
+
+## Usage
+
+### 1) Simple string content with copy + close
 
 ```html
-<app-lookup-select
-  [lookupName]="'countries'"
-  [params]="{ region: 'EU' }"
-  [(value)]="selectedCountry"
-  [required]="true"
-  [dynamic]="false"
-  (reload)="onReload('countries')"
-  (selectedChange)="onCountryChange($event)"
-></app-lookup-select>
+<button
+  popoverTrigger="This is a long multi-line help text that users can copy.\n• Supports bullets\n• Preserves formatting"
+  [popoverConfig]="{ trigger: 'click', placement: 'right', showHeader: true, headerText: 'Help', showCopy: true }">
+  <span class="material-symbols-outlined">help</span>
+</button>
+```
+
+### 2) TemplateRef with contextual data
+
+```html
+<ng-template #details let-row>
+  <h4 style="margin:0 0 8px 0;">{{ row.title }}</h4>
+  <p style="margin:0">{{ row.description }}</p>
+</ng-template>
+
+<button [popoverTrigger]="details" [popoverConfig]="{ trigger: 'hover', placement: 'bottom-start', autoClose: 'hover', openDelayMs: 150 }">ℹ️</button>
+```
+
+### 3) Custom component as content
+
+```ts
+// example-info.component.ts
+import { Component, Input } from '@angular/core';
+@Component({ selector: 'example-info', standalone: true, template: `<b>{{title}}</b><div>{{text}}</div>` })
+export class ExampleInfoComponent { title = 'Title'; text = 'Body'; }
+```
+
+```html
+<button [popoverTrigger]="ExampleInfoComponent"
+        [popoverConfig]="{ placement: 'left', data: { anyContext: 123 } }">
+  Open Info
+</button>
+```
+
+> If your component needs the `data`, inject `POPOVER_CONFIG` and read `cfg.data`.
+
+### 4) Programmatic open via service
+
+```ts
+import { Component, ViewChild, ElementRef, inject } from '@angular/core';
+import { PopoverService } from 'src/app/shared/popover/popover.service';
+
+@Component({ selector: 'demo', standalone: true, template: `
+  <button #btn>Show Notes</button>
+` })
+export class DemoComponent {
+  #svc = inject(PopoverService);
+  @ViewChild('btn', { static: true }) btn!: ElementRef<HTMLButtonElement>;
+
+  ngAfterViewInit() {
+    const ref = this.#svc.open(this.btn.nativeElement, 'Programmatic content', { placement: 'bottom-end' });
+    ref.afterClosed().then(() => console.log('Closed'));
+  }
+}
 ```
 
 ---
 
-## 4. Parent Integration
+## Hardening Notes
 
-### 4.1 Initial Load
+* **A11y (WCAG 2.2 AAA/ADA)**
 
-Dispatch lookups from the parent—for example, in `ngOnInit` or in response to user events:
+  * Trigger gains `role="button"`, `tabindex="0"` when not a native button.
+  * `aria-haspopup` reflects `dialog|tooltip`; `aria-expanded` toggles; `aria-controls` links to panel; `aria-describedby` used for tooltip role.
+  * Popover container is focusable; ESC closes; focus returns to trigger.
+  * Visible focus indicators on actionable elements with ≥ 3:1 contrast.
+  * Live region announces "Copied to clipboard" feedback.
+  * Hover trigger supports **keyboard** via focus/blur; prefer `click` on touch.
+* **Security**: String content rendered as plain text, not HTML. Sanitize if you later allow HTML.
+* **Performance**: CDK overlay is lean; centralized constants to avoid magic numbers.
+* **Theming**: Map `--popover-bg`/`--popover-fg` to MD3 tokens for enterprise branding.
 
-```ts
-this.store.dispatch(loadLookup({ lookupName: 'countries', params: { region: 'EU' } }));
-// Or batch load:
-this.store.dispatch(loadLookups({ lookupNames: ['countries','currencies'], params: {} }));
+---
+
+## Testing Checklist
+
+* Opens/closes by trigger; outside click/timeout/hover dismiss as configured.
+* ESC closes; focus returns to trigger; `aria-expanded` toggles correctly.
+* `aria-controls` points to the overlay panel id; tooltip role sets `aria-describedby`.
+* Copy button announces via live region and is keyboard reachable.
+* Positions adapt within viewport; arrow draws correctly and is `aria-hidden`.
+* Hover open/close delays respected; focus/blur path works for keyboard users.
+
+---
+
+### SonarQube-Style Notes
+
+* Avoid `any`: use `unknown` at boundaries with explicit casts.
+* No magic numbers: centralized `ARROW_SIZE`.
+* Proper unsubscribe/cleanup for all subscriptions and timers.
+* Small focused methods; explicit `void`/`Promise<void>` return types.
+* Avoid duplicate literals; constants and helpers extracted.
+
+
+
+
+
+
+%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%%%%%%
+%%%%%%%%%%%%%%%%%%
+
+
+# Angular 20+ Popover (CDK Overlay)
+
+Production‑ready, accessible popover for Angular 20+. Supports string/`TemplateRef`/component content; click/hover/manual triggers; copy‑to‑clipboard; outside/hover/timeout auto‑close; focus management and ARIA. Sonar‑friendly.
+
+---
+
+## At a Glance
+
+* **Package:** `@angular/cdk` (Overlay, Portal, A11y)
+* **Artifacts:**
+
+  * `PopoverService` — programmatic API
+  * `PopoverTriggerDirective` — attach to any element
+  * `PopoverComponent` — rendered in CDK overlay
+  * `POPOVER_CONFIG` — DI token
+  * `PopoverConfig` / types
+* **A11y:** WCAG 2.2 AAA/ADA‑ready: ARIA roles/attributes, keyboard support, focus trap optional, live region feedback.
+
+---
+
+## Install
+
+```bash
+npm i @angular/cdk
 ```
 
-### 4.2 Handling Reload
+Place files under `src/app/shared/popover/` (or your shared library):
 
-```ts
-onReload(lookupName: string) {
-  this.store.dispatch(reloadLookup({ lookupName }));
-}
+```
+popover/
+  popover.types.ts
+  popover-ref.ts
+  popover.tokens.ts
+  popover.component.ts
+  popover.service.ts
+  popover-trigger.directive.ts
 ```
 
-### 4.3 Listening to Selection
+Add global styles (optional) in `styles.css`:
 
-Use `(selectedChange)` on `<app-lookup-select>` to react in the parent:
+```css
+.shared-popover-panel { position: relative; }
+.shared-popover-panel .arrow { position: absolute; width: var(--arrow-size,10px); height: var(--arrow-size,10px); }
+.shared-popover-panel--top .arrow { bottom: -7px; left: 50%; transform: translateX(-50%) rotate(45deg); }
+.shared-popover-panel--bottom .arrow { top: -7px; left: 50%; transform: translateX(-50%) rotate(45deg); }
+.shared-popover-panel--left .arrow { right: -7px; top: 50%; transform: translateY(-50%) rotate(45deg); }
+.shared-popover-panel--right .arrow { left: -7px; top: 50%; transform: translateY(-50%) rotate(45deg); }
+```
+
+---
+
+## Quick Start
+
+### 1) Minimal usage (string content)
+
+```html
+<button
+  popoverTrigger="Long help text...\n• Preserves formatting"
+  [popoverConfig]="{ trigger: 'click', placement: 'right', showHeader: true, headerText: 'Help', showCopy: true }">
+  <span class="material-symbols-outlined">help</span>
+</button>
+```
+
+### 2) TemplateRef content
+
+```html
+<ng-template #details let-row>
+  <h4 style="margin:0 0 8px 0;">{{ row.title }}</h4>
+  <p style="margin:0">{{ row.description }}</p>
+</ng-template>
+
+<button [popoverTrigger]="details"
+        [popoverConfig]="{ trigger: 'hover', placement: 'bottom-start', autoClose: 'hover', openDelayMs: 150 }">ℹ️</button>
+```
+
+### 3) Custom component content
 
 ```ts
-onCountryChange(countryCode: string) {
-  this.selectedCountry = countryCode;
-  // maybe load dependent lookups (e.g. cities)
-  this.store.dispatch(loadLookup({ lookupName: 'cities', params: { country: countryCode } }));
+@Component({ selector: 'example-info', standalone: true, template: `<b>{{title}}</b><div>{{text}}</div>` })
+export class ExampleInfoComponent { title = 'Title'; text = 'Body'; }
+```
+
+```html
+<button [popoverTrigger]="ExampleInfoComponent"
+        [popoverConfig]="{ placement: 'left', data: { anyContext: 123 } }">
+  Open Info
+</button>
+```
+
+To access `data` in the custom component, inject `POPOVER_CONFIG` and read `cfg.data`.
+
+### 4) Programmatic open via service
+
+```ts
+@Component({ selector: 'demo', standalone: true, template: `<button #btn>Show Notes</button>` })
+export class DemoComponent {
+  #svc = inject(PopoverService);
+  @ViewChild('btn', { static: true }) btn!: ElementRef<HTMLButtonElement>;
+  ngAfterViewInit() {
+    const ref = this.#svc.open(this.btn.nativeElement, 'Programmatic content', { placement: 'bottom-end' });
+    ref.afterClosed().then(() => console.log('Closed'));
+  }
 }
 ```
 
 ---
 
-## 5. Summary
+## API
 
-This architecture:
+### `PopoverConfig`
 
-1. **Centralizes** lookup logic in a single NgRx feature.
-2. **Decouples** data loading (parent components) from rendering (shared lookup component).
-3. **Supports** single vs. bulk lookups, dynamic reloads, and required placeholders.
-4. **Integrates** seamlessly with Angular forms via `ControlValueAccessor`.
+```ts
+interface PopoverConfig {
+  trigger?: 'click' | 'hover' | 'manual';        // default 'click'
+  placement?: 'top'|'bottom'|'left'|'right'      // + -start/-end variants; default 'bottom'
+  offset?: number;                               // default 8
+  width?: string; maxWidth?: string; maxHeight?: string; // layout
+  hasArrow?: boolean;                            // default true
+  role?: 'dialog'|'tooltip';                     // default 'dialog'
+  autoClose?: 'none'|'outside'|'hover'|'timeout';// default 'outside'
+  hoverCloseDelayMs?: number; openDelayMs?: number; timeoutMs?: number;
+  closeOnNavigation?: boolean;                   // default true
+  disableBackdrop?: boolean;                     // default false
+  trapFocus?: boolean;                           // default false
+  showHeader?: boolean; headerText?: string;
+  showCopy?: boolean; showClose?: boolean;       // copy only for string content by default
+  data?: unknown;                                // context passed to template/component
+}
+```
 
-With this pattern, adding new lookups or reusing existing ones is as simple as dispatching the right action and embedding `<app-lookup-select>` in your template. Feel free to adapt the inputs/outputs or styling to match your app’s conventions.
+### `PopoverService`
+
+```ts
+open(target: HTMLElement, content: string | TemplateRef<unknown> | Type<unknown>, config?: PopoverConfig): PopoverRef
+```
+
+* Returns `PopoverRef` with `.close(result?)` and `.afterClosed(): Promise<any>`.
+
+### `popoverTrigger` directive
+
+* Binds to any element. Accepts `string | TemplateRef | Component` as value, plus `[popoverConfig]`.
+* Provides keyboard support (Enter/Space to toggle, ESC to close), ARIA wiring, and focus return when closed.
+
+---
+
+## Accessibility (WCAG 2.2 AAA / ADA)
+
+* **Roles/Attributes**: `role="dialog"` (default) or `role="tooltip"`; `aria-modal` for dialog; `aria-haspopup`, `aria-expanded`, `aria-controls` on trigger; `aria-describedby` when tooltip.
+* **Keyboard**: Enter/Space toggles (click mode); ESC closes; Tab order retained; optional focus trap for complex dialogs.
+* **Focus**: Popover container is focusable; upon close, focus returns to trigger.
+* **Announcements**: Copy action uses a polite live region.
+* **Hover**: Keyboard parity via focus/blur; on touch devices prefer `click`.
+
+> **Note:** If you render rich interactive content, switch `role` to `dialog` and enable `trapFocus: true`.
+
+---
+
+## Styling & Theming
+
+* Exposes CSS vars: `--popover-bg`, `--popover-fg`, `--arrow-size`.
+* Map to Material 3 tokens, e.g.:
+
+```css
+:root {
+  --popover-bg: var(--md-sys-color-surface-container-high);
+  --popover-fg: var(--md-sys-color-on-surface);
+}
+```
+
+* Respect `prefers-reduced-motion`; visible focus indicators meet ≥3:1 contrast.
+
+---
+
+## Sonar / Code Quality
+
+* No magic numbers (centralized `ARROW_SIZE`).
+* Avoid `any` in public surfaces (`unknown` at boundaries, cast locally).
+* Explicit return types (`void` / `Promise<void>`).
+* Cleanup on destroy (subscriptions, timers, focus trap).
+* Small, single‑purpose methods.
+
+---
+
+## Testing
+
+### Unit tests (suggested cases)
+
+* **Trigger**: click/Enter/Space opens; ESC closes; focus returns; `aria-expanded` toggles.
+* **Auto‑close**: outside click closes; `timeoutMs` closes; hover open/close delays.
+* **Copy**: writes to clipboard; live region announces.
+* **Placement**: tries fallback positions when constrained.
+* **Directive semantics**: non‑button triggers get `role="button"` + `tabindex="0"`.
+
+### Example Jasmine snippet
+
+```ts
+it('should toggle aria-expanded on open/close', () => {
+  const btn: HTMLElement = fixture.nativeElement.querySelector('button');
+  btn.click();
+  expect(btn.getAttribute('aria-expanded')).toBe('true');
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+  expect(btn.getAttribute('aria-expanded')).toBe('false');
+});
+```
+
+---
+
+## Troubleshooting
+
+* **Popover not closing on outside click**: Ensure `autoClose` is `outside` (default) and `disableBackdrop` is `false`.
+* **Hover doesn’t work on mobile**: Use `trigger: 'click'` on touch devices.
+* **Custom component needs context**: Pass `data` in config and inject `POPOVER_CONFIG` in the component.
+* **Focus doesn’t return**: Check that you didn’t manually move focus in custom content; directive restores focus on close when `role='dialog'`.
+* **Copy fails**: Browser may block Clipboard API in insecure context; fallback uses `execCommand('copy')`.
+
+---
+
+## Migration / Integration Notes
+
+* **Angular 20 standalone**: No NgModule; import the directive where needed.
+* **CDK Overlay panel class**: `shared-popover-panel` for external theming.
+* **Global config defaults**: Adjust inside `withDefaults()` in `PopoverService`.
+
+---
+
+## Example: Field‑level help with copy & header
+
+```html
+<label for="notes">Notes</label>
+<textarea id="notes" [(ngModel)]="notes"></textarea>
+<button
+  popoverTrigger="Full notes: {{ notes }}"
+  [popoverConfig]="{ showHeader: true, headerText: 'Notes', showCopy: true, placement: 'right' }"
+  aria-label="Open notes popover">
+  <span class="material-symbols-outlined">info</span>
+</button>
+```
+
+---
+
+## License / Ownership
+
+Internal shared component. Follow your org’s contribution guidelines and accessibility bars. Treat as a platform primitive.
+
+
