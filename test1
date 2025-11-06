@@ -1,292 +1,220 @@
-1) OAuth config
-// src/app/auth/oauth.config.ts
-import { AuthConfig } from 'angular-oauth2-oidc';
-
-export const authConfig: AuthConfig = {
-  issuer: 'https://your-idp.example.com',        // <-- your issuer
-  clientId: 'your-client-id',                    // <-- your client id
-  redirectUri: window.location.origin + '/auth/callback',
-  postLogoutRedirectUri: window.location.origin,
-  responseType: 'code',
-  scope: 'openid profile email offline_access',  // offline_access => refresh_token
-  useSilentRefresh: false,                       // don’t use iframe
-  showDebugInformation: false,
-  sessionChecksEnabled: false,
-  // Stronger default storage: sessionStorage reduces blast radius vs localStorage
-  // (You can switch to localStorage if you must keep sessions across tabs/restarts.)
-  customQueryParams: { prompt: 'consent' }       // optional for some IdPs to issue RT
-};
-
-
-If your IdP requires explicit consent or specific scopes to return RTs, keep offline_access and (optionally) prompt=consent.
-
-2) AuthService (refresh-on-demand + proactive timer + single-flight)
-// src/app/auth/auth.service.ts
-import { Injectable, NgZone } from '@angular/core';
-import { OAuthService, OAuthEvent, OAuthSuccessEvent } from 'angular-oauth2-oidc';
-import { authConfig } from './oauth.config';
-import { firstValueFrom, Subject } from 'rxjs';
-
-const REFRESH_MARGIN_SEC = 60;  // refresh this many seconds before exp
-const CLOCK_SKEW_SEC = 10;      // safety for minor clock drift
+auth.service.ts
+import { Injectable } from '@angular/core';
+import { OAuthService, AuthConfig, OAuthEvent } from 'angular-oauth2-oidc';
+import { BehaviorSubject, firstValueFrom } from 'rxjs';
+import { filter, take } from 'rxjs/operators';
 
 @Injectable({ providedIn: 'root' })
 export class AuthService {
-  private tokenTimer: any = null;
-  private refreshInFlight = false;
-  private waiters = new Subject<void>();
+  private initReady!: Promise<void>;
 
-  constructor(private oauth: OAuthService, private zone: NgZone) {}
+  // refresh single-flight lock
+  private refreshing$ = new BehaviorSubject<boolean>(false);
+  private refreshDone$ = new BehaviorSubject<boolean>(true);
 
-  async init(): Promise<void> {
+  // reauth lock to prevent multiple redirects
+  private reauthInProgress = false;
+
+  constructor(private oauth: OAuthService) {}
+
+  /** Call this once from app initializer AFTER your config.json is loaded. */
+  async init(authConfig: AuthConfig): Promise<void> {
     this.oauth.configure(authConfig);
+    this.oauth.setStorage(localStorage); // or sessionStorage
 
-    // Load OIDC metadata and finish code flow if ?code= is present
-    await this.oauth.loadDiscoveryDocumentAndTryLogin();
+    this.initReady = (async () => {
+      await this.oauth.loadDiscoveryDocumentAndTryLogin();
+      if (this.oauth.hasValidAccessToken()) this.schedulePreemptiveRefresh();
 
-    // If we still aren’t authenticated, start login
-    if (!this.oauth.hasValidAccessToken()) {
-      await this.login();
-      return;
-    }
+      this.oauth.events.subscribe((e: OAuthEvent) => {
+        if (e.type === 'token_received' || e.type === 'token_refreshed') {
+          this.schedulePreemptiveRefresh();
+        }
+      });
+    })();
 
-    // Set up proactive refresh timer
-    this.scheduleProactive();
-
-    // Re-schedule when tokens change or app "wakes up"
-    this.oauth.events.subscribe((e: OAuthEvent) => {
-      if (
-        e instanceof OAuthSuccessEvent &&
-        (e.type === 'token_received' || e.type === 'token_refreshed')
-      ) {
-        this.scheduleProactive();
-      }
-    });
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') this.scheduleProactive();
-    });
-    window.addEventListener('online', () => this.scheduleProactive());
+    await this.initReady;
   }
 
-  async login(): Promise<void> {
-    await this.oauth.initLoginFlow(); // redirects to IdP; returns after redirect back
-  }
+  waitUntilReady(): Promise<void> { return this.initReady; }
 
+  // ---- Session helpers
+  login(): void {
+    if (this.reauthInProgress) return;
+    this.reauthInProgress = true;
+    this.oauth.initLoginFlow();
+  }
   logout(): void {
-    try { this.oauth.logOut(); } finally { if (this.tokenTimer) clearTimeout(this.tokenTimer); }
+    this.reauthInProgress = false;
+    this.oauth.logOut(true);
   }
 
-  get accessToken(): string | null {
-    return this.oauth.getAccessToken() || null;
+  get accessToken(): string | null { return this.oauth.getAccessToken() || null; }
+  hasValidAccessToken(): boolean { return this.oauth.hasValidAccessToken(); }
+  getAccessTokenExpiry(): number { return this.oauth.getAccessTokenExpiration(); }
+  getRefreshToken(): string | null { return this.oauth.getRefreshToken() || null; }
+
+  /** Ensures AT is valid; uses RT if expiring/expired. Throws if reauth triggered/fails. */
+  async ensureFreshToken(returnUrl?: string): Promise<void> {
+    await this.waitUntilReady();
+
+    const msLeft = this.getAccessTokenExpiry() - Date.now();
+    const needs = !this.hasValidAccessToken() || msLeft < 60_000;
+    if (!needs) return;
+
+    const rt = this.getRefreshToken();
+    if (!rt) return this.triggerReauth(returnUrl, 'NO_REFRESH_TOKEN');
+
+    await this.refreshSingleFlight();
   }
 
-  get refreshToken(): string | null {
-    // angular-oauth2-oidc stores RT when offline_access is enabled and IdP returns it
-    return (this.oauth as any).getRefreshToken?.() ?? null;
-  }
-
-  get expiresAt(): number | null {
-    return this.oauth.getAccessTokenExpiration() || null; // ms epoch
-  }
-
-  /**
-   * Ensure we have a valid token: refresh if within margin/expired.
-   * Concurrency-safe: one refresh flight; others await.
-   */
-  async ensureValidToken(): Promise<void> {
-    const exp = this.expiresAt ?? 0;
-    const now = Date.now();
-    const marginMs = (REFRESH_MARGIN_SEC + CLOCK_SKEW_SEC) * 1000;
-
-    // If token is valid far enough into the future, nothing to do.
-    if (this.oauth.hasValidAccessToken() && exp && now + marginMs < exp) return;
-
-    // If we have no refresh token, we can’t background refresh: re-auth.
-    const rt = this.refreshToken;
-    if (!rt) {
-      await this.login();
-      return;
-    }
-
-    // Single-flight
-    if (this.refreshInFlight) {
-      await firstValueFrom(this.waiters.asObservable());
-      return;
-    }
-
-    this.refreshInFlight = true;
+  /** Call explicitly only on 401 before giving up. */
+  async tryRefreshOnce(): Promise<boolean> {
     try {
-      const result = await this.oauth.refreshToken(); // uses RT grant under the hood
-      if (!result) {
-        // Some IdPs return empty object on failure without throwing
-        await this.login();
-      }
+      await this.refreshSingleFlight();
+      return true;
     } catch {
-      // RT invalid/rotated/revoked => force re-auth
-      await this.login();
-    } finally {
-      this.refreshInFlight = false;
-      this.waiters.next(); // release queued callers
+      return false;
     }
   }
 
-  private scheduleProactive(): void {
-    if (this.tokenTimer) clearTimeout(this.tokenTimer);
-    const exp = this.expiresAt;
-    if (!exp) return;
+  // ---------------- private ----------------
 
-    const target = exp - REFRESH_MARGIN_SEC * 1000;
-    const delay = Math.max(0, target - Date.now());
+  private async refreshSingleFlight(): Promise<void> {
+    if (this.refreshing$.value) {
+      await firstValueFrom(this.refreshDone$.pipe(filter(v => v), take(1)));
+      return;
+    }
+    const rt = this.getRefreshToken();
+    if (!rt) throw new Error('NO_REFRESH_TOKEN');
 
-    this.zone.runOutsideAngular(() => {
-      this.tokenTimer = setTimeout(() => {
-        // fire refresh ahead of time; interceptor also covers just-in-time cases
-        void this.ensureValidToken();
-      }, delay);
-    });
+    this.refreshing$.next(true);
+    this.refreshDone$.next(false);
+    try {
+      const ok = await this.oauth.refreshToken(); // form-url-encoded to discovered token_endpoint
+      if (!ok) throw new Error('REFRESH_FAILED');
+    } finally {
+      this.refreshing$.next(false);
+      this.refreshDone$.next(true);
+    }
+  }
+
+  private triggerReauth(returnUrl?: string, reason?: string): never {
+    if (returnUrl) sessionStorage.setItem('returnUrl', returnUrl);
+    this.login(); // will set reauthInProgress and redirect
+    throw new Error(reason || 'REAUTH_TRIGGERED');
+  }
+
+  private schedulePreemptiveRefresh(): void {
+    // refresh ~60s before expiry (and ignore if already refreshed)
+    const delay = Math.max(this.getAccessTokenExpiry() - Date.now() - 60_000, 0);
+    setTimeout(() => {
+      if (this.getAccessTokenExpiry() <= Date.now() + 90_000) {
+        // fire-and-forget; interceptor/guard will handle hard cases
+        this.refreshSingleFlight().catch(() => {});
+      }
+    }, delay);
   }
 }
 
-3) HTTP interceptor (attach token, block during refresh, retry once on 401)
-// src/app/auth/auth.interceptor.ts
-import { Injectable, inject } from '@angular/core';
+auth.guard.ts
+import { Injectable } from '@angular/core';
+import { CanActivate, ActivatedRouteSnapshot, RouterStateSnapshot } from '@angular/router';
+import { AuthService } from './auth.service';
+
+@Injectable({ providedIn: 'root' })
+export class AuthGuard implements CanActivate {
+  constructor(private auth: AuthService) {}
+
+  async canActivate(route: ActivatedRouteSnapshot, state: RouterStateSnapshot): Promise<boolean> {
+    try {
+      await this.auth.ensureFreshToken(state.url); // will RT-refresh or trigger login()
+      return true;
+    } catch {
+      return false; // navigation aborted because login redirect started
+    }
+  }
+}
+
+auth.interceptor.ts
+import { Injectable } from '@angular/core';
 import {
   HttpInterceptor, HttpRequest, HttpHandler, HttpEvent, HttpErrorResponse
 } from '@angular/common/http';
 import { Observable, from, throwError } from 'rxjs';
 import { catchError, switchMap } from 'rxjs/operators';
 import { AuthService } from './auth.service';
+import { OAuthService } from 'angular-oauth2-oidc';
 
+/**
+ * - Adds Bearer only to YOUR APIs (do NOT touch IdP endpoints).
+ * - Ensures token freshness pre-request.
+ * - On 401 once: refresh via RT, retry the request.
+ * - If still failing: hard reauth (full redirect).
+ */
 @Injectable()
 export class AuthInterceptor implements HttpInterceptor {
-  private auth = inject(AuthService);
+  constructor(private auth: AuthService, private oauth: OAuthService) {}
 
   intercept(req: HttpRequest<any>, next: HttpHandler): Observable<HttpEvent<any>> {
-    const proceed = () => next.handle(this.attach(req));
+    // Never decorate IdP calls (token/userinfo/logout/etc.) — avoids recursive refresh/CORS
+    if (this.isOidcEndpoint(req.url)) {
+      return next.handle(req);
+    }
 
-    return from(this.auth.ensureValidToken()).pipe(
-      switchMap(() => proceed()),
-      catchError((err: any) => {
-        // If the request failed with 401, try one forced refresh (or login)
-        if (err instanceof HttpErrorResponse && err.status === 401) {
-          return from(this.auth.ensureValidToken()).pipe(switchMap(() => proceed()));
-        }
-        return throwError(() => err);
+    // Add Authorization only if we’re not calling IdP
+    const withAuth = () => {
+      const t = this.auth.accessToken;
+      return t ? req.clone({ setHeaders: { Authorization: `Bearer ${t}` } }) : req;
+    };
+
+    // Pre-flight freshness (cheap path if token is fine)
+    return from(this.auth.ensureFreshToken()).pipe(
+      switchMap(() => next.handle(withAuth())),
+      catchError(err => {
+        // If not an auth error, bubble up
+        if (!this.isAuthError(err)) return throwError(() => err);
+
+        // Prevent infinite loops: do NOT refresh if the failing call is (somehow) an IdP endpoint
+        if (this.isOidcEndpoint(req.url)) return throwError(() => err);
+
+        // Retry once after an explicit refresh
+        return from(this.auth.tryRefreshOnce()).pipe(
+          switchMap(ok => ok ? next.handle(withAuth()) : throwError(() => err)),
+          catchError(err2 => {
+            // Hard reauth (single flight)
+            try {
+              const currentUrl = window.location.pathname + window.location.search + window.location.hash;
+              sessionStorage.setItem('returnUrl', currentUrl);
+              this.auth.login();
+            } catch { /* ignore */ }
+            return throwError(() => err2);
+          })
+        );
       })
     );
   }
 
-  private attach(req: HttpRequest<any>): HttpRequest<any> {
-    const token = this.auth.accessToken;
-    if (!token) return req;
-    return req.clone({ setHeaders: { Authorization: `Bearer ${token}` } });
-  }
-}
-
-4) Application wiring (standalone bootstrap)
-// src/main.ts
-import { bootstrapApplication } from '@angular/platform-browser';
-import { provideHttpClient, withInterceptors } from '@angular/common/http';
-import { AppComponent } from './app/app.component';
-import { AuthInterceptor } from './app/auth/auth.interceptor';
-import { AuthService } from './app/auth/auth.service';
-
-bootstrapApplication(AppComponent, {
-  providers: [
-    provideHttpClient(withInterceptors([ (req, next) => new AuthInterceptor().intercept(req, next) ]))
-  ]
-}).then(async ref => {
-  const auth = ref.injector.get(AuthService);
-  await auth.init(); // Initialize OIDC before app starts hitting APIs
-});
-
-
-NgModule app instead? Register the interceptor with multi: true under HTTP_INTERCEPTORS, and call await auth.init() in AppComponent’s init path or an APP_INITIALIZER (Angular 19 still supports it).
-
-5) Optional: Route guard (blocks routes until authenticated)
-// src/app/auth/auth.guard.ts
-import { inject } from '@angular/core';
-import { CanActivateFn, Router } from '@angular/router';
-import { AuthService } from './auth.service';
-
-export const authGuard: CanActivateFn = async () => {
-  const auth = inject(AuthService);
-  const router = inject(Router);
-  if (!auth.accessToken) {
-    await auth.login();
-    return false; // navigation will continue after redirect back
-  }
-  await auth.ensureValidToken(); // make sure it's fresh enough
-  return true;
-};
-
-
-Use it on protected routes:
-
-// src/app/app.routes.ts
-import { Routes } from '@angular/router';
-import { authGuard } from './auth/auth.guard';
-
-export const routes: Routes = [
-  { path: '', loadComponent: () => import('./home/home.component').then(m => m.HomeComponent) },
-  { path: 'secure', canActivate: [authGuard], loadComponent: () => import('./secure/secure.component').then(m => m.SecureComponent) },
-];
-
-6) (Nice-to-have) Multi-tab single-refresh (avoid multiple tabs hitting /token)
-
-Add this inside AuthService if you run multi-tab:
-
-private bc = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('auth') : null;
-
-constructor(private oauth: OAuthService, private zone: NgZone) {
-  // ...
-  this.bc?.addEventListener('message', async (e: MessageEvent) => {
-    if (e.data === 'refresh-start') {
-      this.refreshInFlight = true;
-    } else if (e.data === 'refresh-done') {
-      this.refreshInFlight = false;
-      this.waiters.next();
-      this.scheduleProactive();
+  private isAuthError(err: any): boolean {
+    if (err instanceof HttpErrorResponse) {
+      if (err.status === 401) return true;
+      const hdr = err.headers?.get('WWW-Authenticate') || '';
+      const msg = (err.error && (err.error.error || err.error.message)) || '';
+      return /invalid_token|expired/i.test(hdr + ' ' + msg);
     }
-  });
-}
+    return false;
+  }
 
-async ensureValidToken(): Promise<void> {
-  // ... before starting refresh:
-  if (!this.refreshInFlight) this.bc?.postMessage('refresh-start');
-  try {
-    const result = await this.oauth.refreshToken();
-    // ...
-  } finally {
-    this.bc?.postMessage('refresh-done');
-    // ...
+  /** Identify OIDC endpoints to leave them untouched. */
+  private isOidcEndpoint(url: string): boolean {
+    const dd: any = (this.oauth as any).discoveryDocument || {};
+    const known = [
+      (this.oauth as any).tokenEndpoint || dd.token_endpoint,
+      dd.userinfo_endpoint,
+      dd.revocation_endpoint,
+      dd.introspection_endpoint,
+      dd.end_session_endpoint
+    ].filter(Boolean) as string[];
+    return known.some(u => typeof u === 'string' && url.startsWith(u));
   }
 }
-
-7) What changed vs your old setup
-
-Scopes include offline_access.
-
-No silent iframe. We use refreshToken() and a proactive timer + just-in-time refresh.
-
-Requests never race with refresh: interceptor calls ensureValidToken() and queues.
-
-401 safety: one retry after refresh; on failure, we hard redirect to login().
-
-8) IdP knobs you must align with
-
-Tell your SSO team this is what your client expects:
-
-Grant: Authorization Code + PKCE.
-
-Scopes: openid profile email offline_access.
-
-Refresh Token Rotation: enabled, with reasonable TTL (e.g., RT TTL ≥ session length).
-
-CORS: allow your SPA origin for /authorize, /token, and OIDC discovery endpoints.
-
-SameSite for any IdP cookies: Lax is fine for code flow; Secure on HTTPS.
-
-TL;DR
-
-Drop silent refresh. Keep code flow + PKCE. Use offline_access. Implement the AuthService + AuthInterceptor above. You’ll refresh cleanly before expiry and your calls won’t 401-flap.
