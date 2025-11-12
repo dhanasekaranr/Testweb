@@ -1,356 +1,1017 @@
-# 🚀 Angular Material Dashboard with Advanced Popover System
+AdminApi/
+├─ AdminApi.csproj
+├─ Program.cs
+├─ appsettings.json
+├─ Controllers/
+│  └─ ScreenPilotController.cs
+├─ Domain/
+│  ├─ Entities/
+│  │  ├─ ScreenPilot.cs
+│  │  ├─ User.cs
+│  │  ├─ Role.cs
+│  │  ├─ UserRole.cs
+│  │  ├─ Module.cs
+│  │  └─ RoleModule.cs
+│  └─ Enums/
+│     └─ ModuleAction.cs
+├─ Infrastructure/
+│  ├─ Auth/
+│  │  ├─ RequiresModulePermissionAttribute.cs
+│  │  ├─ ModulePermissionRequirement.cs
+│  │  └─ ModulePermissionHandler.cs
+│  ├─ Data/
+│  │  ├─ AppDbContext.cs
+│  │  ├─ AppPrimaryDbContext.cs
+│  │  ├─ AppSecondaryDbContext.cs
+│  │  ├─ IAppDbContextAccessor.cs
+│  │  ├─ AppDbContextAccessor.cs
+│  │  └─ DbRouteAccessor.cs
+│  └─ Options/
+│     ├─ DbOptions.cs
+│     └─ AuthorizationOverrideOptions.cs
+├─ Application/
+│  ├─ Abstractions/
+│  │  ├─ IAccessDecisionService.cs
+│  │  └─ IDbKeyCarrier.cs
+│  ├─ Access/
+│  │  ├─ AccessDecision.cs
+│  │  └─ AccessDecisionService.cs
+│  ├─ Common/
+│  │  ├─ PageMeta.cs
+│  │  ├─ BasePageDto.cs
+│  │  ├─ PageRequest.cs
+│  │  ├─ ActionCtrlDto.cs
+│  │  └─ Exceptions.cs
+│  └─ ScreenPilot/
+│     ├─ Dto/
+│     │  ├─ ScreenPilotDto.cs
+│     │  └─ ScreenPilotListDto.cs
+│     ├─ Requests/
+│     │  └─ ScreenPilotListRequest.cs
+│     ├─ Queries/
+│     │  ├─ GetScreenPilotQuery.cs
+│     │  └─ SearchScreenPilotsQuery.cs
+│     ├─ Commands/
+│     │  ├─ UpdateScreenPilotCommand.cs
+│     │  └─ DeleteScreenPilotCommand.cs
+│     └─ Rules/
+│        └─ ScreenPilotRules.cs
+└─ Web/
+   └─ Filters/
+      ├─ ApiExceptionFilter.cs
+      ├─ ValidateModelFilter.cs
+      ├─ ResponseMetaFilter.cs
+      └─ DbKeyFromRequestFilter.cs
+Program.cs
+csharp
+Copy code
+using AdminApi.Application.Abstractions;
+using AdminApi.Application.Access;
+using AdminApi.Infrastructure.Data;
+using AdminApi.Infrastructure.Options;
+using AdminApi.Infrastructure.Auth;
+using AdminApi.Web.Filters;
+using MediatR;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
-[![Angular](https://img.shields.io/badge/Angular-20%2B-DD0031?style=for-the-badge&logo=angular&logoColor=white)](https://angular.io/)
-[![Material Design](https://img.shields.io/badge/Material%20Design%203-4285F4?style=for-the-badge&logo=material-design&logoColor=white)](https://material.angular.io/)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.0%2B-007ACC?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![WCAG 2.2 AAA](https://img.shields.io/badge/WCAG%202.2-AAA%20Compliant-00A86B?style=for-the-badge)](https://www.w3.org/WAI/WCAG22/quickref/)
-[![MIT License](https://img.shields.io/badge/License-MIT-green.svg?style=for-the-badge)](https://choosealicense.com/licenses/mit/)
+var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddMemoryCache();
 
-> **Professional-grade Angular dashboard with a comprehensive popover system featuring both external and inline help components with full WCAG 2.2 AAA accessibility compliance.**
+// Options
+builder.Services.Configure<DbOptions>(builder.Configuration.GetSection("Databases"));
+builder.Services.Configure<AuthorizationOverrideOptions>(builder.Configuration.GetSection("AuthorizationOverrides"));
 
-## ✨ **Key Features**
+// EF (Oracle shown; swap to SQL Server if needed)
+builder.Services.AddDbContext<AppPrimaryDbContext>((sp, o) =>
+{
+    var cs = sp.GetRequiredService<IOptions<DbOptions>>().Value.A;
+    o.UseOracle(cs);
+});
+builder.Services.AddDbContext<AppSecondaryDbContext>((sp, o) =>
+{
+    var cs = sp.GetRequiredService<IOptions<DbOptions>>().Value.B;
+    o.UseOracle(cs);
+});
 
-### 🎯 **Advanced Popover System**
-- **External Popovers**: Traditional help icons positioned outside form elements
-- **Inline Popovers**: Professional help icons using Material Design's `matSuffix` approach
-- **Rich Content Support**: HTML, Markdown, and custom templates
-- **Smart Positioning**: Auto-positioning with collision detection and precise arrow alignment
-- **Copy-to-Clipboard**: Built-in content copying functionality
-- **Dynamic Arrow Alignment**: Intelligent arrow positioning for different form field types
-- **Performance Optimized**: Uses `requestAnimationFrame` for instant, lag-free rendering (~16ms vs 100ms)
+// Db routing/accessor
+builder.Services.AddScoped<IDbRouteAccessor, DbRouteAccessor>();
+builder.Services.AddScoped<IAppDbContextAccessor, AppDbContextAccessor>();
 
-### 🎨 **Material Design 3 Integration**
-- **Design Tokens**: Full Material 3 theming support
-- **Dynamic Theming**: Light/dark mode compatibility
-- **Responsive Design**: Mobile-first approach with breakpoint awareness
-- **Component Library**: Comprehensive Material components integration
+// AuthN/AuthZ (JWT auth config omitted for brevity)
+builder.Services.AddAuthentication(/* your JWT */);
+builder.Services.AddAuthorization(o =>
+{
+    o.AddPolicy("ModulePermission", p =>
+        p.RequireAuthenticatedUser()
+         .AddRequirements(new ModulePermissionRequirement()));
+});
+builder.Services.AddSingleton<IAuthorizationHandler, ModulePermissionHandler>();
 
-### ♿ **Accessibility Excellence**
-- **WCAG 2.2 AAA Compliant**: Exceeds accessibility standards
-- **Screen Reader Support**: Full ARIA implementation with live regions
-- **Keyboard Navigation**: Complete keyboard accessibility
-- **Focus Management**: Proper focus trapping and restoration
-- **High Contrast**: 7:1+ contrast ratios throughout
+// Core services
+builder.Services.AddScoped<IAccessDecisionService, AccessDecisionService>();
 
-### 🏗️ **Enterprise Architecture**
-- **Standalone Components**: Modern Angular architecture
-- **Signal-Based State**: Latest Angular signals for reactive state management
-- **CDK Integration**: Angular CDK for advanced component behaviors
-- **Type Safety**: Full TypeScript implementation with strict mode
-- **Modern Syntax**: Latest Angular control flow (`@if`, `@for`) replacing deprecated directives
+// MediatR
+builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(Program).Assembly));
 
-## 🚀 **Quick Start**
+// MVC + Filters
+builder.Services.AddControllers(o =>
+{
+    o.Filters.Add(new DbKeyFromRequestFilter());
+    o.Filters.Add(new ApiExceptionFilter());
+    o.Filters.Add(new ValidateModelFilter());
+    o.Filters.Add(new ResponseMetaFilter());
+});
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
 
-### Prerequisites
-- **Node.js**: 18.13.0 or higher
-- **npm**: 9.0.0 or higher
-- **Angular CLI**: 20.0.0 or higher
+var app = builder.Build();
 
-### Installation
+app.UseSwagger();
+app.UseSwaggerUI();
 
-```bash
-# Clone the repository
-git clone <repository-url>
-cd apex
+app.UseAuthentication();
+app.UseAuthorization();
 
-# Install dependencies
-npm install
+app.MapControllers();
 
-# Start development server
-npm start
-```
-
-### Development Commands
-
-```bash
-# Development server (with auto-reload)
-npm start                    # Runs on http://localhost:4200
-
-# Production build
-npm run build               # Optimized build for production
-
-# Run tests
-npm test                    # Unit tests with Karma
-npm run test:coverage       # Generate test coverage report
-
-# Lint and format
-npm run lint               # ESLint analysis
-npm run format             # Prettier formatting
-```
-
-## 📖 **Usage Guide**
-
-### **External Popovers**
-Perfect for traditional help icons positioned outside form elements:
-
-```html
-<mat-form-field appearance="outline">
-  <mat-label>Username</mat-label>
-  <input matInput [(ngModel)]="username" placeholder="Enter username">
-</mat-form-field>
-<button
-  mat-icon-button
-  popoverTrigger="Username requirements:
-  
-• 3-20 characters
-• Letters, numbers, and underscores only
-• Must start with a letter
-• Case sensitive"
-  [popoverConfig]="{
-    placement: 'bottom-start',
-    showHeader: true,
-    headerText: 'Username Help'
-  }"
-  aria-label="Help with username"
->
-  <mat-icon>info_outline</mat-icon>
-</button>
-```
-
-### **Inline Popovers (Recommended)**
-Professional help icons positioned inside form elements using Material Design's `matSuffix`:
-
-```html
-<mat-form-field appearance="outline">
-  <mat-label>Full Name</mat-label>
-  <input matInput [(ngModel)]="fullName" placeholder="Enter full name">
-  <button
-    matSuffix
-    mat-icon-button
-    type="button"
-    class="shared-popover-help-button"
-    popoverTrigger="Full name guidelines:
-
-• Use your legal name
-• Include middle name if desired
-• Format: First Middle Last
-• Special characters supported"
-    [popoverConfig]="{
-      placement: 'bottom-end',
-      showHeader: true,
-      headerText: 'Name Guidelines'
-    }"
-    aria-label="Help with full name"
-  >
-    <mat-icon class="shared-popover-help-icon">help_outline</mat-icon>
-  </button>
-</mat-form-field>
-```
-
-### **Reusable Help Button Styles**
-The popover system includes namespaced, pre-styled help button classes for consistent UI:
-
-```html
-<!-- Standard help button (20x20px) -->
-<button class="shared-popover-help-button" popoverTrigger="Help text">
-  <mat-icon class="shared-popover-help-icon">help_outline</mat-icon>
-</button>
-
-<!-- Search field help button (24x24px) -->
-<button class="shared-popover-search-help-button" popoverTrigger="Search help">
-  <mat-icon class="shared-popover-help-icon">help_outline</mat-icon>
-</button>
-
-<!-- Page title help button (28x28px) -->
-<button class="shared-popover-page-help-button" popoverTrigger="Page help">
-  <mat-icon class="shared-popover-help-icon">info_outline</mat-icon>
-</button>
-```
-
-All styles use the `shared-popover-` prefix to prevent naming conflicts and include:
-- Material Design 3 color tokens
-- Smooth hover transitions
-- Consistent sizing across the app
-- Accessibility-compliant focus states
-- Namespaced classes to avoid CSS conflicts
-
-### **Advanced Configuration**
-
-```typescript
-interface PopoverConfig {
-  placement?: 'top' | 'bottom' | 'left' | 'right' | 'top-start' | 'bottom-end' | ...;
-  showHeader?: boolean;
-  headerText?: string;
-  showClose?: boolean;
-  maxWidth?: string;
-  role?: 'dialog' | 'tooltip';
-  trapFocus?: boolean;
-  showCopy?: boolean;
-  copyText?: string;
+app.Run();
+appsettings.json
+json
+Copy code
+{
+  "Databases": {
+    "A": "User Id=APP_A;Password=***;Data Source=orclpdb1",
+    "B": "User Id=APP_B;Password=***;Data Source=orclpdb1"
+  },
+  "AuthorizationOverrides": {
+    "AuthorizationOverrides": [
+      { "Module": "ScreenPilot", "Action": "Edit", "AllowedRoleIds": [1,2,3] }
+    ]
+  },
+  "Logging": { "LogLevel": { "Default": "Information", "Microsoft.AspNetCore": "Warning" } }
 }
-```
-
-## 🏢 **Project Structure**
-
-```
-src/
-├── app/
-│   ├── core/                     # Core services and providers
-│   ├── features/                 # Feature modules
-│   │   ├── dashboard/           # Dashboard feature
-│   │   ├── lookup-management/   # Data management
-│   │   ├── settings/           # Application settings
-│   │   └── users/              # User management
-│   └── shared/
-│       ├── ui/
-│       │   └── popover/        # Popover system
-│       │       ├── popover.component.ts      # Main popover component
-│       │       ├── popover-trigger.directive.ts  # Trigger directive
-│       │       ├── popover.service.ts        # Popover service (optimized)
-│       │       ├── popover.types.ts         # Type definitions
-│       │       ├── popover-ref.ts          # Popover reference
-│       │       ├── popover.tokens.ts       # DI tokens
-│       │       ├── _popover.scss           # Centralized popover styles
-│       │       └── index.ts               # Public API
-│       ├── services/           # Shared services
-│       └── utils/             # Utility functions
-├── assets/                     # Static assets
-├── environments/              # Environment configurations
-└── themes/                   # Material Design themes
-```
-
-### **Key Architecture Decisions**
-- **Centralized Styles**: All popover styles in `_popover.scss` for reusability
-- **Performance First**: `requestAnimationFrame` for rendering, no blocking operations
-- **Clean Subscriptions**: All CDK overlay subscriptions properly managed and cleaned up
-- **Zero UI Delays**: Optimized to eliminate artificial delays in user interactions
-
-## 🎨 **Theming & Customization**
-
-### **Material Design 3 Tokens**
-The application uses Material Design 3 tokens for consistent theming:
-
-```scss
-// Custom theme variables
-:root {
-  --popover-bg: var(--md-sys-color-surface-container, #f3f3f3);
-  --popover-fg: var(--md-sys-color-on-surface, #1d1b20);
-  --popover-border: var(--md-sys-color-outline-variant, #c4c7c5);
+Domain / Entities
+csharp
+Copy code
+// Domain/Enums/ModuleAction.cs
+namespace AdminApi.Domain.Enums;
+public enum ModuleAction { Read, Add, Edit, Delete }
+csharp
+Copy code
+// Domain/Entities/ScreenPilot.cs
+namespace AdminApi.Domain.Entities;
+public sealed class ScreenPilot
+{
+    public Guid Id { get; set; }
+    public string Name { get; set; } = default!;
+    public int Status { get; set; }
+    public DateTime CreatedUtc { get; set; }
+    public DateTime? UpdatedUtc { get; set; }
 }
-```
-
-### **Component Styling**
-Leverage Material Design components with custom enhancements:
-
-```scss
-// Popover-specific styling
-.popover {
-  background: var(--popover-bg);
-  color: var(--popover-fg);
-  border: 1px solid var(--popover-border);
-  border-radius: 12px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+csharp
+Copy code
+// Domain/Entities/User.cs
+namespace AdminApi.Domain.Entities;
+public sealed class User { public string Id { get; set; } = default!; }
+csharp
+Copy code
+// Domain/Entities/Role.cs
+namespace AdminApi.Domain.Entities;
+public sealed class Role { public int Id { get; set; } }
+csharp
+Copy code
+// Domain/Entities/UserRole.cs
+namespace AdminApi.Domain.Entities;
+public sealed class UserRole { public string UserId { get; set; } = default!; public int RoleId { get; set; } }
+csharp
+Copy code
+// Domain/Entities/Module.cs
+namespace AdminApi.Domain.Entities;
+public sealed class Module { public int Id { get; set; } public string Name { get; set; } = default!; }
+csharp
+Copy code
+// Domain/Entities/RoleModule.cs
+namespace AdminApi.Domain.Entities;
+public sealed class RoleModule
+{
+    public int RoleId { get; set; }
+    public int ModuleId { get; set; }
+    public bool CanRead { get; set; }
+    public bool CanAdd { get; set; }
+    public bool CanEdit { get; set; }
+    public bool CanDelete { get; set; }
+    public Module? Module { get; set; }
 }
-```
+Infrastructure / Data
+csharp
+Copy code
+// Infrastructure/Data/AppDbContext.cs
+using AdminApi.Domain.Entities;
+using Microsoft.EntityFrameworkCore;
 
-## ♿ **Accessibility Standards**
+namespace AdminApi.Infrastructure.Data;
+public class AppDbContext(DbContextOptions options) : DbContext(options)
+{
+    public DbSet<User> Users => Set<User>();
+    public DbSet<Role> Roles => Set<Role>();
+    public DbSet<UserRole> UserRoles => Set<UserRole>();
+    public DbSet<Module> Modules => Set<Module>();
+    public DbSet<RoleModule> RoleModules => Set<RoleModule>();
+    public DbSet<ScreenPilot> ScreenPilots => Set<ScreenPilot>();
 
-### **WCAG 2.2 AAA Compliance**
-- ✅ **Color Contrast**: 7:1 ratio for normal text, 4.5:1 for large text
-- ✅ **Keyboard Navigation**: Full keyboard accessibility with visible focus indicators
-- ✅ **Screen Readers**: Comprehensive ARIA implementation
-- ✅ **Focus Management**: Proper focus trapping and restoration
-- ✅ **Motion**: Respects `prefers-reduced-motion` settings
+    protected override void OnModelCreating(ModelBuilder b)
+    {
+        b.Entity<RoleModule>().HasKey(x => new { x.RoleId, x.ModuleId });
+        b.Entity<Module>().HasIndex(x => x.Name).IsUnique();
+        b.Entity<ScreenPilot>().HasKey(x => x.Id);
+    }
+}
+csharp
+Copy code
+// Infrastructure/Data/AppPrimaryDbContext.cs
+namespace AdminApi.Infrastructure.Data;
+public sealed class AppPrimaryDbContext(DbContextOptions<AppPrimaryDbContext> o) : AppDbContext(o);
+csharp
+Copy code
+// Infrastructure/Data/AppSecondaryDbContext.cs
+namespace AdminApi.Infrastructure.Data;
+public sealed class AppSecondaryDbContext(DbContextOptions<AppSecondaryDbContext> o) : AppDbContext(o);
+csharp
+Copy code
+// Infrastructure/Data/IAppDbContextAccessor.cs
+namespace AdminApi.Infrastructure.Data;
+public interface IAppDbContextAccessor
+{
+    AppDbContext Db { get; }
+    string DbKey { get; }
+}
+csharp
+Copy code
+// Infrastructure/Data/DbRouteAccessor.cs
+using Microsoft.AspNetCore.Http;
 
-### **Accessibility Features**
-```html
-<!-- Proper ARIA implementation -->
-<button
-  matSuffix
-  mat-icon-button
-  type="button"
-  [attr.aria-expanded]="isOpen"
-  aria-haspopup="dialog"
-  [attr.aria-describedby]="helpId"
-  aria-label="Show help information"
->
-  <mat-icon>help_outline</mat-icon>
-</button>
-```
+namespace AdminApi.Infrastructure.Data;
+public interface IDbRouteAccessor { string CurrentKey { get; } }
+public sealed class DbRouteAccessor(IHttpContextAccessor http) : IDbRouteAccessor
+{
+    public string CurrentKey => http.HttpContext?.Items["DbKey"] as string ?? "A";
+}
+csharp
+Copy code
+// Infrastructure/Data/AppDbContextAccessor.cs
+namespace AdminApi.Infrastructure.Data;
+public sealed class AppDbContextAccessor(
+    IDbRouteAccessor route,
+    AppPrimaryDbContext a,
+    AppSecondaryDbContext b) : IAppDbContextAccessor
+{
+    public AppDbContext Db => route.CurrentKey == "B" ? b : a;
+    public string DbKey => route.CurrentKey;
+}
+Infrastructure / Options
+csharp
+Copy code
+// Infrastructure/Options/DbOptions.cs
+namespace AdminApi.Infrastructure.Options;
+public sealed class DbOptions { public string A { get; set; } = ""; public string B { get; set; } = ""; }
+csharp
+Copy code
+// Infrastructure/Options/AuthorizationOverrideOptions.cs
+namespace AdminApi.Infrastructure.Options;
+public sealed class AuthorizationOverrideOptions
+{
+    public List<AuthorizationOverride> AuthorizationOverrides { get; set; } = new();
+}
+public sealed class AuthorizationOverride
+{
+    public string Module { get; set; } = default!;
+    public string Action { get; set; } = default!; // "Read"|"Add"|"Edit"|"Delete"
+    public int[] AllowedRoleIds { get; set; } = Array.Empty<int>();
+    public DateTimeOffset? ExpiresUtc { get; set; }
+}
+Infrastructure / Auth
+csharp
+Copy code
+// Infrastructure/Auth/RequiresModulePermissionAttribute.cs
+using AdminApi.Domain.Enums;
 
-## 🧪 **Testing Strategy**
+namespace AdminApi.Infrastructure.Auth;
+[AttributeUsage(AttributeTargets.Class | AttributeTargets.Method, AllowMultiple = true)]
+public sealed class RequiresModulePermissionAttribute(string moduleName, ModuleAction action) : Attribute
+{
+    public string ModuleName { get; } = moduleName;
+    public ModuleAction Action { get; } = action;
+}
+csharp
+Copy code
+// Infrastructure/Auth/ModulePermissionRequirement.cs
+using Microsoft.AspNetCore.Authorization;
 
-### **Unit Testing**
-- **Framework**: Jasmine + Karma
-- **Coverage**: 90%+ coverage target
-- **Component Testing**: Angular Testing Utilities
+namespace AdminApi.Infrastructure.Auth;
+public sealed class ModulePermissionRequirement : IAuthorizationRequirement { }
+csharp
+Copy code
+// Infrastructure/Auth/ModulePermissionHandler.cs
+using AdminApi.Domain.Entities;
+using AdminApi.Domain.Enums;
+using AdminApi.Infrastructure.Data;
+using AdminApi.Infrastructure.Options;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Options;
+using System.Security.Claims;
 
-### **E2E Testing**
-- **Framework**: Cypress
-- **Accessibility Testing**: axe-core integration
-- **Cross-browser**: Chrome, Firefox, Safari
+namespace AdminApi.Infrastructure.Auth;
+public sealed class ModulePermissionHandler(
+    IHttpContextAccessor http,
+    IAppDbContextAccessor acc,
+    IMemoryCache cache,
+    IOptionsMonitor<AuthorizationOverrideOptions> overrides)
+    : AuthorizationHandler<ModulePermissionRequirement>
+{
+    protected override async Task HandleRequirementAsync(AuthorizationHandlerContext ctx, ModulePermissionRequirement _)
+    {
+        var ep = http.HttpContext?.GetEndpoint();
+        var needs = ep?.Metadata.GetOrderedMetadata<RequiresModulePermissionAttribute>() ?? [];
+        if (needs.Count == 0) { ctx.Succeed(_); return; }
 
-### **Performance Testing**
-- **Core Web Vitals**: LCP, FID, CLS monitoring
-- **Bundle Analysis**: Webpack Bundle Analyzer
-- **Lighthouse**: Automated performance audits
+        var userId = ctx.User.FindFirst("userId")?.Value
+                  ?? ctx.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+        if (string.IsNullOrEmpty(userId)) return;
 
-## 🚀 **Deployment**
+        var roleKey = $"roles:{acc.DbKey}:{userId}";
+        if (!cache.TryGetValue(roleKey, out HashSet<int>? roleIds))
+        {
+            roleIds = await acc.Db.Set<UserRole>().Where(ur => ur.UserId == userId)
+                        .Select(ur => ur.RoleId).ToHashSetAsync();
+            cache.Set(roleKey, roleIds, TimeSpan.FromMinutes(2));
+        }
 
-### **Production Build**
-```bash
-# Create optimized production build
-npm run build
+        var grantKey = $"grants:{acc.DbKey}:{userId}";
+        if (!cache.TryGetValue(grantKey, out HashSet<string>? grants))
+        {
+            var rows = await (from rm in acc.Db.Set<RoleModule>().Include(x => x.Module)
+                              where roleIds.Contains(rm.RoleId)
+                              select new { rm.Module!.Name, rm.CanRead, rm.CanAdd, rm.CanEdit, rm.CanDelete })
+                             .ToListAsync();
 
-# Build with specific environment
-ng build --configuration production
+            grants = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var g in rows)
+            {
+                if (g.CanRead)  grants.Add($"{g.Name}:Read");
+                if (g.CanAdd)   grants.Add($"{g.Name}:Add");
+                if (g.CanEdit)  grants.Add($"{g.Name}:Edit");
+                if (g.CanDelete)grants.Add($"{g.Name}:Delete");
+            }
+            cache.Set(grantKey, grants, TimeSpan.FromMinutes(2));
+        }
 
-# Analyze bundle size
-npm run analyze
-```
+        bool ByOverride(string m, ModuleAction a)
+            => overrides.CurrentValue.AuthorizationOverrides
+               .Where(o => o.Module.Equals(m, StringComparison.OrdinalIgnoreCase)
+                        && o.Action.Equals(a.ToString(), StringComparison.OrdinalIgnoreCase)
+                        && (o.ExpiresUtc is null || o.ExpiresUtc > DateTimeOffset.UtcNow))
+               .Any(o => o.AllowedRoleIds.Any(roleIds.Contains));
 
-### **Environment Configuration**
-```typescript
-// environment.prod.ts
-export const environment = {
-  production: true,
-  apiUrl: 'https://api.example.com',
-  features: {
-    popoverAnalytics: true,
-    advancedThemes: true
-  }
-};
-```
+        var ok = needs.All(n => ByOverride(n.ModuleName, n.Action)
+                             || grants.Contains($"{n.ModuleName}:{n.Action}"));
+        if (ok) ctx.Succeed(_);
+    }
+}
+Application / Common
+csharp
+Copy code
+// Application/Common/PageMeta.cs
+namespace AdminApi.Application.Common;
+public sealed record PageMeta(
+    bool PageEnabled = true,
+    string? DisabledMessage = null,
+    string CorrelationId = "",
+    string Username = "",
+    string? Id = null,
+    int? TotalCount = null
+);
+csharp
+Copy code
+// Application/Common/BasePageDto.cs
+namespace AdminApi.Application.Common;
+public abstract class BasePageDto
+{
+    public PageMeta Meta { get; set; } = new();
+    public PageRequest? PageRequest { get; set; }
+}
+csharp
+Copy code
+// Application/Common/PageRequest.cs
+namespace AdminApi.Application.Common;
+public sealed record PageRequest(int PageIndex = 0, int PageSize = 25);
+csharp
+Copy code
+// Application/Common/ActionCtrlDto.cs
+namespace AdminApi.Application.Common;
+public sealed class ActionCtrlDto
+{
+    public required string Name { get; init; }
+    public string? Value { get; init; }
+    public bool Enabled { get; init; }
+    public string? Message { get; init; }
 
-## 📊 **Performance Metrics**
+    public static ActionCtrlDto Enable(string name, string? value = null)
+        => new() { Name = name, Value = value, Enabled = true };
 
-- **Bundle Size**: < 1.1MB (gzipped)
-- **First Contentful Paint**: < 1.5s
-- **Largest Contentful Paint**: < 2.5s
-- **Cumulative Layout Shift**: < 0.1
-- **Time to Interactive**: < 3.5s
-- **Popover Render Time**: ~16ms (frame-perfect with `requestAnimationFrame`)
+    public static ActionCtrlDto Disable(string name, string? value = null, string? msg = null)
+        => new() { Name = name, Value = value, Enabled = false, Message = msg };
+}
+csharp
+Copy code
+// Application/Common/Exceptions.cs
+namespace AdminApi.Application.Common;
+public sealed class ReadOnlyByBusinessRuleException(string message) : Exception(message);
+Application / Access
+csharp
+Copy code
+// Application/Access/AccessDecision.cs
+namespace AdminApi.Application.Access;
+public sealed record AccessDecision(
+    string Module,
+    bool CanRead, bool CanAdd, bool CanEdit, bool CanDelete,
+    bool PageEnabled, string? DisabledMessage);
+csharp
+Copy code
+// Application/Abstractions/IAccessDecisionService.cs
+using System.Security.Claims;
 
-### **Popover Performance Optimizations**
-- ⚡ **84ms faster rendering**: Uses `requestAnimationFrame` instead of `setTimeout(100ms)` for arrow positioning
-- 🎯 **Frame-perfect timing**: Synced with browser's render cycle for smooth animations
-- 📊 **Zero layout thrashing**: Batched scroll/resize handlers prevent performance bottlenecks
-- 🚀 **Instant feedback**: No visible delay when opening popovers
+namespace AdminApi.Application.Abstractions;
+public interface IAccessDecisionService
+{
+    Task<AdminApi.Application.Access.AccessDecision> EvaluateAsync(string module, ClaimsPrincipal user, CancellationToken ct);
+}
+csharp
+Copy code
+// Application/Access/AccessDecisionService.cs
+using AdminApi.Application.Abstractions;
+using AdminApi.Application.Access;
+using AdminApi.Domain.Entities;
+using AdminApi.Domain.Enums;
+using AdminApi.Infrastructure.Data;
+using AdminApi.Infrastructure.Options;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.Options;
+using System.Security.Claims;
 
-## 🤝 **Contributing**
+namespace AdminApi.Application.Access;
+public sealed class AccessDecisionService(
+    IAppDbContextAccessor acc,
+    IMemoryCache cache,
+    IOptionsMonitor<AuthorizationOverrideOptions> overrides) : IAccessDecisionService
+{
+    public async Task<AccessDecision> EvaluateAsync(string module, ClaimsPrincipal user, CancellationToken ct)
+    {
+        var userId = user.FindFirst("userId")?.Value ?? user.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "";
 
-1. **Fork** the repository
-2. **Create** a feature branch (`git checkout -b feature/amazing-feature`)
-3. **Commit** your changes (`git commit -m 'Add amazing feature'`)
-4. **Push** to the branch (`git push origin feature/amazing-feature`)
-5. **Open** a Pull Request
+        var roleKey = $"roles:{acc.DbKey}:{userId}";
+        if (!cache.TryGetValue(roleKey, out HashSet<int>? roleIds))
+        {
+            roleIds = await acc.Db.Set<UserRole>().Where(ur => ur.UserId == userId)
+                        .Select(ur => ur.RoleId).ToHashSetAsync(ct);
+            cache.Set(roleKey, roleIds, TimeSpan.FromMinutes(2));
+        }
 
-### **Development Guidelines**
-- Follow Angular Style Guide
-- Maintain WCAG 2.2 AAA compliance
-- Include comprehensive tests
-- Update documentation
+        var grantKey = $"grants:{acc.DbKey}:{userId}";
+        if (!cache.TryGetValue(grantKey, out HashSet<string>? grants))
+        {
+            var rows = await (from rm in acc.Db.Set<RoleModule>().Include(x => x.Module)
+                              where roleIds.Contains(rm.RoleId)
+                              select new { rm.Module!.Name, rm.CanRead, rm.CanAdd, rm.CanEdit, rm.CanDelete })
+                             .ToListAsync(ct);
 
-## 📝 **License**
+            grants = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var g in rows)
+            {
+                if (g.CanRead)  grants.Add($"{g.Name}:{ModuleAction.Read}");
+                if (g.CanAdd)   grants.Add($"{g.Name}:{ModuleAction.Add}");
+                if (g.CanEdit)  grants.Add($"{g.Name}:{ModuleAction.Edit}");
+                if (g.CanDelete)grants.Add($"{g.Name}:{ModuleAction.Delete}");
+            }
+            cache.Set(grantKey, grants, TimeSpan.FromMinutes(2));
+        }
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+        bool Has(ModuleAction a)
+        {
+            var viaRole = grants.Contains($"{module}:{a}");
+            var viaOverride = overrides.CurrentValue.AuthorizationOverrides
+                .Where(o => o.Module.Equals(module, StringComparison.OrdinalIgnoreCase)
+                         && o.Action.Equals(a.ToString(), StringComparison.OrdinalIgnoreCase)
+                         && (o.ExpiresUtc is null || o.ExpiresUtc > DateTimeOffset.UtcNow))
+                .Any(o => o.AllowedRoleIds.Any(roleIds.Contains));
+            return viaRole || viaOverride;
+        }
 
-## 🙏 **Acknowledgments**
+        var canRead   = Has(ModuleAction.Read);
+        var canAdd    = Has(ModuleAction.Add);
+        var canEdit   = Has(ModuleAction.Edit);
+        var canDelete = Has(ModuleAction.Delete);
 
-- **Angular Team** - For the incredible framework
-- **Material Design Team** - For the design system
-- **Community Contributors** - For ongoing improvements
+        // Page-level: if no write perms → read-only UI (you can extend with global page lock here)
+        var pageEnabled = canAdd || canEdit || canDelete;
+        string? message = pageEnabled ? null : "You don’t have access to modify this module.";
 
----
+        return new(module, canRead, canAdd, canEdit, canDelete, pageEnabled, message);
+    }
+}
+Application / ScreenPilot DTOs & Requests
+csharp
+Copy code
+// Application/ScreenPilot/Dto/ScreenPilotDto.cs
+using AdminApi.Application.Common;
 
-**Built with ❤️ using Angular 20+ and Material Design 3**
+namespace AdminApi.Application.ScreenPilot.Dto;
+public sealed class ScreenPilotDto : BasePageDto
+{
+    public Guid Id { get; set; }
+    public string Name { get; set; } = default!;
+    public int Status { get; set; }
+    public DateTime CreatedUtc { get; set; }
+    public DateTime? UpdatedUtc { get; set; }
+
+    public ActionCtrlDto EditActionCtrl   { get; set; } = ActionCtrlDto.Disable("Edit");
+    public ActionCtrlDto DeleteActionCtrl { get; set; } = ActionCtrlDto.Disable("Delete");
+}
+csharp
+Copy code
+// Application/ScreenPilot/Dto/ScreenPilotListDto.cs
+using AdminApi.Application.Common;
+
+namespace AdminApi.Application.ScreenPilot.Dto;
+public sealed class ScreenPilotListDto : BasePageDto
+{
+    public required IReadOnlyList<ScreenPilotRowDto> Items { get; init; }
+    public required int TotalCount { get; init; }
+    public required int PageIndex { get; init; }
+    public required int PageSize  { get; init; }
+}
+
+public sealed class ScreenPilotRowDto
+{
+    public Guid Id { get; set; }
+    public string Name { get; set; } = default!;
+    public int Status { get; set; }
+    public DateTime CreatedUtc { get; set; }
+
+    public ActionCtrlDto EditActionCtrl   { get; set; } = ActionCtrlDto.Disable("Edit");
+    public ActionCtrlDto DeleteActionCtrl { get; set; } = ActionCtrlDto.Disable("Delete");
+}
+csharp
+Copy code
+// Application/Abstractions/IDbKeyCarrier.cs
+namespace AdminApi.Application.Abstractions;
+public interface IDbKeyCarrier { string? DbContextKey { get; } }
+csharp
+Copy code
+// Application/ScreenPilot/Requests/ScreenPilotListRequest.cs
+using AdminApi.Application.Abstractions;
+
+namespace AdminApi.Application.ScreenPilot.Requests;
+public sealed class ScreenPilotListRequest : IDbKeyCarrier
+{
+    public string? DbContextKey { get; init; } = "A";
+    public int PageIndex { get; init; } = 0;
+    public int PageSize  { get; init; } = 25;
+    public string? SortBy  { get; init; } = "Name";
+    public string  SortDir { get; init; } = "asc";
+    public string? Name { get; init; }
+}
+Application / ScreenPilot Rules (inline & simple)
+csharp
+Copy code
+// Application/ScreenPilot/Rules/ScreenPilotRules.cs
+using AdminApi.Application.Access;
+using AdminApi.Application.Common;
+using AdminApi.Application.ScreenPilot.Dto;
+using AdminApi.Domain.Entities;
+
+namespace AdminApi.Application.ScreenPilot.Rules;
+internal static class ScreenPilotRules
+{
+    public static void ApplyForQuery(ScreenPilot entity, AccessDecision d, ScreenPilotDto dto, DateTime nowUtc)
+    {
+        dto.Meta = dto.Meta with
+        {
+            PageEnabled = d.PageEnabled,
+            DisabledMessage = d.PageEnabled ? null : d.DisabledMessage
+        };
+
+        var canEdit = d.PageEnabled && d.CanEdit;
+        dto.EditActionCtrl = canEdit
+            ? ActionCtrlDto.Enable("Edit", dto.Id.ToString())
+            : ActionCtrlDto.Disable("Edit", dto.Id.ToString(), d.DisabledMessage ?? "Edit not permitted.");
+
+        var age = nowUtc - entity.CreatedUtc;
+        var canDelete = d.PageEnabled && d.CanDelete && age >= TimeSpan.FromDays(2);
+        var delMsg = age < TimeSpan.FromDays(2)
+            ? "Delete is blocked for the first 2 days after creation."
+            : d.DisabledMessage ?? "Delete not permitted.";
+        dto.DeleteActionCtrl = canDelete
+            ? ActionCtrlDto.Enable("Delete", dto.Id.ToString())
+            : ActionCtrlDto.Disable("Delete", dto.Id.ToString(), delMsg);
+    }
+
+    public static void EnsureEditAllowed(AccessDecision d)
+    {
+        if (!d.PageEnabled) throw new ReadOnlyByBusinessRuleException(d.DisabledMessage ?? "Read-only.");
+        if (!d.CanEdit)     throw new ReadOnlyByBusinessRuleException("Edit not permitted.");
+    }
+
+    public static void EnsureDeleteAllowed(ScreenPilot e, AccessDecision d, DateTime nowUtc)
+    {
+        if (!d.PageEnabled) throw new ReadOnlyByBusinessRuleException(d.DisabledMessage ?? "Read-only.");
+        if (!d.CanDelete)   throw new ReadOnlyByBusinessRuleException("Delete not permitted.");
+        if ((nowUtc - e.CreatedUtc) < TimeSpan.FromDays(2))
+            throw new ReadOnlyByBusinessRuleException("Delete is blocked for the first 2 days after creation.");
+    }
+}
+Application / ScreenPilot Queries
+csharp
+Copy code
+// Application/ScreenPilot/Queries/GetScreenPilotQuery.cs
+using AdminApi.Application.Abstractions;
+using AdminApi.Application.Access;
+using AdminApi.Application.ScreenPilot.Dto;
+using AdminApi.Application.ScreenPilot.Rules;
+using AdminApi.Infrastructure.Data;
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+
+namespace AdminApi.Application.ScreenPilot.Queries;
+public sealed record GetScreenPilotQuery(Guid Id) : IRequest<ScreenPilotDto>;
+
+public sealed class GetScreenPilotHandler(
+    IAppDbContextAccessor acc,
+    IAccessDecisionService access,
+    IHttpContextAccessor http) : IRequestHandler<GetScreenPilotQuery, ScreenPilotDto>
+{
+    public async Task<ScreenPilotDto> Handle(GetScreenPilotQuery q, CancellationToken ct)
+    {
+        var e = await acc.Db.ScreenPilots.AsNoTracking()
+                    .FirstOrDefaultAsync(x => x.Id == q.Id, ct)
+                ?? throw new KeyNotFoundException("Not found");
+
+        var dto = new ScreenPilotDto
+        {
+            Id = e.Id, Name = e.Name, Status = e.Status,
+            CreatedUtc = e.CreatedUtc, UpdatedUtc = e.UpdatedUtc
+        };
+
+        var d = await access.EvaluateAsync("ScreenPilot", http.HttpContext!.User, ct);
+        ScreenPilotRules.ApplyForQuery(e, d, dto, DateTime.UtcNow);
+        return dto;
+    }
+}
+csharp
+Copy code
+// Application/ScreenPilot/Queries/SearchScreenPilotsQuery.cs
+using AdminApi.Application.ScreenPilot.Requests;
+using AdminApi.Application.ScreenPilot.Dto;
+using AdminApi.Application.Common;
+using AdminApi.Application.Access;
+using AdminApi.Infrastructure.Data;
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+
+namespace AdminApi.Application.ScreenPilot.Queries;
+public sealed record SearchScreenPilotsQuery(ScreenPilotListRequest Req)
+    : IRequest<ScreenPilotListDto>;
+
+public sealed class SearchScreenPilotsHandler(
+    IAppDbContextAccessor acc,
+    IAccessDecisionService access,
+    IHttpContextAccessor http)
+    : IRequestHandler<SearchScreenPilotsQuery, ScreenPilotListDto>
+{
+    public async Task<ScreenPilotListDto> Handle(SearchScreenPilotsQuery q, CancellationToken ct)
+    {
+        var req = q.Req;
+        var d = await access.EvaluateAsync("ScreenPilot", http.HttpContext!.User, ct);
+
+        IQueryable<Domain.Entities.ScreenPilot> baseQ = acc.Db.ScreenPilots.AsNoTracking();
+        if (!string.IsNullOrWhiteSpace(req.Name)) baseQ = baseQ.Where(x => x.Name.Contains(req.Name));
+
+        baseQ = (req.SortBy, req.SortDir.ToLowerInvariant()) switch
+        {
+            ("Status", "desc")     => baseQ.OrderByDescending(x => x.Status),
+            ("Status", _)          => baseQ.OrderBy(x => x.Status),
+            ("CreatedUtc", "desc") => baseQ.OrderByDescending(x => x.CreatedUtc),
+            ("CreatedUtc", _)      => baseQ.OrderBy(x => x.CreatedUtc),
+            ("Name", "desc")       => baseQ.OrderByDescending(x => x.Name),
+            _                      => baseQ.OrderBy(x => x.Name)
+        };
+
+        var total = await baseQ.CountAsync(ct);
+        var slice = await baseQ
+            .Skip(req.PageIndex * req.PageSize)
+            .Take(req.PageSize)
+            .Select(x => new { x.Id, x.Name, x.Status, x.CreatedUtc })
+            .ToListAsync(ct);
+
+        var now = DateTime.UtcNow;
+        var rows = slice.Select(r =>
+        {
+            var row = new ScreenPilotRowDto
+            {
+                Id = r.Id, Name = r.Name, Status = r.Status, CreatedUtc = r.CreatedUtc
+            };
+
+            var canEdit = d.PageEnabled && d.CanEdit;
+            row.EditActionCtrl = canEdit
+                ? ActionCtrlDto.Enable("Edit", r.Id.ToString())
+                : ActionCtrlDto.Disable("Edit", r.Id.ToString(), d.DisabledMessage ?? "Edit not permitted.");
+
+            var age = now - r.CreatedUtc;
+            var canDelete = d.PageEnabled && d.CanDelete && age >= TimeSpan.FromDays(2);
+            var delMsg = age < TimeSpan.FromDays(2)
+                ? "Delete is blocked for the first 2 days after creation."
+                : d.DisabledMessage ?? "Delete not permitted.";
+            row.DeleteActionCtrl = canDelete
+                ? ActionCtrlDto.Enable("Delete", r.Id.ToString())
+                : ActionCtrlDto.Disable("Delete", r.Id.ToString(), delMsg);
+
+            return row;
+        }).ToList();
+
+        return new ScreenPilotListDto
+        {
+            Items = rows,
+            TotalCount = total,
+            PageIndex = req.PageIndex,
+            PageSize = req.PageSize,
+            Meta = new PageMeta(PageEnabled: d.PageEnabled, DisabledMessage: d.PageEnabled ? null : d.DisabledMessage),
+            PageRequest = new PageRequest(req.PageIndex, req.PageSize)
+        };
+    }
+}
+Application / ScreenPilot Commands
+csharp
+Copy code
+// Application/ScreenPilot/Commands/UpdateScreenPilotCommand.cs
+using AdminApi.Application.Access;
+using AdminApi.Application.Common;
+using AdminApi.Application.ScreenPilot.Dto;
+using AdminApi.Application.ScreenPilot.Rules;
+using AdminApi.Infrastructure.Data;
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+
+namespace AdminApi.Application.ScreenPilot.Commands;
+public sealed record UpdateScreenPilotCommand(Guid Id, string Name, int Status, string? DbContextKey)
+    : IRequest<ScreenPilotDto>, AdminApi.Application.Abstractions.IDbKeyCarrier;
+
+public sealed class UpdateScreenPilotHandler(
+    IAppDbContextAccessor acc,
+    IAccessDecisionService access,
+    IHttpContextAccessor http) : IRequestHandler<UpdateScreenPilotCommand, ScreenPilotDto>
+{
+    public async Task<ScreenPilotDto> Handle(UpdateScreenPilotCommand cmd, CancellationToken ct)
+    {
+        var e = await acc.Db.ScreenPilots.FirstOrDefaultAsync(x => x.Id == cmd.Id, ct)
+                ?? throw new KeyNotFoundException("Not found");
+
+        var d = await access.EvaluateAsync("ScreenPilot", http.HttpContext!.User, ct);
+        ScreenPilotRules.EnsureEditAllowed(d);
+
+        e.Name = cmd.Name;
+        e.Status = cmd.Status;
+        e.UpdatedUtc = DateTime.UtcNow;
+        await acc.Db.SaveChangesAsync(ct);
+
+        var dto = new ScreenPilotDto
+        {
+            Id = e.Id, Name = e.Name, Status = e.Status,
+            CreatedUtc = e.CreatedUtc, UpdatedUtc = e.UpdatedUtc
+        };
+        ScreenPilotRules.ApplyForQuery(e, d, dto, DateTime.UtcNow);
+        return dto;
+    }
+}
+csharp
+Copy code
+// Application/ScreenPilot/Commands/DeleteScreenPilotCommand.cs
+using AdminApi.Application.Access;
+using AdminApi.Application.Common;
+using AdminApi.Application.ScreenPilot.Rules;
+using AdminApi.Infrastructure.Data;
+using MediatR;
+using Microsoft.EntityFrameworkCore;
+
+namespace AdminApi.Application.ScreenPilot.Commands;
+public sealed record DeleteScreenPilotCommand(Guid Id, string? DbContextKey)
+    : IRequest<Unit>, AdminApi.Application.Abstractions.IDbKeyCarrier;
+
+public sealed class DeleteScreenPilotHandler(
+    IAppDbContextAccessor acc,
+    IAccessDecisionService access,
+    IHttpContextAccessor http) : IRequestHandler<DeleteScreenPilotCommand, Unit>
+{
+    public async Task<Unit> Handle(DeleteScreenPilotCommand cmd, CancellationToken ct)
+    {
+        var e = await acc.Db.ScreenPilots.FirstOrDefaultAsync(x => x.Id == cmd.Id, ct)
+                ?? throw new KeyNotFoundException("Not found");
+
+        var d = await access.EvaluateAsync("ScreenPilot", http.HttpContext!.User, ct);
+        ScreenPilotRules.EnsureDeleteAllowed(e, d, DateTime.UtcNow);
+
+        acc.Db.Remove(e);
+        await acc.Db.SaveChangesAsync(ct);
+        return Unit.Value;
+    }
+}
+Web / Filters
+csharp
+Copy code
+// Web/Filters/DbKeyFromRequestFilter.cs
+using AdminApi.Application.Abstractions;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Filters;
+
+namespace AdminApi.Web.Filters;
+public sealed class DbKeyFromRequestFilter : IAsyncActionFilter
+{
+    public async Task OnActionExecutionAsync(ActionExecutingContext ctx, ActionExecutionDelegate next)
+    {
+        string? dbKey = null;
+
+        var carrier = ctx.ActionArguments.Values.OfType<IDbKeyCarrier>().FirstOrDefault();
+        if (carrier is not null) dbKey = carrier.DbContextKey;
+
+        dbKey ??= ctx.HttpContext.Request.Headers["X-Db-Context"].FirstOrDefault();
+        dbKey ??= ctx.HttpContext.Request.Query["db"].FirstOrDefault();
+        dbKey ??= "A";
+
+        if (dbKey is not ("A" or "B"))
+        {
+            ctx.Result = new BadRequestObjectResult(new { error = "Invalid DbContextKey. Expect 'A' or 'B'." });
+            return;
+        }
+
+        ctx.HttpContext.Items["DbKey"] = dbKey;
+        await next();
+    }
+}
+csharp
+Copy code
+// Web/Filters/ApiExceptionFilter.cs
+using AdminApi.Application.Common;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Filters;
+
+namespace AdminApi.Web.Filters;
+public sealed class ApiExceptionFilter : IExceptionFilter
+{
+    public void OnException(ExceptionContext ctx)
+    {
+        if (ctx.Exception is ReadOnlyByBusinessRuleException br)
+        {
+            ctx.Result = new ObjectResult(new ProblemDetails {
+                Title = "Forbidden", Detail = br.Message, Status = StatusCodes.Status403Forbidden
+            }) { StatusCode = StatusCodes.Status403Forbidden };
+            ctx.ExceptionHandled = true; return;
+        }
+
+        ctx.Result = new ObjectResult(new ProblemDetails {
+            Title = "Unexpected error", Status = StatusCodes.Status500InternalServerError
+        }) { StatusCode = StatusCodes.Status500InternalServerError };
+        ctx.ExceptionHandled = true;
+    }
+}
+csharp
+Copy code
+// Web/Filters/ValidateModelFilter.cs
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Filters;
+
+namespace AdminApi.Web.Filters;
+public sealed class ValidateModelFilter : IActionFilter
+{
+    public void OnActionExecuting(ActionExecutingContext ctx)
+    {
+        if (!ctx.ModelState.IsValid) ctx.Result = new BadRequestObjectResult(ctx.ModelState);
+    }
+    public void OnActionExecuted(ActionExecutedContext _) { }
+}
+csharp
+Copy code
+// Web/Filters/ResponseMetaFilter.cs
+using AdminApi.Application.Common;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Filters;
+
+namespace AdminApi.Web.Filters;
+public sealed class ResponseMetaFilter : IResultFilter
+{
+    private readonly IHttpContextAccessor _http;
+    public ResponseMetaFilter(IHttpContextAccessor http) => _http = http;
+
+    public void OnResultExecuting(ResultExecutingContext ctx)
+    {
+        if (ctx.Result is not ObjectResult obj || obj.Value is not BasePageDto dto) return;
+
+        var http = _http.HttpContext!;
+        var corr = http.Items["X-Correlation-Id"]?.ToString() ?? Guid.NewGuid().ToString("n");
+        var user = http.User?.Identity?.Name ?? "anonymous";
+
+        int? total = dto.Meta.TotalCount;
+        total ??= obj.Value.GetType().GetProperty("TotalCount")?.GetValue(obj.Value) as int?;
+
+        dto.Meta = dto.Meta with
+        {
+            CorrelationId = string.IsNullOrEmpty(dto.Meta.CorrelationId) ? corr : dto.Meta.CorrelationId,
+            Username      = string.IsNullOrEmpty(dto.Meta.Username)      ? user : dto.Meta.Username,
+            TotalCount    = dto.Meta.TotalCount ?? total
+        };
+
+        ctx.Result = new ObjectResult(dto) { StatusCode = obj.StatusCode };
+    }
+
+    public void OnResultExecuted(ResultExecutedContext _) { }
+}
+Controllers
+csharp
+Copy code
+// Controllers/ScreenPilotController.cs
+using AdminApi.Application.ScreenPilot.Commands;
+using AdminApi.Application.ScreenPilot.Dto;
+using AdminApi.Application.ScreenPilot.Queries;
+using AdminApi.Application.ScreenPilot.Requests;
+using AdminApi.Domain.Enums;
+using AdminApi.Infrastructure.Auth;
+using MediatR;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+
+namespace AdminApi.Controllers;
+
+[ApiController]
+[Route("api/screenpilot")]
+[Authorize]
+[RequiresModulePermission("ScreenPilot", ModuleAction.Read)]
+public sealed class ScreenPilotController(IMediator mediator) : ControllerBase
+{
+    // POST /api/screenpilot/search
+    [HttpPost("search")]
+    public Task<ScreenPilotListDto> GetList([FromBody] ScreenPilotListRequest req, CancellationToken ct)
+        => mediator.Send(new SearchScreenPilotsQuery(req), ct);
+
+    // GET /api/screenpilot/{id}
+    [HttpGet("{id:guid}")]
+    public Task<ScreenPilotDto> Get(Guid id, CancellationToken ct)
+        => mediator.Send(new GetScreenPilotQuery(id), ct);
+
+    // PUT /api/screenpilot/{id}
+    [HttpPut("{id:guid}")]
+    [RequiresModulePermission("ScreenPilot", ModuleAction.Edit)]
+    public Task<ScreenPilotDto> Update(Guid id, [FromBody] UpdateScreenPilotCommand body, CancellationToken ct)
+        => mediator.Send(body with { Id = id }, ct);
+
+    // DELETE /api/screenpilot/{id}
+    [HttpDelete("{id:guid}")]
+    [RequiresModulePermission("ScreenPilot", ModuleAction.Delete)]
+    public Task<Unit> Delete(Guid id, [FromQuery] string? db = null, CancellationToken ct)
+        => mediator.Send(new DeleteScreenPilotCommand(id, db), ct);
+}
+AdminApi.csproj (net9.0)
+xml
+Copy code
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.0" />
+    <PackageReference Include="Oracle.EntityFrameworkCore" Version="9.0.0" />
+    <PackageReference Include="MediatR.Extensions.Microsoft.DependencyInjection" Version="12.2.0" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
+  </ItemGroup>
+</Project>
+Usage notes
+DbContext selection:
+
+Body DTOs (commands/requests) implement IDbKeyCarrier → send "dbContextKey":"A|B".
+
+Otherwise set header X-Db-Context: A|B, or ?db=A in query.
+
+DbKeyFromRequestFilter normalizes it into HttpContext.Items["DbKey"].
+
+UI contract: every response inherits BasePageDto, so your UI can trust:
+meta.pageEnabled, meta.disabledMessage, meta.totalCount, and each row’s EditActionCtrl/DeleteActionCtrl.
+
+Business rules: add more in ScreenPilotRules (or per-module rule class) and reuse in both query (to set button states) and commands (to throw).
+
+If you want, I can add a minimal seed script and a Swagger op filter to surface the X-Db-Context header in UI, but this skeleton is already production-grade and ready to extend.
