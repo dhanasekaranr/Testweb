@@ -1,215 +1,128 @@
-// ===========================
-// Angular 19 (April 2025) & VB Unsaved Change Handling with Child Dirty Tracking
-// ===========================
+If you already “wait for first login” in the guard, make sure it’s doing the right kind of waiting and not kicking off refresh during init. Here’s a tight, production-safe pattern you can drop in.
 
-// 1️⃣ can-deactivate.interface.ts
-export interface CanComponentDeactivate {
-  isDirty(): boolean;
-}
-
-// 2️⃣ unsaved-change-guard-handler.service.ts
+AuthService (idempotent init + ready barrier, no refresh during init)
+// auth.service.ts
 import { Injectable } from '@angular/core';
-import { DirtyTrackerService } from './dirty-tracker.service';
+import { OAuthService } from 'angular-oauth2-oidc';
+import { authConfig } from './oauth.config';
 
 @Injectable({ providedIn: 'root' })
-export class UnsavedChangeGuardHandler {
-  constructor(private dirtyTracker: DirtyTrackerService) {}
+export class AuthService {
+  private initPromise?: Promise<void>;
+  private ready = false;
 
-  /**
-   * Returns aggregated dirty state of all tracked controls/components
-   */
-  isCurrentComponentDirty(): boolean {
-    return this.dirtyTracker.isDirty();
-  }
-}
+  constructor(private oauth: OAuthService) {}
 
-// 3️⃣ vb-communication.service.ts
-import { Injectable } from '@angular/core';
-import { Subject, Observable } from 'rxjs';
-
-@Injectable({ providedIn: 'root' })
-export class VbCommunicationService {
-  private dirtyCheckTrigger$ = new Subject<void>();
-
-  constructor() {
-    // CEFBridge or other host will call this global when VB wants unsaved status
-    (window as any).cefBridgeNotifyUnsavedCheck = () => {
-      this.dirtyCheckTrigger$.next();
-    };
+  /** Call from APP_INITIALIZER OR from the guard (it’s idempotent). */
+  initOnce(): Promise<void> {
+    if (this.initPromise) return this.initPromise;
+    this.initPromise = this.initFlow();
+    return this.initPromise;
   }
 
-  onUnsavedCheck(): Observable<void> {
-    return this.dirtyCheckTrigger$.asObservable();
-  }
-
-  sendUnsavedResultToVB(isDirty: boolean): void {
-    // Host must define this to receive results
-    (window as any).cefBridgeReceiveUnsavedResult?.(JSON.stringify({ isDirty }));
-  }
-}
-
-// 4️⃣ dirty-tracker.service.ts
-import { Injectable } from '@angular/core';
-import { BehaviorSubject, Observable } from 'rxjs';
-
-@Injectable({ providedIn: 'root' })
-export class DirtyTrackerService {
-  private components = new Map<string, boolean>();
-  private dirty$ = new BehaviorSubject<boolean>(false);
-
-  track(id: string): void {
-    this.components.set(id, true);
-    this.updateDirty();
-  }
-
-  clear(id: string): void {
-    this.components.set(id, false);
-    this.updateDirty();
-  }
-
-  isDirty(): boolean {
-    return this.dirty$.value;
-  }
-
-  dirtyChanges(): Observable<boolean> {
-    return this.dirty$.asObservable();
-  }
-
-  private updateDirty(): void {
-    const anyDirty = Array.from(this.components.values()).some(v => v);
-    this.dirty$.next(anyDirty);
-  }
-}
-
-// 5️⃣ track-dirty.directive.ts (Standalone Directive, Angular 19)
-import {
-  Directive,
-  OnInit,
-  OnDestroy,
-  inject,
-  Optional,
-  Host
-} from '@angular/core';
-import { ControlContainer, ReactiveFormsModule } from '@angular/forms';
-import { DirtyTrackerService } from '../services/dirty-tracker.service';
-import { Subscription } from 'rxjs';
-
-@Directive({
-  selector: '[trackDirty]',
-  standalone: true,
-  imports: [ReactiveFormsModule]
-})
-export class TrackDirtyDirective implements OnInit, OnDestroy {
-  private readonly id = this.generateGuid();
-  private readonly service = inject(DirtyTrackerService);
-  private readonly control = this.resolveControl();
-  private readonly sub = new Subscription();
-
-  ngOnInit(): void {
-    this.sub.add(
-      this.control.valueChanges.subscribe(() => {
-        if (this.control.dirty) {
-          this.service.track(this.id);
-        }
-      })
-    );
-  }
-
-  ngOnDestroy(): void {
-    this.sub.unsubscribe();
-    this.service.clear(this.id);
-  }
-
-  private resolveControl() {
-    const lc = inject(ControlContainer, { optional: true, host: true });
-    if (!lc || !lc.control) {
-      throw new Error('trackDirty must be placed on a form element with a FormGroup or NgForm');
+  private async initFlow(): Promise<void> {
+    this.oauth.configure(authConfig);
+    await this.oauth.loadDiscoveryDocumentAndTryLogin();      // handles ?code=&state=
+    if (!this.oauth.hasValidAccessToken()) {
+      // Do NOT try to refresh here—no token yet.
+      // Let the guard decide whether to trigger interactive login.
+      return;
     }
-    return lc.control;
+    this.ready = true;
+    this.scheduleProactive();                                 // set timer only after tokens exist
   }
 
-  private generateGuid(): string {
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
-      const r = (Math.random() * 16) | 0;
-      const v = c === 'x' ? r : (r & 0x3) | 0x8;
-      return v.toString(16);
-    });
-  }
-}
+  isReady(): boolean { return this.ready; }
+  hasToken(): boolean { return this.oauth.hasValidAccessToken(); }
+  get expiresAt(): number { return this.oauth.getAccessTokenExpiration(); }
+  get hasRefreshToken(): boolean { return !!(this.oauth as any).getRefreshToken?.(); }
 
-// 6️⃣ base.component.ts (No host-deps, standalone via inject())
-import { OnDestroy, inject } from '@angular/core';
-import { CanComponentDeactivate } from '../interfaces/can-deactivate.interface';
-import { UnsavedChangeGuardHandler } from '../services/unsaved-change-guard-handler.service';
+  async login(): Promise<void> { await this.oauth.initLoginFlow(); }  // redirect
 
-export abstract class BaseComponent implements OnDestroy, CanComponentDeactivate {
-  private readonly guard = inject(UnsavedChangeGuardHandler);
+  async ensureValidToken(): Promise<void> {
+    // Hard guards: never refresh during init; never refresh without tokens.
+    if (!this.ready || !this.hasToken() || !this.hasRefreshToken) return;
 
-  constructor() {
-    // all child components auto-registered via directive
+    const exp = this.expiresAt;
+    if (!exp || Date.now() + 60_000 < exp) return;            // >60s left → skip
+    await this.oauth.refreshToken();
   }
 
-  isDirty(): boolean {
-    return this.guard.isCurrentComponentDirty();
-  }
-
-  ngOnDestroy(): void {
-    // nothing to clear here
+  private scheduleProactive(): void {
+    const exp = this.expiresAt;
+    if (!exp || !this.hasRefreshToken) return;
+    const delay = Math.max(0, exp - Date.now() - 60_000);
+    setTimeout(() => { void this.ensureValidToken(); }, delay);
   }
 }
 
-// 7️⃣ app.component.ts (Standalone Root Component)
-import { Component, OnInit } from '@angular/core';
-import { VbCommunicationService } from './services/vb-communication.service';
-import { UnsavedChangeGuardHandler } from './services/unsaved-change-guard-handler.service';
-import { TrackDirtyDirective } from './directives/track-dirty.directive';
-import { RouterModule } from '@angular/router';
-
-@Component({
-  selector: 'app-root',
-  standalone: true,
-  imports: [RouterModule, TrackDirtyDirective],
-  template: `<router-outlet></router-outlet>`
-})
-export class AppComponent implements OnInit {
-  constructor(
-    private readonly vb: VbCommunicationService,
-    private readonly guard: UnsavedChangeGuardHandler
-  ) {}
-
-  ngOnInit(): void {
-    this.vb.onUnsavedCheck().subscribe(() => {
-      const dirty = this.guard.isCurrentComponentDirty();
-      this.vb.sendUnsavedResultToVB(dirty);
-    });
-  }
+Helper to detect “implicit callback” (no dedicated route)
+// auth.util.ts
+export function isOidcCallbackUrl(): boolean {
+  const q = window.location.search || '';
+  const h = window.location.hash || '';
+  return /[?&]code=/.test(q) || /[?&]state=/.test(q) || /[#&]code=/.test(h) || /[#&]state=/.test(h);
 }
 
-// 8️⃣ customer-form.component.ts (Standalone Component)
-import { Component, OnInit } from '@angular/core';
-import { FormBuilder, ReactiveFormsModule } from '@angular/forms';
-import { BaseComponent } from '../shared/base.component';
-import { TrackDirtyDirective } from '../directives/track-dirty.directive';
+Auth Guard (waits for first login correctly)
 
-@Component({
-  selector: 'app-customer-form',
-  standalone: true,
-  imports: [ReactiveFormsModule, TrackDirtyDirective],
-  template: `
-    <form [formGroup]="customerForm" trackDirty>
-      <input formControlName="name" placeholder="Name" />
-      <input formControlName="email" placeholder="Email" />
-    </form>
-  `
-})
-export class CustomerFormComponent extends BaseComponent implements OnInit {
-  customerForm = this.fb.group({ name: [''], email: [''] });
+Waits for initOnce() to finish
 
-  constructor(private readonly fb: FormBuilder) {
-    super();
+Skips itself on the OIDC callback load
+
+If still no token → kicks off interactive login (redirect) and returns false
+
+If token exists → ensures freshness (but never during init)
+
+// auth.guard.ts (Angular 15+ functional guard)
+import { inject } from '@angular/core';
+import { CanActivateFn } from '@angular/router';
+import { AuthService } from './auth.service';
+import { isOidcCallbackUrl } from './auth.util';
+
+export const authGuard: CanActivateFn = async () => {
+  const auth = inject(AuthService);
+
+  if (isOidcCallbackUrl()) return true;               // let the lib finish the code flow
+
+  await auth.initOnce();                               // idempotent; waits for discovery+tryLogin
+
+  if (!auth.hasToken()) {
+    await auth.login();                                // redirect to IdP
+    return false;                                      // navigation stops until you come back
   }
 
-  ngOnInit(): void {
-    // initialization if needed
-  }
+  await auth.ensureValidToken();                       // near-expiry → RT refresh
+  return true;
+};
+
+Interceptor: skip OAuth endpoints & callback
+// auth.interceptor.ts
+private isAuthUrl(url: string): boolean {
+  return url.includes('/.well-known/')
+      || url.includes('/authorize')
+      || url.includes('/token')
+      || url.includes('/logout');
 }
+
+intercept(req, next) {
+  if (this.isAuthUrl(req.url) || isOidcCallbackUrl()) {
+    return next.handle(req);                           // never touch OIDC traffic/callback load
+  }
+  // Optional: ensure freshness on normal API calls (auth.ensureValidToken has guards)
+  return from(this.auth.ensureValidToken()).pipe(
+    switchMap(() => next.handle(this.attach(req)))
+  );
+}
+
+Why this fixes your “wait for first login” issues
+
+Your guard’s “wait” is initOnce(), not refresh. It completes discovery + tryLogin and only then decides.
+
+You don’t call ensureValidToken() while init is running (when exp is unknown/0).
+
+The guard does not run on the OIDC callback load (code/state present), so you avoid loops.
+
+Interceptor ignores OIDC endpoints and the callback pass, preventing recursion and “unknown error” masking.
+
+If you already have an APP_INITIALIZER calling auth.initOnce(), keep it—it’ll resolve before the guard ever runs. If you don’t, the guard itself does the waiting safely.
