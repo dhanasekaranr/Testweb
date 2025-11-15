@@ -1,327 +1,167 @@
-Awesome — here’s a clean, production-grade layout with all auth code in one place, plus traceable console logs you can filter in DevTools. I’ve used short prefixes so you can search quickly:
+src/app/auth/auth.guard.ts (one guard you’ll use on 95% of routes)
 
-[AUTH] AuthService (OAuth only)
+Class-based.
 
-[NAV] PostAuthNavigator (post-auth routing + context normalize)
+Default policy = 'both'.
 
-[USER] UserService (profile sink + context source of truth)
+Handles auth, missing context → /settings, and URL normalization.
 
-[BOOT] SessionBootstrapService (profile loader)
+Implements only CanActivate (simple; fast)
+(Optional CanMatch version below.)
 
-[AINT] AuthInterceptor (Bearer + 401 reaction)
+import { Injectable } from '@angular/core';
+import { CanActivate, ActivatedRouteSnapshot, RouterStateSnapshot, Router, UrlTree } from '@angular/router';
+import { AuthService } from './auth.service';
+import { UserService } from '../core/user.service';
+import { isOidcCallbackUrl, log } from './auth.util';
 
-[SINT] SessionInterceptor (loan/context headers)
+type CtxPolicy = 'both' | 'ctxOnly' | 'none';
 
-[GUARD] Auth guard
-
-[UTIL] Shared auth utilities + logger
-
-You can flip logs on/off from one place.
-
-src/app/auth/oauth.config.ts
-import { AuthConfig } from 'angular-oauth2-oidc';
-
-export const authConfig: AuthConfig = {
-  issuer: 'https://your-idp',                // <-- set
-  clientId: 'your-spa-client',               // <-- set
-  redirectUri: window.location.origin,
-  postLogoutRedirectUri: window.location.origin,
-  responseType: 'code',
-  scope: 'openid profile email offline_access',
-  useSilentRefresh: false,
-  showDebugInformation: false,
-  sessionChecksEnabled: false,
-};
-
-src/app/auth/auth.util.ts
-
-Single home for helpers + logger. Import these everywhere.
-
-import { authConfig } from './oauth.config';
-
-/** Centralized debug switch: set true to print logs. */
-export const AUTH_DEBUG = true; // flip to false to mute
-
-/** Scoped console helper. */
-export function log(prefix: string, ...args: any[]) {
-  if (!AUTH_DEBUG) return;
-  // eslint-disable-next-line no-console
-  console.log(`[${prefix}]`, ...args);
+function policyFromRouteData(data: any): CtxPolicy {
+  const p = (data?.['ctxPolicy'] as CtxPolicy) ?? 'both'; // DEFAULT = 'both'
+  return p === 'ctxOnly' || p === 'none' ? p : 'both';
 }
 
-/** Detect the IdP origin to avoid false positives on your own API paths. */
-let _issuerOrigin: string | null = null;
-function issuerOrigin(): string {
-  if (_issuerOrigin) return _issuerOrigin;
-  try { _issuerOrigin = new URL(authConfig.issuer!).origin; }
-  catch { _issuerOrigin = ''; }
-  return _issuerOrigin!;
-}
-
-/** For interceptors: skip requests that target the IdP (discovery/authorize/token/etc.). */
-export function isOidcUrl(url: string): boolean {
-  const origin = issuerOrigin();
-  if (origin && !url.startsWith(origin)) return false;
-  const hit = /\/(\.well-known|authorize|token|logout|end_session|revocation|introspect)\b/.test(url);
-  if (hit) log('UTIL', 'isOidcUrl=true', { url });
-  return hit;
-}
-
-/** For guards/startup: detect current *page* is the OAuth callback (has code/state). */
-export function isOidcCallbackUrl(): boolean {
-  const s = location.search + location.hash;
-  const hit = /[?&#]code=/.test(s) || /[?&#]state=/.test(s);
-  if (hit) log('UTIL', 'isOidcCallbackUrl=true', { s });
-  return hit;
-}
-
-/** Current path+query+hash utility. */
-export const curUrl = () => location.pathname + location.search + location.hash;
-
-src/app/core/user.service.ts
-
-Single source of truth for context + a profile sink for bindings.
-
-import { Injectable, signal, computed } from '@angular/core';
-import { log } from '../auth/auth.util';
-
-export interface UserProfile { userId: string; name: string; email?: string; roles?: string[]; }
-export interface UserContext { loanno: string | null; contexttype: string | null; }
-
-const SS = { loanno: 'loanno', contexttype: 'contexttype' };
-
-function readParams(urlLike = location.href): Partial<UserContext> {
-  const u = new URL(urlLike, location.origin);
-  return {
-    loanno: u.searchParams.get('loanno'),
-    contexttype: u.searchParams.get('contexttype') ?? u.searchParams.get('contextType')
-  };
+function normalizeUrl(
+  path: string,
+  search: URLSearchParams,
+  loanno: string | null,
+  contexttype: string | null,
+  policy: CtxPolicy
+): string {
+  if (policy === 'none') {
+    search.delete('loanno'); search.delete('contexttype');
+  } else if (policy === 'ctxOnly') {
+    search.delete('loanno');
+    contexttype ? search.set('contexttype', contexttype) : search.delete('contexttype');
+  } else { // 'both'
+    loanno      ? search.set('loanno', loanno)           : search.delete('loanno');
+    contexttype ? search.set('contexttype', contexttype) : search.delete('contexttype');
+  }
+  const q = search.toString();
+  return q ? `${path}?${q}` : path;
 }
 
 @Injectable({ providedIn: 'root' })
-export class UserService {
-  private _context = signal<UserContext>({ loanno: null, contexttype: null });
-  context = this._context.asReadonly();
-  loanno = computed(() => this._context().loanno);
-  contexttype = computed(() => this._context().contexttype);
+export class AuthGuard implements CanActivate {
 
-  private _profile = signal<UserProfile | null>(null);
-  profile = this._profile.asReadonly();
+  constructor(
+    private auth: AuthService,
+    private user: UserService,
+    private router: Router
+  ) {}
 
-  seedContextFromSession(): void {
-    const ln = sessionStorage.getItem(SS.loanno) || null;
-    const ct = sessionStorage.getItem(SS.contexttype) || null;
-    this._context.set({ loanno: ln, contexttype: ct });
-    log('USER', 'seedContextFromSession', { ln, ct });
-  }
+  async canActivate(route: ActivatedRouteSnapshot, state: RouterStateSnapshot): Promise<boolean | UrlTree> {
+    const path = route.routeConfig?.path ? `/${route.routeConfig.path}` : state.url.split('?')[0];
 
-  private persistContext() {
-    const c = this._context();
-    sessionStorage.setItem(SS.loanno, c.loanno ?? '');
-    sessionStorage.setItem(SS.contexttype, c.contexttype ?? '');
-    log('USER', 'persistContext', c);
-  }
+    // 1) Let OIDC callback through
+    if (isOidcCallbackUrl()) { log('GUARD', 'callback → pass', { path }); return true; }
 
-  setFromUrlIfPresent(urlLike = location.href): void {
-    const { loanno, contexttype } = readParams(urlLike);
-    let changed = false;
-    if (loanno && loanno !== this._context().loanno) {
-      this._context.update(c => ({ ...c, loanno }));
-      changed = true;
+    // 2) Auth check
+    if (!(this.auth.isReady() && this.auth.accessToken())) {
+      log('GUARD', 'not auth → start login', { returnUrl: state.url });
+      await this.auth.startLoginWithState();
+      return false;
     }
-    if (contexttype && contexttype !== this._context().contexttype) {
-      this._context.update(c => ({ ...c, contexttype }));
-      changed = true;
+
+    // 3) Context policy (default 'both')
+    const policy = policyFromRouteData(route.data);
+    const { loanno, contexttype } = this.user.context();
+    log('GUARD', 'policy (activate)', { path, policy, loanno, contexttype });
+
+    if (policy === 'both' && (!loanno || !contexttype)) {
+      log('GUARD', 'missing both → /settings');
+      return this.router.parseUrl('/settings');
     }
-    if (changed) {
-      log('USER', 'setFromUrlIfPresent', { loanno, contexttype, urlLike });
-      this.persistContext();
+    if (policy === 'ctxOnly' && !contexttype) {
+      log('GUARD', 'missing ctxOnly → /settings');
+      return this.router.parseUrl('/settings');
     }
-  }
 
-  setContext(loanno: string, contexttype: string) {
-    this._context.set({ loanno: loanno.trim(), contexttype: contexttype.trim() });
-    this.persistContext();
-    log('USER', 'setContext', { loanno, contexttype });
-  }
-  setLoanno(v: string | null) {
-    this._context.update(c => ({ ...c, loanno: v?.trim() || null }));
-    this.persistContext();
-    log('USER', 'setLoanno', { v });
-  }
-  setContextType(v: string | null) {
-    this._context.update(c => ({ ...c, contexttype: v?.trim() || null }));
-    this.persistContext();
-    log('USER', 'setContextType', { v });
-  }
+    // 4) Normalize the URL for this route
+    const u = new URL(state.url, window.location.origin);
+    const next = normalizeUrl(path, u.searchParams, loanno, contexttype, policy);
+    const current = u.pathname + (u.search ? '?' + u.searchParams.toString() : '') + u.hash;
 
-  applyProfile(p: UserProfile) {
-    this._profile.set(p);
-    log('USER', 'applyProfile', p);
-  }
+    if (current !== next) {
+      log('GUARD', 'normalize (activate)', { from: current, to: next });
+      return this.router.parseUrl(next);
+    }
 
-  resetAll(): void {
-    this._profile.set(null);
-    this._context.set({ loanno: null, contexttype: null });
-    sessionStorage.removeItem(SS.loanno);
-    sessionStorage.removeItem(SS.contexttype);
-    log('USER', 'resetAll');
+    log('GUARD', 'pass');
+    return true;
   }
 }
 
-src/app/core/session-bootstrap.service.ts
+(Optional) src/app/auth/auth-match.guard.ts (only for heavy/preloaded routes)
 
-Your existing bootstrap owns profile fetching; now it just writes into UserService.
+Same behavior, run before route match/lazy-load.
+
+Attach only on the few routes where early blocking helps.
 
 import { Injectable } from '@angular/core';
-import { HttpClient } from '@angular/common/http';
-import { firstValueFrom, shareReplay } from 'rxjs';
-import { UserService, UserProfile } from './user.service';
-import { log } from '../auth/auth.util';
+import { CanMatch, Route, Router, UrlSegment, UrlTree } from '@angular/router';
+import { AuthService } from './auth.service';
+import { UserService } from '../core/user.service';
+import { isOidcCallbackUrl, log } from './auth.util';
+
+type CtxPolicy = 'both' | 'ctxOnly' | 'none';
+const policyFromRouteData = (d: any): CtxPolicy => (d?.['ctxPolicy'] as CtxPolicy) ?? 'both';
+
+function normalizeUrl(path: string, search: URLSearchParams, loanno: string | null, contexttype: string | null, policy: CtxPolicy) {
+  if (policy === 'none') { search.delete('loanno'); search.delete('contexttype'); }
+  else if (policy === 'ctxOnly') { search.delete('loanno'); contexttype ? search.set('contexttype', contexttype) : search.delete('contexttype'); }
+  else { loanno ? search.set('loanno', loanno) : search.delete('loanno'); contexttype ? search.set('contexttype', contexttype) : search.delete('contexttype'); }
+  const q = search.toString();
+  return q ? `${path}?${q}` : path;
+}
 
 @Injectable({ providedIn: 'root' })
-export class SessionBootstrapService {
-  private profileOnce$?: ReturnType<HttpClient['get<UserProfile>']>;
+export class AuthMatchGuard implements CanMatch {
+  constructor(private auth: AuthService, private user: UserService, private router: Router) {}
 
-  constructor(private http: HttpClient, private user: UserService) {}
+  async canMatch(route: Route, segments: UrlSegment[]): Promise<boolean | UrlTree> {
+    const path = '/' + segments.map(s => s.path).join('/');
+    const current = window.location.pathname + window.location.search + window.location.hash;
 
-  async ensureProfile(): Promise<void> {
-    if (!this.profileOnce$) {
-      this.profileOnce$ = this.http.get<UserProfile>('/api/me').pipe(shareReplay(1)) as any;
-      log('BOOT', 'fetch /api/me (new request)');
-    } else {
-      log('BOOT', 'fetch /api/me (cache hit)');
-    }
-    const profile = await firstValueFrom(this.profileOnce$);
-    this.user.applyProfile(profile);
-    log('BOOT', 'profile loaded', profile);
-  }
+    if (isOidcCallbackUrl()) { log('GUARD', 'callback → pass (match)', { path }); return true; }
 
-  clearCache() { this.profileOnce$ = undefined; log('BOOT', 'clearCache'); }
-}
-
-src/app/auth/auth.service.ts
-
-OAuth only. No navigation here.
-
-import { Injectable } from '@angular/core';
-import { OAuthService, OAuthEvent, OAuthSuccessEvent } from 'angular-oauth2-oidc';
-import { authConfig } from './oauth.config';
-import { curUrl, log } from './auth.util';
-
-const MARGIN_MS = 60_000;
-
-@Injectable({ providedIn: 'root' })
-export class AuthService {
-  private ready = false;
-  private expMs = 0;
-  private t: any;
-  private _state: string | null = null;
-
-  constructor(private oauth: OAuthService) {}
-
-  async init(): Promise<void> {
-    this.oauth.configure(authConfig);
-    log('AUTH', 'configure');
-
-    await this.oauth.loadDiscoveryDocumentAndTryLogin();
-    log('AUTH', 'loadDiscoveryDocumentAndTryLogin done', {
-      hasAccess: this.oauth.hasValidAccessToken()
-    });
-
-    if (!this.oauth.hasValidAccessToken()) {
-      const target = curUrl();
-      log('AUTH', 'no token → initLoginFlow', { state: target });
-      await this.oauth.initLoginFlow(target);
-      return;
+    if (!(this.auth.isReady() && this.auth.accessToken())) {
+      log('GUARD', 'not auth → start login (match)', { returnUrl: current });
+      await this.auth.startLoginWithState();
+      return false;
     }
 
-    this.ready = true;
-    this.expMs = this.oauth.getAccessTokenExpiration() ?? 0;
-    this._state = this.oauth.state as string | null;
-    log('AUTH', 'authenticated', { expMs: this.expMs, state: this._state });
+    const policy = policyFromRouteData(route.data);
+    const { loanno, contexttype } = this.user.context();
+    log('GUARD', 'policy (match)', { path, policy, loanno, contexttype });
 
-    this.schedule();
+    if (policy === 'both' && (!loanno || !contexttype)) return this.router.parseUrl('/settings');
+    if (policy === 'ctxOnly' && !contexttype)          return this.router.parseUrl('/settings');
 
-    this.oauth.events.subscribe((e: OAuthEvent) => {
-      if (e instanceof OAuthSuccessEvent && (e.type === 'token_received' || e.type === 'token_refreshed')) {
-        this.expMs = this.oauth.getAccessTokenExpiration() ?? 0;
-        log('AUTH', 'event', e.type, { expMs: this.expMs });
-        this.schedule();
-      }
-    });
-
-    // Optional: clean ?code&state in address bar
-    try {
-      const u = new URL(location.href);
-      if (u.searchParams.has('code') || u.searchParams.has('state')) {
-        u.searchParams.delete('code'); u.searchParams.delete('state');
-        history.replaceState({}, document.title, u.toString());
-        log('AUTH', 'cleaned code/state from URL bar');
-      }
-    } catch {}
-  }
-
-  isReady() { return this.ready; }
-  accessToken(): string | null { return this.oauth.getAccessToken() || null; }
-  readAndClearState(): string | null {
-    const s = this._state; this._state = null;
-    log('AUTH', 'readAndClearState', { state: s });
-    return s;
-  }
-  startLoginWithState(): Promise<void> {
-    const state = curUrl();
-    log('AUTH', 'startLoginWithState', { state });
-    return this.oauth.initLoginFlow(state);
-  }
-
-  private async refreshIfNeeded(): Promise<void> {
-    if (!this.ready || !this.oauth.hasValidAccessToken()) return;
-    const rt = (this.oauth as any).getRefreshToken?.(); if (!rt) return;
-    const near = this.expMs > 0 && Date.now() + MARGIN_MS >= this.expMs;
-    if (!near) return;
-
-    log('AUTH', 'refreshIfNeeded → refreshing');
-    try { await this.oauth.refreshToken(); log('AUTH', 'refresh ok'); }
-    catch (e) {
-      log('AUTH', 'refresh failed', e);
-      if (this.expMs && Date.now() >= this.expMs) {
-        log('AUTH', 'expired → re-login');
-        await this.oauth.initLoginFlow(curUrl());
-      }
+    const u = new URL(current, window.location.origin);
+    const next = normalizeUrl(path, u.searchParams, loanno, contexttype, policy);
+    if (current !== next) {
+      log('GUARD', 'normalize (match)', { from: current, to: next });
+      return this.router.parseUrl(next);
     }
-  }
-
-  private schedule(): void {
-    clearTimeout(this.t);
-    if (!this.expMs) return;
-    const delay = Math.max(0, this.expMs - Date.now() - MARGIN_MS);
-    log('AUTH', 'schedule refresh', { inMs: delay });
-    this.t = setTimeout(() => { void this.refreshIfNeeded(); }, delay);
-  }
-
-  async logout(): Promise<void> {
-    log('AUTH', 'logout');
-    this.oauth.logOut();
+    return true;
   }
 }
 
-src/app/core/post-auth-navigator.service.ts
-
-Steps 3–6 live here.
-
+src/app/core/post-auth-navigator.service.ts (seed only; no routing)
 import { Injectable } from '@angular/core';
-import { Router } from '@angular/router';
 import { AuthService } from '../auth/auth.service';
 import { UserService } from './user.service';
 import { SessionBootstrapService } from './session-bootstrap.service';
-import { curUrl, log } from '../auth/auth.util';
+import { log } from '../auth/auth.util';
+
+const curUrl = () => location.pathname + location.search + location.hash;
 
 @Injectable({ providedIn: 'root' })
 export class PostAuthNavigator {
   constructor(
     private auth: AuthService,
-    private router: Router,
     private user: UserService,
     private sessionBootstrap: SessionBootstrapService
   ) {}
@@ -329,238 +169,76 @@ export class PostAuthNavigator {
   async run(): Promise<void> {
     if (!this.auth.isReady()) { log('NAV', 'skip: not authenticated'); return; }
 
-    // 1) Load user profile (doesn't need loan context)
+    // Load profile (doesn't need loan context)
     await this.sessionBootstrap.ensureProfile();
 
-    // 2) Choose target: prefer OAuth state, else current URL
-    const target = this.auth.readAndClearState() || curUrl();
-    log('NAV', 'target chosen', { target });
-
-    // 3) Seed stored context (UX), then apply params from target
+    // Seed context from session + whatever was in the state/current URL
+    const target = this.auth.readAndClearState?.() || curUrl();
     this.user.seedContextFromSession();
     this.user.setFromUrlIfPresent(target);
-    const c = this.user.context();
-    log('NAV', 'context after apply', c);
 
-    // 4) If either missing → collect in /settings
-    if (!c.loanno || !c.contexttype) {
-      log('NAV', 'missing context → /settings');
-      if (location.pathname !== '/settings') {
-        await this.router.navigateByUrl('/settings', { replaceUrl: true });
-      }
-      return;
-    }
-
-    // 5) Normalize URL so both params are present
-    const u = new URL(target, location.origin);
-    u.searchParams.set('loanno', c.loanno!);
-    u.searchParams.set('contexttype', c.contexttype!);
-    const next = u.pathname + '?' + u.searchParams.toString() + u.hash;
-    const current = location.pathname + location.search + location.hash;
-
-    if (current !== next) {
-      log('NAV', 'normalize route', { from: current, to: next });
-      await this.router.navigateByUrl(next, { replaceUrl: true });
-    } else {
-      log('NAV', 'already normalized');
-    }
+    log('NAV', 'post-auth complete', { target, context: this.user.context() });
+    // NOTE: No navigation here. Guards enforce/normalize per route.
   }
 }
 
-src/app/auth/auth.interceptor.ts
+Routes (simple defaults; add canMatch only where useful)
+import { Routes } from '@angular/router';
+import { AuthGuard } from './auth/auth.guard';
+import { AuthMatchGuard } from './auth/auth-match.guard'; // optional
 
-Bearer attach + 401 reaction without loops.
+export const routes: Routes = [
+  // 95% of routes → default 'both', only canActivate needed
+  {
+    path: 'funding',
+    canActivate: [AuthGuard],
+    loadComponent: () => import('./funding/funding.component').then(m => m.FundingComponent)
+  },
 
-import { Injectable } from '@angular/core';
-import { HttpInterceptor, HttpRequest, HttpHandler, HttpEvent, HttpErrorResponse } from '@angular/common/http';
-import { Observable, from, throwError } from 'rxjs';
-import { catchError, switchMap } from 'rxjs/operators';
-import { AuthService } from './auth.service';
-import { isOidcUrl, log } from './auth.util';
+  // Outlier: ONLY contexttype (ctxOnly)
+  {
+    path: 'pilot',
+    canActivate: [AuthGuard],
+    data: { ctxPolicy: 'ctxOnly' },
+    loadComponent: () => import('./pilot/pilot.component').then(m => m.PilotComponent)
+  },
 
-@Injectable()
-export class AuthInterceptor implements HttpInterceptor {
-  constructor(private auth: AuthService) {}
+  // Outlier: NONE (settings, logout, etc.). You can omit guards entirely if truly public.
+  {
+    path: 'settings',
+    canActivate: [AuthGuard],
+    data: { ctxPolicy: 'none' },
+    loadComponent: () => import('./settings/settings.component').then(m => m.SettingsComponent)
+  },
 
-  intercept(req: HttpRequest<any>, next: HttpHandler): Observable<HttpEvent<any>> {
-    if (isOidcUrl(req.url)) { log('AINT', 'skip OIDC', req.url); return next.handle(req); }
+  // Example of a HEAVY route where you want to block lazy-load early
+  {
+    path: 'servicing',
+    canMatch:    [AuthMatchGuard], // optional (use only on heavy/preloaded)
+    canActivate: [AuthGuard],
+    loadComponent: () => import('./servicing/servicing.component').then(m => m.ServicingComponent)
+  },
 
-    const token = this.auth.accessToken();
-    const withAuth = token ? req.clone({ setHeaders: { Authorization: `Bearer ${token}` } }) : req;
-    if (token) log('AINT', 'attach bearer', { url: req.url });
+  { path: '', redirectTo: 'funding', pathMatch: 'full' },
+  { path: '**', redirectTo: 'funding' },
+];
 
-    return next.handle(withAuth).pipe(
-      catchError((err: any) => {
-        if (err instanceof HttpErrorResponse && err.status === 401) {
-          log('AINT', '401 received → re-login');
-          return from(this.auth.startLoginWithState()).pipe(
-            switchMap(() => throwError(() => err)) // navigation away; surface original error if still here
-          );
-        }
-        return throwError(() => err);
-      })
-    );
-  }
-}
+Reminder (bootstrap order is unchanged)
 
-src/app/core/session.interceptor.ts
+In your APP_INITIALIZER (or standalone providers), keep:
 
-Attach loan/context to all feature APIs. Skip OIDC and /api/me.
-
-import { Injectable } from '@angular/core';
-import { HttpInterceptor, HttpRequest, HttpHandler, HttpEvent } from '@angular/common/http';
-import { Observable } from 'rxjs';
-import { UserService } from './user.service';
-import { isOidcUrl, log } from '../auth/auth.util';
-
-@Injectable()
-export class SessionInterceptor implements HttpInterceptor {
-  constructor(private user: UserService) {}
-
-  intercept(req: HttpRequest<any>, next: HttpHandler): Observable<HttpEvent<any>> {
-    if (isOidcUrl(req.url) || req.url.endsWith('/api/me')) {
-      log('SINT', 'skip', req.url);
-      return next.handle(req);
-    }
-
-    const { loanno, contexttype } = this.user.context();
-    let r = req;
-
-    if (loanno)      r = r.clone({ setHeaders: { 'X-LoanNo': loanno } });
-    if (contexttype) r = r.clone({ setHeaders: { 'X-ContextType': contexttype } });
-    if (loanno || contexttype) log('SINT', 'attach context', { url: req.url, loanno, contexttype });
-
-    return next.handle(r);
-  }
-}
-
-src/app/auth/auth.guard.ts (optional failsafe)
-import { inject } from '@angular/core';
-import { CanActivateFn } from '@angular/router';
-import { AuthService } from './auth.service';
-import { isOidcCallbackUrl, log } from './auth.util';
-
-export const authGuard: CanActivateFn = async () => {
-  const auth = inject(AuthService);
-  if (isOidcCallbackUrl()) { log('GUARD', 'callback → pass'); return true; }
-  if (auth.isReady() && auth.accessToken()) { log('GUARD', 'auth ok → pass'); return true; }
-  log('GUARD', 'not auth → start login');
-  await auth.startLoginWithState();
-  return false;
-};
-
-src/app/settings/settings.component.ts
-import { Component } from '@angular/core';
-import { FormsModule } from '@angular/forms';
-import { Router } from '@angular/router';
-import { UserService } from '../core/user.service';
-import { log } from '../auth/auth.util';
-
-@Component({
-  selector: 'app-settings',
-  standalone: true,
-  imports: [FormsModule],
-  template: `
-    <h2>Loan Context</h2>
-    <label>Loan #</label>
-    <input type="text" [(ngModel)]="loanno" placeholder="e.g., 12345" />
-    <label>Context Type</label>
-    <input type="text" [(ngModel)]="contexttype" placeholder="e.g., 1" />
-    <button (click)="save()">Continue</button>
-  `
-})
-export class SettingsComponent {
-  loanno = '';
-  contexttype = '';
-  constructor(private user: UserService, private router: Router) {}
-
-  async save() {
-    const ln = this.loanno.trim(), ct = this.contexttype.trim();
-    this.user.setContext(ln, ct);
-    const to = `/funding?loanno=${encodeURIComponent(ln)}&contexttype=${encodeURIComponent(ct)}`;
-    log('NAV', 'settings → navigate', { to });
-    await this.router.navigateByUrl(to);
-  }
-}
-
-Wire-up (AppModule or standalone bootstrap)
-
-Interceptor order matters: Auth first, then Session.
-
-// app.module.ts (NgModule example)
-import { NgModule, APP_INITIALIZER } from '@angular/core';
-import { BrowserModule } from '@angular/platform-browser';
-import { HTTP_INTERCEPTORS, HttpClientModule } from '@angular/common/http';
-import { RouterModule } from '@angular/router';
-import { AppComponent } from './app.component';
-
-import { AuthService } from './auth/auth.service';
-import { PostAuthNavigator } from './core/post-auth-navigator.service';
-import { AuthInterceptor } from './auth/auth.interceptor';
-import { SessionInterceptor } from './core/session.interceptor';
-import { SessionBootstrapService } from './core/session-bootstrap.service';
-
-export function bootstrap(auth: AuthService, boot: SessionBootstrapService, nav: PostAuthNavigator) {
-  return async () => {
-    await auth.init();                       // OAuth tokens ready
-    await boot.ensureProfile();              // /api/me loaded
-    await nav.run();                         // context + normalized route
-  };
-}
-
-@NgModule({
-  declarations: [AppComponent],
-  imports: [
-    BrowserModule,
-    HttpClientModule,
-    RouterModule.forRoot([
-      { path: '', loadComponent: () => import('./home/home.component').then(m => m.HomeComponent) },
-      { path: 'funding', loadComponent: () => import('./funding/funding.component').then(m => m.FundingComponent) },
-      { path: 'settings', loadComponent: () => import('./settings/settings.component').then(m => m.SettingsComponent) },
-      { path: '**', redirectTo: '' },
-    ]),
-  ],
-  providers: [
-    { provide: APP_INITIALIZER, multi: true, deps: [AuthService, SessionBootstrapService, PostAuthNavigator], useFactory: bootstrap },
-    { provide: HTTP_INTERCEPTORS, useClass: AuthInterceptor,    multi: true },
-    { provide: HTTP_INTERCEPTORS, useClass: SessionInterceptor, multi: true },
-  ],
-  bootstrap: [AppComponent],
-})
-export class AppModule {}
+// pseudo
+await auth.init();                      // tokens ready
+await sessionBootstrap.ensureProfile(); // /api/me
+await postAuthNavigator.run();          // seed context from state/URL
 
 
-(For standalone bootstraps, put the same factory in bootstrapApplication(AppComponent, { providers: [...] }).)
+That’s it. Drop these in and you’ll have:
 
-DevTools workflow (filterable logs)
+one guard for 95% of routes (auth + ctx + normalization),
 
-Search in the console for any of these:
+per-route overrides for outliers,
 
-"[AUTH]" OAuth lifecycle, timers, refresh
+optional canMatch for the handful of heavy routes,
 
-"[NAV]" post-auth routing + URL normalization
-
-"[USER]" context/profile mutations
-
-"[BOOT]" profile fetch
-
-"[AINT]" bearer attach / 401
-
-"[SINT]" loan/context header attach
-
-"[GUARD]" guard passes/redirects
-
-"[UTIL]" helper detections (OIDC URL/callback)
-
-Flip all logs off by setting AUTH_DEBUG = false in auth.util.ts.
-
-Quick sanity checklist
-
-Hit /funding?loanno=12345&contexttype=1 (unauthenticated):
-[AUTH] configure → initLoginFlow(state) → back → [AUTH] authenticated →
-[BOOT] /api/me → [NAV] target chosen → [NAV] context after apply → [NAV] already normalized →
-First API call: [AINT] attach bearer, then [SINT] attach context.
-
-Hit / (no params): after auth & /api/me → [NAV] missing context → /settings → enter both → navigate → normalized URL.
-
-This structure keeps auth code organized, testable, and easy to maintain while giving you a single switch for temporary debug logging.
+tidy logs: filter [GUARD] and [NAV] to watch the flow.
