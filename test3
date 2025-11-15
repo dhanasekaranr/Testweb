@@ -1,14 +1,4 @@
-src/app/auth/auth.guard.ts (one guard you’ll use on 95% of routes)
-
-Class-based.
-
-Default policy = 'both'.
-
-Handles auth, missing context → /settings, and URL normalization.
-
-Implements only CanActivate (simple; fast)
-(Optional CanMatch version below.)
-
+// auth.guard.ts
 import { Injectable } from '@angular/core';
 import { CanActivate, ActivatedRouteSnapshot, RouterStateSnapshot, Router, UrlTree } from '@angular/router';
 import { AuthService } from './auth.service';
@@ -17,34 +7,42 @@ import { isOidcCallbackUrl, log } from './auth.util';
 
 type CtxPolicy = 'both' | 'ctxOnly' | 'none';
 
+// DEFAULT = 'both' → only set data.ctxPolicy for the few outliers
 function policyFromRouteData(data: any): CtxPolicy {
-  const p = (data?.['ctxPolicy'] as CtxPolicy) ?? 'both'; // DEFAULT = 'both'
+  const p = (data?.['ctxPolicy'] as CtxPolicy) ?? 'both';
   return p === 'ctxOnly' || p === 'none' ? p : 'both';
 }
 
-function normalizeUrl(
-  path: string,
-  search: URLSearchParams,
-  loanno: string | null,
-  contexttype: string | null,
-  policy: CtxPolicy
-): string {
+/**
+ * Clean-URL normalization:
+ * - Never ADD loanno/contexttype to the URL.
+ * - Only REMOVE params that are disallowed by the route policy.
+ * - Always preserve the full current path (including child routes like /funding/return).
+ */
+function normalizeCleanUrl(currentUrl: string, policy: CtxPolicy): string {
+  const u = new URL(currentUrl, window.location.origin);
+
+  // We never add; we only remove when policy says they shouldn't be visible.
   if (policy === 'none') {
-    search.delete('loanno'); search.delete('contexttype');
+    u.searchParams.delete('loanno');
+    u.searchParams.delete('contexttype');
   } else if (policy === 'ctxOnly') {
-    search.delete('loanno');
-    contexttype ? search.set('contexttype', contexttype) : search.delete('contexttype');
-  } else { // 'both'
-    loanno      ? search.set('loanno', loanno)           : search.delete('loanno');
-    contexttype ? search.set('contexttype', contexttype) : search.delete('contexttype');
+    // ctxOnly routes shouldn’t show loanno; contexttype visibility is your call.
+    // If you want a fully clean URL, also delete contexttype:
+    u.searchParams.delete('loanno');
+    // u.searchParams.delete('contexttype'); // uncomment if you want to hide this too
+  } else {
+    // policy === 'both' (default): keep URL clean and rely on UserService/session.
+    u.searchParams.delete('loanno');
+    u.searchParams.delete('contexttype');
   }
-  const q = search.toString();
-  return q ? `${path}?${q}` : path;
+
+  const q = u.searchParams.toString();
+  return u.pathname + (q ? `?${q}` : '') + u.hash;
 }
 
 @Injectable({ providedIn: 'root' })
 export class AuthGuard implements CanActivate {
-
   constructor(
     private auth: AuthService,
     private user: UserService,
@@ -52,14 +50,15 @@ export class AuthGuard implements CanActivate {
   ) {}
 
   async canActivate(route: ActivatedRouteSnapshot, state: RouterStateSnapshot): Promise<boolean | UrlTree> {
-    const path = route.routeConfig?.path ? `/${route.routeConfig.path}` : state.url.split('?')[0];
+    // Use the FULL current URL, not route.routeConfig.path (which loses child segments)
+    const currentUrl = state.url;
 
-    // 1) Let OIDC callback through
-    if (isOidcCallbackUrl()) { log('GUARD', 'callback → pass', { path }); return true; }
+    // 1) OIDC callback pass-through
+    if (isOidcCallbackUrl()) { log('GUARD', 'callback → pass', { currentUrl }); return true; }
 
     // 2) Auth check
     if (!(this.auth.isReady() && this.auth.accessToken())) {
-      log('GUARD', 'not auth → start login', { returnUrl: state.url });
+      log('GUARD', 'not auth → start login', { returnUrl: currentUrl });
       await this.auth.startLoginWithState();
       return false;
     }
@@ -67,8 +66,9 @@ export class AuthGuard implements CanActivate {
     // 3) Context policy (default 'both')
     const policy = policyFromRouteData(route.data);
     const { loanno, contexttype } = this.user.context();
-    log('GUARD', 'policy (activate)', { path, policy, loanno, contexttype });
+    log('GUARD', 'policy', { policy, loanno, contexttype, currentUrl });
 
+    // Missing-required → /settings (guard enforces; PostAuthNavigator does not redirect)
     if (policy === 'both' && (!loanno || !contexttype)) {
       log('GUARD', 'missing both → /settings');
       return this.router.parseUrl('/settings');
@@ -78,13 +78,10 @@ export class AuthGuard implements CanActivate {
       return this.router.parseUrl('/settings');
     }
 
-    // 4) Normalize the URL for this route
-    const u = new URL(state.url, window.location.origin);
-    const next = normalizeUrl(path, u.searchParams, loanno, contexttype, policy);
-    const current = u.pathname + (u.search ? '?' + u.searchParams.toString() : '') + u.hash;
-
-    if (current !== next) {
-      log('GUARD', 'normalize (activate)', { from: current, to: next });
+    // 4) Clean-URL normalization (do not add params; only remove when disallowed)
+    const next = normalizeCleanUrl(currentUrl, policy);
+    if (currentUrl !== next) {
+      log('GUARD', 'normalize (clean)', { from: currentUrl, to: next });
       return this.router.parseUrl(next);
     }
 
@@ -92,153 +89,3 @@ export class AuthGuard implements CanActivate {
     return true;
   }
 }
-
-(Optional) src/app/auth/auth-match.guard.ts (only for heavy/preloaded routes)
-
-Same behavior, run before route match/lazy-load.
-
-Attach only on the few routes where early blocking helps.
-
-import { Injectable } from '@angular/core';
-import { CanMatch, Route, Router, UrlSegment, UrlTree } from '@angular/router';
-import { AuthService } from './auth.service';
-import { UserService } from '../core/user.service';
-import { isOidcCallbackUrl, log } from './auth.util';
-
-type CtxPolicy = 'both' | 'ctxOnly' | 'none';
-const policyFromRouteData = (d: any): CtxPolicy => (d?.['ctxPolicy'] as CtxPolicy) ?? 'both';
-
-function normalizeUrl(path: string, search: URLSearchParams, loanno: string | null, contexttype: string | null, policy: CtxPolicy) {
-  if (policy === 'none') { search.delete('loanno'); search.delete('contexttype'); }
-  else if (policy === 'ctxOnly') { search.delete('loanno'); contexttype ? search.set('contexttype', contexttype) : search.delete('contexttype'); }
-  else { loanno ? search.set('loanno', loanno) : search.delete('loanno'); contexttype ? search.set('contexttype', contexttype) : search.delete('contexttype'); }
-  const q = search.toString();
-  return q ? `${path}?${q}` : path;
-}
-
-@Injectable({ providedIn: 'root' })
-export class AuthMatchGuard implements CanMatch {
-  constructor(private auth: AuthService, private user: UserService, private router: Router) {}
-
-  async canMatch(route: Route, segments: UrlSegment[]): Promise<boolean | UrlTree> {
-    const path = '/' + segments.map(s => s.path).join('/');
-    const current = window.location.pathname + window.location.search + window.location.hash;
-
-    if (isOidcCallbackUrl()) { log('GUARD', 'callback → pass (match)', { path }); return true; }
-
-    if (!(this.auth.isReady() && this.auth.accessToken())) {
-      log('GUARD', 'not auth → start login (match)', { returnUrl: current });
-      await this.auth.startLoginWithState();
-      return false;
-    }
-
-    const policy = policyFromRouteData(route.data);
-    const { loanno, contexttype } = this.user.context();
-    log('GUARD', 'policy (match)', { path, policy, loanno, contexttype });
-
-    if (policy === 'both' && (!loanno || !contexttype)) return this.router.parseUrl('/settings');
-    if (policy === 'ctxOnly' && !contexttype)          return this.router.parseUrl('/settings');
-
-    const u = new URL(current, window.location.origin);
-    const next = normalizeUrl(path, u.searchParams, loanno, contexttype, policy);
-    if (current !== next) {
-      log('GUARD', 'normalize (match)', { from: current, to: next });
-      return this.router.parseUrl(next);
-    }
-    return true;
-  }
-}
-
-src/app/core/post-auth-navigator.service.ts (seed only; no routing)
-import { Injectable } from '@angular/core';
-import { AuthService } from '../auth/auth.service';
-import { UserService } from './user.service';
-import { SessionBootstrapService } from './session-bootstrap.service';
-import { log } from '../auth/auth.util';
-
-const curUrl = () => location.pathname + location.search + location.hash;
-
-@Injectable({ providedIn: 'root' })
-export class PostAuthNavigator {
-  constructor(
-    private auth: AuthService,
-    private user: UserService,
-    private sessionBootstrap: SessionBootstrapService
-  ) {}
-
-  async run(): Promise<void> {
-    if (!this.auth.isReady()) { log('NAV', 'skip: not authenticated'); return; }
-
-    // Load profile (doesn't need loan context)
-    await this.sessionBootstrap.ensureProfile();
-
-    // Seed context from session + whatever was in the state/current URL
-    const target = this.auth.readAndClearState?.() || curUrl();
-    this.user.seedContextFromSession();
-    this.user.setFromUrlIfPresent(target);
-
-    log('NAV', 'post-auth complete', { target, context: this.user.context() });
-    // NOTE: No navigation here. Guards enforce/normalize per route.
-  }
-}
-
-Routes (simple defaults; add canMatch only where useful)
-import { Routes } from '@angular/router';
-import { AuthGuard } from './auth/auth.guard';
-import { AuthMatchGuard } from './auth/auth-match.guard'; // optional
-
-export const routes: Routes = [
-  // 95% of routes → default 'both', only canActivate needed
-  {
-    path: 'funding',
-    canActivate: [AuthGuard],
-    loadComponent: () => import('./funding/funding.component').then(m => m.FundingComponent)
-  },
-
-  // Outlier: ONLY contexttype (ctxOnly)
-  {
-    path: 'pilot',
-    canActivate: [AuthGuard],
-    data: { ctxPolicy: 'ctxOnly' },
-    loadComponent: () => import('./pilot/pilot.component').then(m => m.PilotComponent)
-  },
-
-  // Outlier: NONE (settings, logout, etc.). You can omit guards entirely if truly public.
-  {
-    path: 'settings',
-    canActivate: [AuthGuard],
-    data: { ctxPolicy: 'none' },
-    loadComponent: () => import('./settings/settings.component').then(m => m.SettingsComponent)
-  },
-
-  // Example of a HEAVY route where you want to block lazy-load early
-  {
-    path: 'servicing',
-    canMatch:    [AuthMatchGuard], // optional (use only on heavy/preloaded)
-    canActivate: [AuthGuard],
-    loadComponent: () => import('./servicing/servicing.component').then(m => m.ServicingComponent)
-  },
-
-  { path: '', redirectTo: 'funding', pathMatch: 'full' },
-  { path: '**', redirectTo: 'funding' },
-];
-
-Reminder (bootstrap order is unchanged)
-
-In your APP_INITIALIZER (or standalone providers), keep:
-
-// pseudo
-await auth.init();                      // tokens ready
-await sessionBootstrap.ensureProfile(); // /api/me
-await postAuthNavigator.run();          // seed context from state/URL
-
-
-That’s it. Drop these in and you’ll have:
-
-one guard for 95% of routes (auth + ctx + normalization),
-
-per-route overrides for outliers,
-
-optional canMatch for the handful of heavy routes,
-
-tidy logs: filter [GUARD] and [NAV] to watch the flow.
