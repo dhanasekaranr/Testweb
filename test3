@@ -1,128 +1,566 @@
-If you already “wait for first login” in the guard, make sure it’s doing the right kind of waiting and not kicking off refresh during init. Here’s a tight, production-safe pattern you can drop in.
+Awesome — here’s a clean, production-grade layout with all auth code in one place, plus traceable console logs you can filter in DevTools. I’ve used short prefixes so you can search quickly:
 
-AuthService (idempotent init + ready barrier, no refresh during init)
-// auth.service.ts
-import { Injectable } from '@angular/core';
-import { OAuthService } from 'angular-oauth2-oidc';
+[AUTH] AuthService (OAuth only)
+
+[NAV] PostAuthNavigator (post-auth routing + context normalize)
+
+[USER] UserService (profile sink + context source of truth)
+
+[BOOT] SessionBootstrapService (profile loader)
+
+[AINT] AuthInterceptor (Bearer + 401 reaction)
+
+[SINT] SessionInterceptor (loan/context headers)
+
+[GUARD] Auth guard
+
+[UTIL] Shared auth utilities + logger
+
+You can flip logs on/off from one place.
+
+src/app/auth/oauth.config.ts
+import { AuthConfig } from 'angular-oauth2-oidc';
+
+export const authConfig: AuthConfig = {
+  issuer: 'https://your-idp',                // <-- set
+  clientId: 'your-spa-client',               // <-- set
+  redirectUri: window.location.origin,
+  postLogoutRedirectUri: window.location.origin,
+  responseType: 'code',
+  scope: 'openid profile email offline_access',
+  useSilentRefresh: false,
+  showDebugInformation: false,
+  sessionChecksEnabled: false,
+};
+
+src/app/auth/auth.util.ts
+
+Single home for helpers + logger. Import these everywhere.
+
 import { authConfig } from './oauth.config';
+
+/** Centralized debug switch: set true to print logs. */
+export const AUTH_DEBUG = true; // flip to false to mute
+
+/** Scoped console helper. */
+export function log(prefix: string, ...args: any[]) {
+  if (!AUTH_DEBUG) return;
+  // eslint-disable-next-line no-console
+  console.log(`[${prefix}]`, ...args);
+}
+
+/** Detect the IdP origin to avoid false positives on your own API paths. */
+let _issuerOrigin: string | null = null;
+function issuerOrigin(): string {
+  if (_issuerOrigin) return _issuerOrigin;
+  try { _issuerOrigin = new URL(authConfig.issuer!).origin; }
+  catch { _issuerOrigin = ''; }
+  return _issuerOrigin!;
+}
+
+/** For interceptors: skip requests that target the IdP (discovery/authorize/token/etc.). */
+export function isOidcUrl(url: string): boolean {
+  const origin = issuerOrigin();
+  if (origin && !url.startsWith(origin)) return false;
+  const hit = /\/(\.well-known|authorize|token|logout|end_session|revocation|introspect)\b/.test(url);
+  if (hit) log('UTIL', 'isOidcUrl=true', { url });
+  return hit;
+}
+
+/** For guards/startup: detect current *page* is the OAuth callback (has code/state). */
+export function isOidcCallbackUrl(): boolean {
+  const s = location.search + location.hash;
+  const hit = /[?&#]code=/.test(s) || /[?&#]state=/.test(s);
+  if (hit) log('UTIL', 'isOidcCallbackUrl=true', { s });
+  return hit;
+}
+
+/** Current path+query+hash utility. */
+export const curUrl = () => location.pathname + location.search + location.hash;
+
+src/app/core/user.service.ts
+
+Single source of truth for context + a profile sink for bindings.
+
+import { Injectable, signal, computed } from '@angular/core';
+import { log } from '../auth/auth.util';
+
+export interface UserProfile { userId: string; name: string; email?: string; roles?: string[]; }
+export interface UserContext { loanno: string | null; contexttype: string | null; }
+
+const SS = { loanno: 'loanno', contexttype: 'contexttype' };
+
+function readParams(urlLike = location.href): Partial<UserContext> {
+  const u = new URL(urlLike, location.origin);
+  return {
+    loanno: u.searchParams.get('loanno'),
+    contexttype: u.searchParams.get('contexttype') ?? u.searchParams.get('contextType')
+  };
+}
+
+@Injectable({ providedIn: 'root' })
+export class UserService {
+  private _context = signal<UserContext>({ loanno: null, contexttype: null });
+  context = this._context.asReadonly();
+  loanno = computed(() => this._context().loanno);
+  contexttype = computed(() => this._context().contexttype);
+
+  private _profile = signal<UserProfile | null>(null);
+  profile = this._profile.asReadonly();
+
+  seedContextFromSession(): void {
+    const ln = sessionStorage.getItem(SS.loanno) || null;
+    const ct = sessionStorage.getItem(SS.contexttype) || null;
+    this._context.set({ loanno: ln, contexttype: ct });
+    log('USER', 'seedContextFromSession', { ln, ct });
+  }
+
+  private persistContext() {
+    const c = this._context();
+    sessionStorage.setItem(SS.loanno, c.loanno ?? '');
+    sessionStorage.setItem(SS.contexttype, c.contexttype ?? '');
+    log('USER', 'persistContext', c);
+  }
+
+  setFromUrlIfPresent(urlLike = location.href): void {
+    const { loanno, contexttype } = readParams(urlLike);
+    let changed = false;
+    if (loanno && loanno !== this._context().loanno) {
+      this._context.update(c => ({ ...c, loanno }));
+      changed = true;
+    }
+    if (contexttype && contexttype !== this._context().contexttype) {
+      this._context.update(c => ({ ...c, contexttype }));
+      changed = true;
+    }
+    if (changed) {
+      log('USER', 'setFromUrlIfPresent', { loanno, contexttype, urlLike });
+      this.persistContext();
+    }
+  }
+
+  setContext(loanno: string, contexttype: string) {
+    this._context.set({ loanno: loanno.trim(), contexttype: contexttype.trim() });
+    this.persistContext();
+    log('USER', 'setContext', { loanno, contexttype });
+  }
+  setLoanno(v: string | null) {
+    this._context.update(c => ({ ...c, loanno: v?.trim() || null }));
+    this.persistContext();
+    log('USER', 'setLoanno', { v });
+  }
+  setContextType(v: string | null) {
+    this._context.update(c => ({ ...c, contexttype: v?.trim() || null }));
+    this.persistContext();
+    log('USER', 'setContextType', { v });
+  }
+
+  applyProfile(p: UserProfile) {
+    this._profile.set(p);
+    log('USER', 'applyProfile', p);
+  }
+
+  resetAll(): void {
+    this._profile.set(null);
+    this._context.set({ loanno: null, contexttype: null });
+    sessionStorage.removeItem(SS.loanno);
+    sessionStorage.removeItem(SS.contexttype);
+    log('USER', 'resetAll');
+  }
+}
+
+src/app/core/session-bootstrap.service.ts
+
+Your existing bootstrap owns profile fetching; now it just writes into UserService.
+
+import { Injectable } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { firstValueFrom, shareReplay } from 'rxjs';
+import { UserService, UserProfile } from './user.service';
+import { log } from '../auth/auth.util';
+
+@Injectable({ providedIn: 'root' })
+export class SessionBootstrapService {
+  private profileOnce$?: ReturnType<HttpClient['get<UserProfile>']>;
+
+  constructor(private http: HttpClient, private user: UserService) {}
+
+  async ensureProfile(): Promise<void> {
+    if (!this.profileOnce$) {
+      this.profileOnce$ = this.http.get<UserProfile>('/api/me').pipe(shareReplay(1)) as any;
+      log('BOOT', 'fetch /api/me (new request)');
+    } else {
+      log('BOOT', 'fetch /api/me (cache hit)');
+    }
+    const profile = await firstValueFrom(this.profileOnce$);
+    this.user.applyProfile(profile);
+    log('BOOT', 'profile loaded', profile);
+  }
+
+  clearCache() { this.profileOnce$ = undefined; log('BOOT', 'clearCache'); }
+}
+
+src/app/auth/auth.service.ts
+
+OAuth only. No navigation here.
+
+import { Injectable } from '@angular/core';
+import { OAuthService, OAuthEvent, OAuthSuccessEvent } from 'angular-oauth2-oidc';
+import { authConfig } from './oauth.config';
+import { curUrl, log } from './auth.util';
+
+const MARGIN_MS = 60_000;
 
 @Injectable({ providedIn: 'root' })
 export class AuthService {
-  private initPromise?: Promise<void>;
   private ready = false;
+  private expMs = 0;
+  private t: any;
+  private _state: string | null = null;
 
   constructor(private oauth: OAuthService) {}
 
-  /** Call from APP_INITIALIZER OR from the guard (it’s idempotent). */
-  initOnce(): Promise<void> {
-    if (this.initPromise) return this.initPromise;
-    this.initPromise = this.initFlow();
-    return this.initPromise;
-  }
-
-  private async initFlow(): Promise<void> {
+  async init(): Promise<void> {
     this.oauth.configure(authConfig);
-    await this.oauth.loadDiscoveryDocumentAndTryLogin();      // handles ?code=&state=
+    log('AUTH', 'configure');
+
+    await this.oauth.loadDiscoveryDocumentAndTryLogin();
+    log('AUTH', 'loadDiscoveryDocumentAndTryLogin done', {
+      hasAccess: this.oauth.hasValidAccessToken()
+    });
+
     if (!this.oauth.hasValidAccessToken()) {
-      // Do NOT try to refresh here—no token yet.
-      // Let the guard decide whether to trigger interactive login.
+      const target = curUrl();
+      log('AUTH', 'no token → initLoginFlow', { state: target });
+      await this.oauth.initLoginFlow(target);
       return;
     }
+
     this.ready = true;
-    this.scheduleProactive();                                 // set timer only after tokens exist
+    this.expMs = this.oauth.getAccessTokenExpiration() ?? 0;
+    this._state = this.oauth.state as string | null;
+    log('AUTH', 'authenticated', { expMs: this.expMs, state: this._state });
+
+    this.schedule();
+
+    this.oauth.events.subscribe((e: OAuthEvent) => {
+      if (e instanceof OAuthSuccessEvent && (e.type === 'token_received' || e.type === 'token_refreshed')) {
+        this.expMs = this.oauth.getAccessTokenExpiration() ?? 0;
+        log('AUTH', 'event', e.type, { expMs: this.expMs });
+        this.schedule();
+      }
+    });
+
+    // Optional: clean ?code&state in address bar
+    try {
+      const u = new URL(location.href);
+      if (u.searchParams.has('code') || u.searchParams.has('state')) {
+        u.searchParams.delete('code'); u.searchParams.delete('state');
+        history.replaceState({}, document.title, u.toString());
+        log('AUTH', 'cleaned code/state from URL bar');
+      }
+    } catch {}
   }
 
-  isReady(): boolean { return this.ready; }
-  hasToken(): boolean { return this.oauth.hasValidAccessToken(); }
-  get expiresAt(): number { return this.oauth.getAccessTokenExpiration(); }
-  get hasRefreshToken(): boolean { return !!(this.oauth as any).getRefreshToken?.(); }
-
-  async login(): Promise<void> { await this.oauth.initLoginFlow(); }  // redirect
-
-  async ensureValidToken(): Promise<void> {
-    // Hard guards: never refresh during init; never refresh without tokens.
-    if (!this.ready || !this.hasToken() || !this.hasRefreshToken) return;
-
-    const exp = this.expiresAt;
-    if (!exp || Date.now() + 60_000 < exp) return;            // >60s left → skip
-    await this.oauth.refreshToken();
+  isReady() { return this.ready; }
+  accessToken(): string | null { return this.oauth.getAccessToken() || null; }
+  readAndClearState(): string | null {
+    const s = this._state; this._state = null;
+    log('AUTH', 'readAndClearState', { state: s });
+    return s;
+  }
+  startLoginWithState(): Promise<void> {
+    const state = curUrl();
+    log('AUTH', 'startLoginWithState', { state });
+    return this.oauth.initLoginFlow(state);
   }
 
-  private scheduleProactive(): void {
-    const exp = this.expiresAt;
-    if (!exp || !this.hasRefreshToken) return;
-    const delay = Math.max(0, exp - Date.now() - 60_000);
-    setTimeout(() => { void this.ensureValidToken(); }, delay);
+  private async refreshIfNeeded(): Promise<void> {
+    if (!this.ready || !this.oauth.hasValidAccessToken()) return;
+    const rt = (this.oauth as any).getRefreshToken?.(); if (!rt) return;
+    const near = this.expMs > 0 && Date.now() + MARGIN_MS >= this.expMs;
+    if (!near) return;
+
+    log('AUTH', 'refreshIfNeeded → refreshing');
+    try { await this.oauth.refreshToken(); log('AUTH', 'refresh ok'); }
+    catch (e) {
+      log('AUTH', 'refresh failed', e);
+      if (this.expMs && Date.now() >= this.expMs) {
+        log('AUTH', 'expired → re-login');
+        await this.oauth.initLoginFlow(curUrl());
+      }
+    }
+  }
+
+  private schedule(): void {
+    clearTimeout(this.t);
+    if (!this.expMs) return;
+    const delay = Math.max(0, this.expMs - Date.now() - MARGIN_MS);
+    log('AUTH', 'schedule refresh', { inMs: delay });
+    this.t = setTimeout(() => { void this.refreshIfNeeded(); }, delay);
+  }
+
+  async logout(): Promise<void> {
+    log('AUTH', 'logout');
+    this.oauth.logOut();
   }
 }
 
-Helper to detect “implicit callback” (no dedicated route)
-// auth.util.ts
-export function isOidcCallbackUrl(): boolean {
-  const q = window.location.search || '';
-  const h = window.location.hash || '';
-  return /[?&]code=/.test(q) || /[?&]state=/.test(q) || /[#&]code=/.test(h) || /[#&]state=/.test(h);
+src/app/core/post-auth-navigator.service.ts
+
+Steps 3–6 live here.
+
+import { Injectable } from '@angular/core';
+import { Router } from '@angular/router';
+import { AuthService } from '../auth/auth.service';
+import { UserService } from './user.service';
+import { SessionBootstrapService } from './session-bootstrap.service';
+import { curUrl, log } from '../auth/auth.util';
+
+@Injectable({ providedIn: 'root' })
+export class PostAuthNavigator {
+  constructor(
+    private auth: AuthService,
+    private router: Router,
+    private user: UserService,
+    private sessionBootstrap: SessionBootstrapService
+  ) {}
+
+  async run(): Promise<void> {
+    if (!this.auth.isReady()) { log('NAV', 'skip: not authenticated'); return; }
+
+    // 1) Load user profile (doesn't need loan context)
+    await this.sessionBootstrap.ensureProfile();
+
+    // 2) Choose target: prefer OAuth state, else current URL
+    const target = this.auth.readAndClearState() || curUrl();
+    log('NAV', 'target chosen', { target });
+
+    // 3) Seed stored context (UX), then apply params from target
+    this.user.seedContextFromSession();
+    this.user.setFromUrlIfPresent(target);
+    const c = this.user.context();
+    log('NAV', 'context after apply', c);
+
+    // 4) If either missing → collect in /settings
+    if (!c.loanno || !c.contexttype) {
+      log('NAV', 'missing context → /settings');
+      if (location.pathname !== '/settings') {
+        await this.router.navigateByUrl('/settings', { replaceUrl: true });
+      }
+      return;
+    }
+
+    // 5) Normalize URL so both params are present
+    const u = new URL(target, location.origin);
+    u.searchParams.set('loanno', c.loanno!);
+    u.searchParams.set('contexttype', c.contexttype!);
+    const next = u.pathname + '?' + u.searchParams.toString() + u.hash;
+    const current = location.pathname + location.search + location.hash;
+
+    if (current !== next) {
+      log('NAV', 'normalize route', { from: current, to: next });
+      await this.router.navigateByUrl(next, { replaceUrl: true });
+    } else {
+      log('NAV', 'already normalized');
+    }
+  }
 }
 
-Auth Guard (waits for first login correctly)
+src/app/auth/auth.interceptor.ts
 
-Waits for initOnce() to finish
+Bearer attach + 401 reaction without loops.
 
-Skips itself on the OIDC callback load
+import { Injectable } from '@angular/core';
+import { HttpInterceptor, HttpRequest, HttpHandler, HttpEvent, HttpErrorResponse } from '@angular/common/http';
+import { Observable, from, throwError } from 'rxjs';
+import { catchError, switchMap } from 'rxjs/operators';
+import { AuthService } from './auth.service';
+import { isOidcUrl, log } from './auth.util';
 
-If still no token → kicks off interactive login (redirect) and returns false
+@Injectable()
+export class AuthInterceptor implements HttpInterceptor {
+  constructor(private auth: AuthService) {}
 
-If token exists → ensures freshness (but never during init)
+  intercept(req: HttpRequest<any>, next: HttpHandler): Observable<HttpEvent<any>> {
+    if (isOidcUrl(req.url)) { log('AINT', 'skip OIDC', req.url); return next.handle(req); }
 
-// auth.guard.ts (Angular 15+ functional guard)
+    const token = this.auth.accessToken();
+    const withAuth = token ? req.clone({ setHeaders: { Authorization: `Bearer ${token}` } }) : req;
+    if (token) log('AINT', 'attach bearer', { url: req.url });
+
+    return next.handle(withAuth).pipe(
+      catchError((err: any) => {
+        if (err instanceof HttpErrorResponse && err.status === 401) {
+          log('AINT', '401 received → re-login');
+          return from(this.auth.startLoginWithState()).pipe(
+            switchMap(() => throwError(() => err)) // navigation away; surface original error if still here
+          );
+        }
+        return throwError(() => err);
+      })
+    );
+  }
+}
+
+src/app/core/session.interceptor.ts
+
+Attach loan/context to all feature APIs. Skip OIDC and /api/me.
+
+import { Injectable } from '@angular/core';
+import { HttpInterceptor, HttpRequest, HttpHandler, HttpEvent } from '@angular/common/http';
+import { Observable } from 'rxjs';
+import { UserService } from './user.service';
+import { isOidcUrl, log } from '../auth/auth.util';
+
+@Injectable()
+export class SessionInterceptor implements HttpInterceptor {
+  constructor(private user: UserService) {}
+
+  intercept(req: HttpRequest<any>, next: HttpHandler): Observable<HttpEvent<any>> {
+    if (isOidcUrl(req.url) || req.url.endsWith('/api/me')) {
+      log('SINT', 'skip', req.url);
+      return next.handle(req);
+    }
+
+    const { loanno, contexttype } = this.user.context();
+    let r = req;
+
+    if (loanno)      r = r.clone({ setHeaders: { 'X-LoanNo': loanno } });
+    if (contexttype) r = r.clone({ setHeaders: { 'X-ContextType': contexttype } });
+    if (loanno || contexttype) log('SINT', 'attach context', { url: req.url, loanno, contexttype });
+
+    return next.handle(r);
+  }
+}
+
+src/app/auth/auth.guard.ts (optional failsafe)
 import { inject } from '@angular/core';
 import { CanActivateFn } from '@angular/router';
 import { AuthService } from './auth.service';
-import { isOidcCallbackUrl } from './auth.util';
+import { isOidcCallbackUrl, log } from './auth.util';
 
 export const authGuard: CanActivateFn = async () => {
   const auth = inject(AuthService);
-
-  if (isOidcCallbackUrl()) return true;               // let the lib finish the code flow
-
-  await auth.initOnce();                               // idempotent; waits for discovery+tryLogin
-
-  if (!auth.hasToken()) {
-    await auth.login();                                // redirect to IdP
-    return false;                                      // navigation stops until you come back
-  }
-
-  await auth.ensureValidToken();                       // near-expiry → RT refresh
-  return true;
+  if (isOidcCallbackUrl()) { log('GUARD', 'callback → pass'); return true; }
+  if (auth.isReady() && auth.accessToken()) { log('GUARD', 'auth ok → pass'); return true; }
+  log('GUARD', 'not auth → start login');
+  await auth.startLoginWithState();
+  return false;
 };
 
-Interceptor: skip OAuth endpoints & callback
-// auth.interceptor.ts
-private isAuthUrl(url: string): boolean {
-  return url.includes('/.well-known/')
-      || url.includes('/authorize')
-      || url.includes('/token')
-      || url.includes('/logout');
-}
+src/app/settings/settings.component.ts
+import { Component } from '@angular/core';
+import { FormsModule } from '@angular/forms';
+import { Router } from '@angular/router';
+import { UserService } from '../core/user.service';
+import { log } from '../auth/auth.util';
 
-intercept(req, next) {
-  if (this.isAuthUrl(req.url) || isOidcCallbackUrl()) {
-    return next.handle(req);                           // never touch OIDC traffic/callback load
+@Component({
+  selector: 'app-settings',
+  standalone: true,
+  imports: [FormsModule],
+  template: `
+    <h2>Loan Context</h2>
+    <label>Loan #</label>
+    <input type="text" [(ngModel)]="loanno" placeholder="e.g., 12345" />
+    <label>Context Type</label>
+    <input type="text" [(ngModel)]="contexttype" placeholder="e.g., 1" />
+    <button (click)="save()">Continue</button>
+  `
+})
+export class SettingsComponent {
+  loanno = '';
+  contexttype = '';
+  constructor(private user: UserService, private router: Router) {}
+
+  async save() {
+    const ln = this.loanno.trim(), ct = this.contexttype.trim();
+    this.user.setContext(ln, ct);
+    const to = `/funding?loanno=${encodeURIComponent(ln)}&contexttype=${encodeURIComponent(ct)}`;
+    log('NAV', 'settings → navigate', { to });
+    await this.router.navigateByUrl(to);
   }
-  // Optional: ensure freshness on normal API calls (auth.ensureValidToken has guards)
-  return from(this.auth.ensureValidToken()).pipe(
-    switchMap(() => next.handle(this.attach(req)))
-  );
 }
 
-Why this fixes your “wait for first login” issues
+Wire-up (AppModule or standalone bootstrap)
 
-Your guard’s “wait” is initOnce(), not refresh. It completes discovery + tryLogin and only then decides.
+Interceptor order matters: Auth first, then Session.
 
-You don’t call ensureValidToken() while init is running (when exp is unknown/0).
+// app.module.ts (NgModule example)
+import { NgModule, APP_INITIALIZER } from '@angular/core';
+import { BrowserModule } from '@angular/platform-browser';
+import { HTTP_INTERCEPTORS, HttpClientModule } from '@angular/common/http';
+import { RouterModule } from '@angular/router';
+import { AppComponent } from './app.component';
 
-The guard does not run on the OIDC callback load (code/state present), so you avoid loops.
+import { AuthService } from './auth/auth.service';
+import { PostAuthNavigator } from './core/post-auth-navigator.service';
+import { AuthInterceptor } from './auth/auth.interceptor';
+import { SessionInterceptor } from './core/session.interceptor';
+import { SessionBootstrapService } from './core/session-bootstrap.service';
 
-Interceptor ignores OIDC endpoints and the callback pass, preventing recursion and “unknown error” masking.
+export function bootstrap(auth: AuthService, boot: SessionBootstrapService, nav: PostAuthNavigator) {
+  return async () => {
+    await auth.init();                       // OAuth tokens ready
+    await boot.ensureProfile();              // /api/me loaded
+    await nav.run();                         // context + normalized route
+  };
+}
 
-If you already have an APP_INITIALIZER calling auth.initOnce(), keep it—it’ll resolve before the guard ever runs. If you don’t, the guard itself does the waiting safely.
+@NgModule({
+  declarations: [AppComponent],
+  imports: [
+    BrowserModule,
+    HttpClientModule,
+    RouterModule.forRoot([
+      { path: '', loadComponent: () => import('./home/home.component').then(m => m.HomeComponent) },
+      { path: 'funding', loadComponent: () => import('./funding/funding.component').then(m => m.FundingComponent) },
+      { path: 'settings', loadComponent: () => import('./settings/settings.component').then(m => m.SettingsComponent) },
+      { path: '**', redirectTo: '' },
+    ]),
+  ],
+  providers: [
+    { provide: APP_INITIALIZER, multi: true, deps: [AuthService, SessionBootstrapService, PostAuthNavigator], useFactory: bootstrap },
+    { provide: HTTP_INTERCEPTORS, useClass: AuthInterceptor,    multi: true },
+    { provide: HTTP_INTERCEPTORS, useClass: SessionInterceptor, multi: true },
+  ],
+  bootstrap: [AppComponent],
+})
+export class AppModule {}
+
+
+(For standalone bootstraps, put the same factory in bootstrapApplication(AppComponent, { providers: [...] }).)
+
+DevTools workflow (filterable logs)
+
+Search in the console for any of these:
+
+"[AUTH]" OAuth lifecycle, timers, refresh
+
+"[NAV]" post-auth routing + URL normalization
+
+"[USER]" context/profile mutations
+
+"[BOOT]" profile fetch
+
+"[AINT]" bearer attach / 401
+
+"[SINT]" loan/context header attach
+
+"[GUARD]" guard passes/redirects
+
+"[UTIL]" helper detections (OIDC URL/callback)
+
+Flip all logs off by setting AUTH_DEBUG = false in auth.util.ts.
+
+Quick sanity checklist
+
+Hit /funding?loanno=12345&contexttype=1 (unauthenticated):
+[AUTH] configure → initLoginFlow(state) → back → [AUTH] authenticated →
+[BOOT] /api/me → [NAV] target chosen → [NAV] context after apply → [NAV] already normalized →
+First API call: [AINT] attach bearer, then [SINT] attach context.
+
+Hit / (no params): after auth & /api/me → [NAV] missing context → /settings → enter both → navigate → normalized URL.
+
+This structure keeps auth code organized, testable, and easy to maintain while giving you a single switch for temporary debug logging.
