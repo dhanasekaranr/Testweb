@@ -1,91 +1,55 @@
-// auth.guard.ts
 import { Injectable } from '@angular/core';
-import { CanActivate, ActivatedRouteSnapshot, RouterStateSnapshot, Router, UrlTree } from '@angular/router';
+import { CanMatch, Route, Router, UrlSegment, UrlTree } from '@angular/router';
 import { AuthService } from './auth.service';
 import { UserService } from '../core/user.service';
 import { isOidcCallbackUrl, log } from './auth.util';
-
-type CtxPolicy = 'both' | 'ctxOnly' | 'none';
-
-// DEFAULT = 'both' → only set data.ctxPolicy for the few outliers
-function policyFromRouteData(data: any): CtxPolicy {
-  const p = (data?.['ctxPolicy'] as CtxPolicy) ?? 'both';
-  return p === 'ctxOnly' || p === 'none' ? p : 'both';
-}
-
-/**
- * Clean-URL normalization:
- * - Never ADD loanno/contexttype to the URL.
- * - Only REMOVE params that are disallowed by the route policy.
- * - Always preserve the full current path (including child routes like /funding/return).
- */
-function normalizeCleanUrl(currentUrl: string, policy: CtxPolicy): string {
-  const u = new URL(currentUrl, window.location.origin);
-
-  // We never add; we only remove when policy says they shouldn't be visible.
-  if (policy === 'none') {
-    u.searchParams.delete('loanno');
-    u.searchParams.delete('contexttype');
-  } else if (policy === 'ctxOnly') {
-    // ctxOnly routes shouldn’t show loanno; contexttype visibility is your call.
-    // If you want a fully clean URL, also delete contexttype:
-    u.searchParams.delete('loanno');
-    // u.searchParams.delete('contexttype'); // uncomment if you want to hide this too
-  } else {
-    // policy === 'both' (default): keep URL clean and rely on UserService/session.
-    u.searchParams.delete('loanno');
-    u.searchParams.delete('contexttype');
-  }
-
-  const q = u.searchParams.toString();
-  return u.pathname + (q ? `?${q}` : '') + u.hash;
-}
+import { CtxPolicy, policyFromRouteData, normalizeCleanUrl } from './guard-utils';
 
 @Injectable({ providedIn: 'root' })
-export class AuthGuard implements CanActivate {
+export class AuthMatchGuard implements CanMatch {
   constructor(
     private auth: AuthService,
     private user: UserService,
     private router: Router
   ) {}
 
-  async canActivate(route: ActivatedRouteSnapshot, state: RouterStateSnapshot): Promise<boolean | UrlTree> {
-    // Use the FULL current URL, not route.routeConfig.path (which loses child segments)
-    const currentUrl = state.url;
+  async canMatch(route: Route, segments: UrlSegment[]): Promise<boolean | UrlTree> {
+    // Use the FULL current URL so child segments are preserved (e.g., /funding/return)
+    const currentUrl = window.location.pathname + window.location.search + window.location.hash;
 
-    // 1) OIDC callback pass-through
-    if (isOidcCallbackUrl()) { log('GUARD', 'callback → pass', { currentUrl }); return true; }
+    // 1) Let OIDC callback through so the SDK can finish code flow
+    if (isOidcCallbackUrl()) { log('GUARD', 'callback → pass (match)', { currentUrl }); return true; }
 
     // 2) Auth check
     if (!(this.auth.isReady() && this.auth.accessToken())) {
-      log('GUARD', 'not auth → start login', { returnUrl: currentUrl });
+      log('GUARD', 'not auth → start login (match)', { returnUrl: currentUrl });
       await this.auth.startLoginWithState();
       return false;
     }
 
-    // 3) Context policy (default 'both')
-    const policy = policyFromRouteData(route.data);
+    // 3) Context policy (default 'both'); outliers: 'ctxOnly' | 'none'
+    const policy: CtxPolicy = policyFromRouteData(route.data);
     const { loanno, contexttype } = this.user.context();
-    log('GUARD', 'policy', { policy, loanno, contexttype, currentUrl });
+    log('GUARD', 'policy (match)', { policy, loanno, contexttype, currentUrl });
 
-    // Missing-required → /settings (guard enforces; PostAuthNavigator does not redirect)
+    // Missing-required → /settings
     if (policy === 'both' && (!loanno || !contexttype)) {
-      log('GUARD', 'missing both → /settings');
+      log('GUARD', 'missing both → /settings (match)');
       return this.router.parseUrl('/settings');
     }
     if (policy === 'ctxOnly' && !contexttype) {
-      log('GUARD', 'missing ctxOnly → /settings');
+      log('GUARD', 'missing ctxOnly → /settings (match)');
       return this.router.parseUrl('/settings');
     }
 
-    // 4) Clean-URL normalization (do not add params; only remove when disallowed)
+    // 4) Clean-URL normalization (remove disallowed params; never add)
     const next = normalizeCleanUrl(currentUrl, policy);
     if (currentUrl !== next) {
-      log('GUARD', 'normalize (clean)', { from: currentUrl, to: next });
+      log('GUARD', 'normalize (clean/match)', { from: currentUrl, to: next });
       return this.router.parseUrl(next);
     }
 
-    log('GUARD', 'pass');
+    log('GUARD', 'pass (match)');
     return true;
   }
 }
