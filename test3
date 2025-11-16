@@ -1,55 +1,121 @@
-import { Injectable } from '@angular/core';
-import { CanMatch, Route, Router, UrlSegment, UrlTree } from '@angular/router';
-import { AuthService } from './auth.service';
-import { UserService } from '../core/user.service';
-import { isOidcCallbackUrl, log } from './auth.util';
-import { CtxPolicy, policyFromRouteData, normalizeCleanUrl } from './guard-utils';
-
+// post-auth-navigator.service.ts
 @Injectable({ providedIn: 'root' })
-export class AuthMatchGuard implements CanMatch {
-  constructor(
-    private auth: AuthService,
-    private user: UserService,
-    private router: Router
-  ) {}
+export class PostAuthNavigator {
+  constructor(private auth: AuthService, private user: UserService, private router: Router) {}
 
-  async canMatch(route: Route, segments: UrlSegment[]): Promise<boolean | UrlTree> {
-    // Use the FULL current URL so child segments are preserved (e.g., /funding/return)
-    const currentUrl = window.location.pathname + window.location.search + window.location.hash;
+  private cur() { return location.pathname + location.search + location.hash; }
 
-    // 1) Let OIDC callback through so the SDK can finish code flow
-    if (isOidcCallbackUrl()) { log('GUARD', 'callback → pass (match)', { currentUrl }); return true; }
+  async run(): Promise<void> {
+    if (!this.auth.isReady()) return;
 
-    // 2) Auth check
+    // Read original deep link from OAuth state (decode & clear) or fall back to current URL
+    const target = this.auth.readAndClearState?.() || this.cur();
+
+    // Seed context from session + target (robust parser handles encoded/hash forms)
+    this.user.seedContextFromSession();
+    this.user.setFromUrlIfPresent(target);
+
+    // If we’re sitting on "/" after IdP, hop once to the deep link and replace URL
+    const current = this.cur();
+    if (current === '/' && target && target !== '/' && !target.startsWith('/settings')) {
+      this.auth.setPendingTarget(target); // handoff for the forthcoming guard
+      await this.router.navigateByUrl(target, { replaceUrl: true });
+      return;
+    }
+
+    // If callback params still show, scrub them
+    if (/[?&#]code=/.test(location.search + location.hash) &&
+        /[?&#]state=/.test(location.search + location.hash)) {
+      await this.router.navigateByUrl('/', { replaceUrl: true });
+    }
+  }
+}
+Guard — auth + ctx policy + clean URL
+Use state.url for the active navigation, but prefer pendingTarget on the first hop right after login.
+
+Enforce both/ctxOnly/none.
+
+Normalize by removing loanno/contexttype from the URL (never add), preserving full paths like /funding/return.
+
+ts
+Copy code
+// auth.guard.ts
+@Injectable({ providedIn: 'root' })
+export class AuthGuard implements CanActivate {
+  constructor(private auth: AuthService, private user: UserService, private router: Router) {}
+
+  async canActivate(route: ActivatedRouteSnapshot, state: RouterStateSnapshot): Promise<boolean | UrlTree> {
+    // Let OAuth callback URL pass; Boot handles it
+    if (/[?&#]code=/.test(location.search + location.hash) &&
+        /[?&#]state=/.test(location.search + location.hash)) {
+      return true;
+    }
+
+    // Auth check
     if (!(this.auth.isReady() && this.auth.accessToken())) {
-      log('GUARD', 'not auth → start login (match)', { returnUrl: currentUrl });
-      await this.auth.startLoginWithState();
+      await this.auth.startLoginWithState(); // saves desired URL to OAuth state
       return false;
     }
 
-    // 3) Context policy (default 'both'); outliers: 'ctxOnly' | 'none'
-    const policy: CtxPolicy = policyFromRouteData(route.data);
+    // Prefer one-time restored target if present
+    const target = this.auth.consumePendingTarget();
+    const currentUrl = target ?? state.url;
+
+    // Defensive seeding from URL we’re activating
+    this.user.seedContextFromSession();
+    this.user.setFromUrlIfPresent(currentUrl);
+
+    // Policy: default = 'both' (overrides via route data)
+    const policy = (route.data?.['ctxPolicy'] as 'both' | 'ctxOnly' | 'none') ?? 'both';
     const { loanno, contexttype } = this.user.context();
-    log('GUARD', 'policy (match)', { policy, loanno, contexttype, currentUrl });
 
-    // Missing-required → /settings
-    if (policy === 'both' && (!loanno || !contexttype)) {
-      log('GUARD', 'missing both → /settings (match)');
-      return this.router.parseUrl('/settings');
-    }
-    if (policy === 'ctxOnly' && !contexttype) {
-      log('GUARD', 'missing ctxOnly → /settings (match)');
-      return this.router.parseUrl('/settings');
-    }
+    if (policy === 'both' && (!loanno || !contexttype)) return this.router.parseUrl('/settings');
+    if (policy === 'ctxOnly' && !contexttype)          return this.router.parseUrl('/settings');
 
-    // 4) Clean-URL normalization (remove disallowed params; never add)
-    const next = normalizeCleanUrl(currentUrl, policy);
-    if (currentUrl !== next) {
-      log('GUARD', 'normalize (clean/match)', { from: currentUrl, to: next });
-      return this.router.parseUrl(next);
-    }
-
-    log('GUARD', 'pass (match)');
-    return true;
+    // Clean URL (remove params only)
+    const next = normalizeCleanUrl(currentUrl, policy); // your helper that deletes loanno/contexttype
+    return (next !== currentUrl) ? this.router.parseUrl(next) : true;
   }
+}
+Optional: Add AuthMatchGuard (same logic) on heavy/preloaded routes to block lazy-load early. Otherwise, canActivate alone is fine.
+
+User context parsing — robust (encoded/hash/relative)
+Your UserService.readParams must handle:
+
+URL-encoded strings from OAuth state (%2F, %3F, %26)
+
+relative paths (provide base)
+
+rare “query in hash” cases
+
+ts
+Copy code
+function safeMultiDecode(s: string): string {
+  let i = 0, cur = s;
+  while (i++ < 3) { try { const d = decodeURIComponent(cur); if (d === cur) break; cur = d; } catch { break; } }
+  return cur;
+}
+
+function readParams(urlLike = location.href): Partial<UserContext> {
+  const decoded = /%[0-9A-Fa-f]{2}/.test(urlLike) ? safeMultiDecode(urlLike) : urlLike;
+  const u = new URL(decoded, location.origin);
+
+  let loanno = u.searchParams.get('loanno');
+  let contexttype = u.searchParams.get('contexttype');
+
+  // fallback: hash query
+  if ((!loanno || !contexttype) && u.hash) {
+    const hash = u.hash.slice(1);
+    const idx = hash.indexOf('?');
+    if (idx >= 0) {
+      const hq = new URLSearchParams(hash.slice(idx + 1));
+      loanno      = loanno      ?? hq.get('loanno');
+      contexttype = contexttype ?? hq.get('contexttype');
+    }
+  }
+
+  return {
+    loanno: loanno?.trim() || null,
+    contexttype: contexttype?.trim() || null,
+  };
 }
