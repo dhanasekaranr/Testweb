@@ -1,220 +1,39 @@
-auth.service.ts
-import { Injectable } from '@angular/core';
-import { OAuthService, AuthConfig, OAuthEvent } from 'angular-oauth2-oidc';
-import { BehaviorSubject, firstValueFrom } from 'rxjs';
-import { filter, take } from 'rxjs/operators';
+OAuth2/OIDC in Angular 19 — End-to-End Developer Guide
 
-@Injectable({ providedIn: 'root' })
-export class AuthService {
-  private initReady!: Promise<void>;
+This README gives you a clean, reliable, production-ready flow for:
 
-  // refresh single-flight lock
-  private refreshing$ = new BehaviorSubject<boolean>(false);
-  private refreshDone$ = new BehaviorSubject<boolean>(true);
+Code flow with refresh token
 
-  // reauth lock to prevent multiple redirects
-  private reauthInProgress = false;
+Deep-link restore after login (no flicker, no / or ?code&state)
 
-  constructor(private oauth: OAuthService) {}
+Per-route context policy (both | ctxOnly | none)
 
-  /** Call this once from app initializer AFTER your config.json is loaded. */
-  async init(authConfig: AuthConfig): Promise<void> {
-    this.oauth.configure(authConfig);
-    this.oauth.setStorage(localStorage); // or sessionStorage
+Clean URLs (strip loanno / contexttype from the address bar)
 
-    this.initReady = (async () => {
-      await this.oauth.loadDiscoveryDocumentAndTryLogin();
-      if (this.oauth.hasValidAccessToken()) this.schedulePreemptiveRefresh();
+Single-flight refresh and optional short-expiry test harness
 
-      this.oauth.events.subscribe((e: OAuthEvent) => {
-        if (e.type === 'token_received' || e.type === 'token_refreshed') {
-          this.schedulePreemptiveRefresh();
-        }
-      });
-    })();
+Navigation telemetry (success/fail)
 
-    await this.initReady;
-  }
+The examples use standalone files/services; adapt names/paths as needed.
 
-  waitUntilReady(): Promise<void> { return this.initReady; }
+1) High-Level Architecture
 
-  // ---- Session helpers
-  login(): void {
-    if (this.reauthInProgress) return;
-    this.reauthInProgress = true;
-    this.oauth.initLoginFlow();
-  }
-  logout(): void {
-    this.reauthInProgress = false;
-    this.oauth.logOut(true);
-  }
+Actors
 
-  get accessToken(): string | null { return this.oauth.getAccessToken() || null; }
-  hasValidAccessToken(): boolean { return this.oauth.hasValidAccessToken(); }
-  getAccessTokenExpiry(): number { return this.oauth.getAccessTokenExpiration(); }
-  getRefreshToken(): string | null { return this.oauth.getRefreshToken() || null; }
+AuthService — wraps your OAuth client; exposes init(), accessToken(), refresh logic, and a one-time pendingTarget handoff.
 
-  /** Ensures AT is valid; uses RT if expiring/expired. Throws if reauth triggered/fails. */
-  async ensureFreshToken(returnUrl?: string): Promise<void> {
-    await this.waitUntilReady();
+BootService — orchestrates first run via APP_INITIALIZER (awaited).
 
-    const msLeft = this.getAccessTokenExpiry() - Date.now();
-    const needs = !this.hasValidAccessToken() || msLeft < 60_000;
-    if (!needs) return;
+PostAuthNavigator — reads saved deep link from storage/state, seeds context, and performs a one-time deep-link hop (and URL cleanup).
 
-    const rt = this.getRefreshToken();
-    if (!rt) return this.triggerReauth(returnUrl, 'NO_REFRESH_TOKEN');
+UserService — owns context (loanno, contexttype) as signals/behavior + robust readParams(url) (handles encoded/hash/relative).
 
-    await this.refreshSingleFlight();
-  }
+AuthGuard — enforces auth + context policy, prefers pendingTarget once, and removes context params from URL.
 
-  /** Call explicitly only on 401 before giving up. */
-  async tryRefreshOnce(): Promise<boolean> {
-    try {
-      await this.refreshSingleFlight();
-      return true;
-    } catch {
-      return false;
-    }
-  }
+(Optional) AuthMatchGuard — same policy as AuthGuard but for canMatch to block heavy lazy-loads earlier.
 
-  // ---------------- private ----------------
+MonitoringService + NavTelemetryService — Router-level telemetry (once per navigation).
 
-  private async refreshSingleFlight(): Promise<void> {
-    if (this.refreshing$.value) {
-      await firstValueFrom(this.refreshDone$.pipe(filter(v => v), take(1)));
-      return;
-    }
-    const rt = this.getRefreshToken();
-    if (!rt) throw new Error('NO_REFRESH_TOKEN');
+Storage
 
-    this.refreshing$.next(true);
-    this.refreshDone$.next(false);
-    try {
-      const ok = await this.oauth.refreshToken(); // form-url-encoded to discovered token_endpoint
-      if (!ok) throw new Error('REFRESH_FAILED');
-    } finally {
-      this.refreshing$.next(false);
-      this.refreshDone$.next(true);
-    }
-  }
-
-  private triggerReauth(returnUrl?: string, reason?: string): never {
-    if (returnUrl) sessionStorage.setItem('returnUrl', returnUrl);
-    this.login(); // will set reauthInProgress and redirect
-    throw new Error(reason || 'REAUTH_TRIGGERED');
-  }
-
-  private schedulePreemptiveRefresh(): void {
-    // refresh ~60s before expiry (and ignore if already refreshed)
-    const delay = Math.max(this.getAccessTokenExpiry() - Date.now() - 60_000, 0);
-    setTimeout(() => {
-      if (this.getAccessTokenExpiry() <= Date.now() + 90_000) {
-        // fire-and-forget; interceptor/guard will handle hard cases
-        this.refreshSingleFlight().catch(() => {});
-      }
-    }, delay);
-  }
-}
-
-auth.guard.ts
-import { Injectable } from '@angular/core';
-import { CanActivate, ActivatedRouteSnapshot, RouterStateSnapshot } from '@angular/router';
-import { AuthService } from './auth.service';
-
-@Injectable({ providedIn: 'root' })
-export class AuthGuard implements CanActivate {
-  constructor(private auth: AuthService) {}
-
-  async canActivate(route: ActivatedRouteSnapshot, state: RouterStateSnapshot): Promise<boolean> {
-    try {
-      await this.auth.ensureFreshToken(state.url); // will RT-refresh or trigger login()
-      return true;
-    } catch {
-      return false; // navigation aborted because login redirect started
-    }
-  }
-}
-
-auth.interceptor.ts
-import { Injectable } from '@angular/core';
-import {
-  HttpInterceptor, HttpRequest, HttpHandler, HttpEvent, HttpErrorResponse
-} from '@angular/common/http';
-import { Observable, from, throwError } from 'rxjs';
-import { catchError, switchMap } from 'rxjs/operators';
-import { AuthService } from './auth.service';
-import { OAuthService } from 'angular-oauth2-oidc';
-
-/**
- * - Adds Bearer only to YOUR APIs (do NOT touch IdP endpoints).
- * - Ensures token freshness pre-request.
- * - On 401 once: refresh via RT, retry the request.
- * - If still failing: hard reauth (full redirect).
- */
-@Injectable()
-export class AuthInterceptor implements HttpInterceptor {
-  constructor(private auth: AuthService, private oauth: OAuthService) {}
-
-  intercept(req: HttpRequest<any>, next: HttpHandler): Observable<HttpEvent<any>> {
-    // Never decorate IdP calls (token/userinfo/logout/etc.) — avoids recursive refresh/CORS
-    if (this.isOidcEndpoint(req.url)) {
-      return next.handle(req);
-    }
-
-    // Add Authorization only if we’re not calling IdP
-    const withAuth = () => {
-      const t = this.auth.accessToken;
-      return t ? req.clone({ setHeaders: { Authorization: `Bearer ${t}` } }) : req;
-    };
-
-    // Pre-flight freshness (cheap path if token is fine)
-    return from(this.auth.ensureFreshToken()).pipe(
-      switchMap(() => next.handle(withAuth())),
-      catchError(err => {
-        // If not an auth error, bubble up
-        if (!this.isAuthError(err)) return throwError(() => err);
-
-        // Prevent infinite loops: do NOT refresh if the failing call is (somehow) an IdP endpoint
-        if (this.isOidcEndpoint(req.url)) return throwError(() => err);
-
-        // Retry once after an explicit refresh
-        return from(this.auth.tryRefreshOnce()).pipe(
-          switchMap(ok => ok ? next.handle(withAuth()) : throwError(() => err)),
-          catchError(err2 => {
-            // Hard reauth (single flight)
-            try {
-              const currentUrl = window.location.pathname + window.location.search + window.location.hash;
-              sessionStorage.setItem('returnUrl', currentUrl);
-              this.auth.login();
-            } catch { /* ignore */ }
-            return throwError(() => err2);
-          })
-        );
-      })
-    );
-  }
-
-  private isAuthError(err: any): boolean {
-    if (err instanceof HttpErrorResponse) {
-      if (err.status === 401) return true;
-      const hdr = err.headers?.get('WWW-Authenticate') || '';
-      const msg = (err.error && (err.error.error || err.error.message)) || '';
-      return /invalid_token|expired/i.test(hdr + ' ' + msg);
-    }
-    return false;
-  }
-
-  /** Identify OIDC endpoints to leave them untouched. */
-  private isOidcEndpoint(url: string): boolean {
-    const dd: any = (this.oauth as any).discoveryDocument || {};
-    const known = [
-      (this.oauth as any).tokenEndpoint || dd.token_endpoint,
-      dd.userinfo_endpoint,
-      dd.revocation_endpoint,
-      dd.introspection_endpoint,
-      dd.end_session_endpoint
-    ].filter(Boolean) as string[];
-    return known.some(u => typeof u === 'string' && url.startsWith(u));
-  }
-}
+sessionStorage['oauth:return_to'] — holds return URL across IdP round-trip (per-tab, cleared on read).
