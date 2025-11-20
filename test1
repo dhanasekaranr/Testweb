@@ -1,98 +1,104 @@
-flowchart LR
+@startuml
+title Funding Return Save - End to End Flow
 
-    %% UI
-    subgraph UI
-        BtnSave[Return UI Save - user clicks button]
-    end
+' LAYOUT HINTS
+left to right direction
 
-    %% API LAYER
-    subgraph API
-        Ctrl[Controller - receives HTTP request]
-        TxnOrch[TransactionOrchestrator - coordinates save and queue]
-        Apply[ApplyChanges - update EF entities from DTO]
-        AuditCap[AuditCaptureService - build AuditContext from EF ChangeTracker]
-        HandlerRes[HandlerChainResolver - compute handler list for module screen operation]
-        PayloadBuild[WorkItemFactory - build WorkItemPayload object]
-        QueueWrite[WorkItemQueueWriter - insert row into WORK_ITEM_QUEUE]
-    end
+'=== UI LAYER ===
+package "UI" {
+  [Return UI Save\n(user clicks Save)] as BtnSave
+}
 
-    %% BUSINESS DB
-    subgraph BusinessDB
-        BizTables[Business tables - Loan Funding etc]
-    end
+'=== API LAYER ===
+package ".NET Core API" {
+  [Controller\n(receives HTTP request)] as Ctrl
+  [TransactionOrchestrator\n(coordinates save + queue)] as TxnOrch
+  [ApplyChanges\n(update EF entities from DTO)] as Apply
+  [AuditCaptureService\n(build AuditContext from ChangeTracker)] as AuditCap
+  [HandlerChainResolver\n(derive handler list)] as HandlerRes
+  [WorkItemFactory\n(build WorkItemPayload)] as PayloadBuild
+  [WorkItemQueueWriter\n(insert row into WORK_ITEM_QUEUE)] as QueueWrite
+}
 
-    %% QUEUE DB
-    subgraph QueueDB
-        WQ[WORK_ITEM_QUEUE - outbox of pending work items]
-    end
+'=== BUSINESS DB ===
+database "Business DB" {
+  [Loan / Funding Tables] as BizTables
+}
 
-    %% WORKER SERVICE
-    subgraph Worker
-        Poll[Poller - fetch batch of pending work items]
-        ProcItem[WorkItemProcessor - process one work item at a time]
-        CtxBuild[ContextBuilder - deserialize payload and build processor context]
-    end
+'=== QUEUE DB ===
+database "Queue DB" {
+  [WORK_ITEM_QUEUE\n(outbox of pending work items)] as WQ
+}
 
-    %% HANDLERS (ORCHESTRATORS)
-    subgraph Handlers
-        HGen[Generic_Save_Handler - global behavior for many screens]
-        HFundReturn[FundingModule_Return_Handler - funding return screen level logic]
-        HFundReturnSave[FundingModule_Return_Save_Handler - operation specific save logic]
-    end
+'=== WORKER SERVICE ===
+package "Worker Service" {
+  [Poller\n(fetch pending work items)] as Poll
+  [WorkItemProcessor\n(process one work item)] as ProcItem
+  [ContextBuilder\n(deserialize payload + build context)] as CtxBuild
+}
 
-    %% PROCESSORS (REUSABLE UNITS)
-    subgraph Processors
-        PAudit[AuditTrailProcessor - filter changes and call legacy audit]
-        PEvent[EventCreatorProcessor - select and publish events]
-        PStatus[StatusUpdateProcessor - update loan or other status]
-        PService[ServiceCallProcessor - call external REST or services]
-    end
+'=== HANDLERS (ORCHESTRATORS) ===
+package "Handlers (Orchestrators)" {
+  [Generic_Save_Handler\n(global behavior)] as HGen
+  [FundingModule_Return_Handler\n(screen-level logic)] as HFundReturn
+  [FundingModule_Return_Save_Handler\n(operation-level logic)] as HFundReturnSave
+}
 
-    %% EXTERNAL AND LEGACY SYSTEMS
-    subgraph External
-        LegacyAudit[Legacy audit engine - C plus plus wrapper]
-        EventBus[Event bus or Kafka topic]
-        StatusSys[Status or core system]
-        RestSvc[External REST systems or services]
-    end
+'=== PROCESSORS (REUSABLE UNITS) ===
+package "Processors" {
+  [AuditTrailProcessor\n(filter changes + call legacy audit)] as PAudit
+  [EventCreatorProcessor\n(select and publish events)] as PEvent
+  [StatusUpdateProcessor\n(update loan/status)] as PStatus
+  [ServiceCallProcessor\n(call external REST/services)] as PService
+}
 
-    %% UI -> API FLOW
-    BtnSave --> Ctrl
-    Ctrl --> TxnOrch
+'=== EXTERNAL / LEGACY SYSTEMS ===
+package "External / Legacy Systems" {
+  [Legacy Audit Engine\n(C++ wrapper)] as LegacyAudit
+  [Event Bus / Kafka Topic] as EventBus
+  [Status / Core System] as StatusSys
+  [External REST Systems] as RestSvc
+}
 
-    TxnOrch --> Apply
-    Apply --> BizTables
+'=== FLOW: UI -> API ===
+BtnSave --> Ctrl
+Ctrl --> TxnOrch
 
-    TxnOrch --> AuditCap
-    AuditCap --> HandlerRes
-    HandlerRes --> PayloadBuild
-    PayloadBuild --> QueueWrite
-    QueueWrite --> WQ
+TxnOrch --> Apply
+Apply --> BizTables
 
-    %% QUEUE -> WORKER FLOW
-    WQ --> Poll
-    Poll --> ProcItem
-    ProcItem --> CtxBuild
+TxnOrch --> AuditCap
+AuditCap --> HandlerRes
+HandlerRes --> PayloadBuild
+PayloadBuild --> QueueWrite
+QueueWrite --> WQ
 
-    %% HANDLER CHAIN FOR FUNDING RETURN SAVE
-    CtxBuild --> HGen
-    CtxBuild --> HFundReturn
-    CtxBuild --> HFundReturnSave
+'=== FLOW: QUEUE -> WORKER ===
+WQ --> Poll
+Poll --> ProcItem
+ProcItem --> CtxBuild
 
-    %% EACH HANDLER ORCHESTRATES PROCESSORS
-    HGen --> PAudit
-    HGen --> PEvent
+'=== HANDLER CHAIN FOR FUNDING RETURN SAVE ===
+CtxBuild --> HGen
+CtxBuild --> HFundReturn
+CtxBuild --> HFundReturnSave
 
-    HFundReturn --> PAudit
-    HFundReturn --> PEvent
+'=== EACH HANDLER ORCHESTRATES PROCESSORS ===
+HGen --> PAudit
+HGen --> PEvent
 
-    HFundReturnSave --> PAudit
-    HFundReturnSave --> PEvent
-    HFundReturnSave --> PStatus
-    HFundReturnSave --> PService
+HFundReturn --> PAudit
+HFundReturn --> PEvent
 
-    %% PROCESSORS -> EXTERNAL SYSTEMS
-    PAudit --> LegacyAudit
-    PEvent --> EventBus
-    PStatus --> StatusSys
-    PService --> RestSvc
+HFundReturnSave --> PAudit
+HFundReturnSave --> PEvent
+HFundReturnSave --> PStatus
+HFundReturnSave --> PService
+
+'=== PROCESSORS -> EXTERNAL SYSTEMS ===
+PAudit --> LegacyAudit
+PEvent --> EventBus
+PStatus --> StatusSys
+PService --> RestSvc
+
+@enduml
