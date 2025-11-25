@@ -1,104 +1,67 @@
-@startuml
-title Funding Return Save - End to End Flow
+// new accessible-text-field.component.ts
 
-' LAYOUT HINTS
-left to right direction
+   //html will have <Mat-input/> hint, error etc.
 
-'=== UI LAYER ===
-package "UI" {
-  [Return UI Save\n(user clicks Save)] as BtnSave
-}
+   @Input() config!: FieldConfig;
+   @Input() control!: AbstractControl | null;
+   get fc(): FormControl | null {
+      return (this.control as FormControl) ?? null;
+   }
 
-'=== API LAYER ===
-package ".NET Core API" {
-  [Controller\n(receives HTTP request)] as Ctrl
-  [TransactionOrchestrator\n(coordinates save + queue)] as TxnOrch
-  [ApplyChanges\n(update EF entities from DTO)] as Apply
-  [AuditCaptureService\n(build AuditContext from ChangeTracker)] as AuditCap
-  [HandlerChainResolver\n(derive handler list)] as HandlerRes
-  [WorkItemFactory\n(build WorkItemPayload)] as PayloadBuild
-  [WorkItemQueueWriter\n(insert row into WORK_ITEM_QUEUE)] as QueueWrite
-}
 
-'=== BUSINESS DB ===
-database "Business DB" {
-  [Loan / Funding Tables] as BizTables
-}
 
-'=== QUEUE DB ===
-database "Queue DB" {
-  [WORK_ITEM_QUEUE\n(outbox of pending work items)] as WQ
-}
+FormBuilderComponent -- 
 
-'=== WORKER SERVICE ===
-package "Worker Service" {
-  [Poller\n(fetch pending work items)] as Poll
-  [WorkItemProcessor\n(process one work item)] as ProcItem
-  [ContextBuilder\n(deserialize payload + build context)] as CtxBuild
-}
+  @Output() formCreated = new EventEmitter<FormGroup>();
+  form!: FormGroup;
 
-'=== HANDLERS (ORCHESTRATORS) ===
-package "Handlers (Orchestrators)" {
-  [Generic_Save_Handler\n(global behavior)] as HGen
-  [FundingModule_Return_Handler\n(screen-level logic)] as HFundReturn
-  [FundingModule_Return_Save_Handler\n(operation-level logic)] as HFundReturnSave
-}
+  constructor() {}
 
-'=== PROCESSORS (REUSABLE UNITS) ===
-package "Processors" {
-  [AuditTrailProcessor\n(filter changes + call legacy audit)] as PAudit
-  [EventCreatorProcessor\n(select and publish events)] as PEvent
-  [StatusUpdateProcessor\n(update loan/status)] as PStatus
-  [ServiceCallProcessor\n(call external REST/services)] as PService
-}
+  ngOnInit(): void {
+    this.form = buildTheForm( based on the config);
+    this.formCreated.emit(this.form);
+  }
 
-'=== EXTERNAL / LEGACY SYSTEMS ===
-package "External / Legacy Systems" {
-  [Legacy Audit Engine\n(C++ wrapper)] as LegacyAudit
-  [Event Bus / Kafka Topic] as EventBus
-  [Status / Core System] as StatusSys
-  [External REST Systems] as RestSvc
-}
+  FormBuilderComponent.html // usage of accessible shared text input
 
-'=== FLOW: UI -> API ===
-BtnSave --> Ctrl
-Ctrl --> TxnOrch
+    <cvl-accessible-text-field
+      [config]="fieldConfig" // pass field level config 
+      [control]="form.get(field.name)"> // form is formgroup created in formbuilder component 
+    </cvl-accessible-text-field>
+  
+  
+  
+  
+ParentComponent - 
 
-TxnOrch --> Apply
-Apply --> BizTables
+	  <cvl-form-builder
+		............
+		(formCreated)="onFormCreated($event)">
+	  </cvl-form-builder>  
+  
+  
+	  form!: FormGroup;
 
-TxnOrch --> AuditCap
-AuditCap --> HandlerRes
-HandlerRes --> PayloadBuild
-PayloadBuild --> QueueWrite
-QueueWrite --> WQ
+	  onFormCreated(form: FormGroup) {
+		this.form = form;
+	  }
+	  
+	  
+	  
+// if the parent is tab-group component 
+// tab-group.component.ts	  
 
-'=== FLOW: QUEUE -> WORKER ===
-WQ --> Poll
-Poll --> ProcItem
-ProcItem --> CtxBuild
+  // map: tabId -> FormGroup // I guess u are already doing something like this ....this is for info of the flow, no need to follow this pattern
+  private tabForms = new Map<string, FormGroup>();
 
-'=== HANDLER CHAIN FOR FUNDING RETURN SAVE ===
-CtxBuild --> HGen
-CtxBuild --> HFundReturn
-CtxBuild --> HFundReturnSave
-
-'=== EACH HANDLER ORCHESTRATES PROCESSORS ===
-HGen --> PAudit
-HGen --> PEvent
-
-HFundReturn --> PAudit
-HFundReturn --> PEvent
-
-HFundReturnSave --> PAudit
-HFundReturnSave --> PEvent
-HFundReturnSave --> PStatus
-HFundReturnSave --> PService
-
-'=== PROCESSORS -> EXTERNAL SYSTEMS ===
-PAudit --> LegacyAudit
-PEvent --> EventBus
-PStatus --> StatusSys
-PService --> RestSvc
-
-@enduml
+  onTabFormCreated(tabId: string, form: FormGroup): void {
+    this.tabForms.set(tabId, form);
+  }
+  
+  html//
+    for each tab {
+      <cvl-form-builder
+      [config]="formConfig"
+      (formCreated)="onTabFormCreated(tab.id, $event)">
+    </cvl-form-builder>
+	}
