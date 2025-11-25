@@ -1,67 +1,203 @@
-// new accessible-text-field.component.ts
+#!/usr/bin/env node
+const { spawn } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
-   //html will have <Mat-input/> hint, error etc.
-
-   @Input() config!: FieldConfig;
-   @Input() control!: AbstractControl | null;
-   get fc(): FormControl | null {
-      return (this.control as FormControl) ?? null;
-   }
-
-
-
-FormBuilderComponent -- 
-
-  @Output() formCreated = new EventEmitter<FormGroup>();
-  form!: FormGroup;
-
-  constructor() {}
-
-  ngOnInit(): void {
-    this.form = buildTheForm( based on the config);
-    this.formCreated.emit(this.form);
+function run(cmd, args_or_opts, maybeOpts){
+  let cmdStr;
+  let opts = {};
+  if (Array.isArray(args_or_opts)) {
+    cmdStr = [cmd].concat(args_or_opts).join(' ');
+    opts = maybeOpts || {};
+  } else {
+    cmdStr = cmd + ' ' + (args_or_opts || '');
+    opts = maybeOpts || {};
   }
+  return new Promise((resolve, reject) => {
+    // Use shell to allow npx/npm/cli commands to be resolved cross-platform
+    const p = spawn(cmdStr, Object.assign({ stdio: 'inherit', shell: true }, opts));
+    p.on('close', code => code === 0 ? resolve() : reject(new Error(`${cmdStr} exited ${code}`)));
+    p.on('error', reject);
+  });
+}
 
-  FormBuilderComponent.html // usage of accessible shared text input
+async function packLib(distPath, pkgName){
+  const abs = path.resolve(distPath);
+  if (!fs.existsSync(abs)) throw new Error(`dist path not found: ${abs}`);
+  console.log(`\nPacking ${pkgName} from ${abs}`);
+  await run(process.platform === 'win32' ? 'cmd' : 'npm', process.platform === 'win32' ? ['/c','npm','pack'] : ['pack'], { cwd: abs });
+  const files = fs.readdirSync(abs).filter(f => f.endsWith('.tgz'));
+  if (!files.length) throw new Error(`no .tgz found in ${abs}`);
+  files.sort((a,b)=> fs.statSync(path.join(abs,b)).mtimeMs - fs.statSync(path.join(abs,a)).mtimeMs);
+  const tarball = path.join(abs, files[0]);
+  const outDir = path.resolve(path.join(process.cwd(), 'sharedlibs'));
+  if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+  const dest = path.join(outDir, `${pkgName}-${files[0]}`);
+  fs.copyFileSync(tarball, dest);
+  console.log(`Copied ${files[0]} -> ${dest}`);
+}
 
-    <cvl-accessible-text-field
-      [config]="fieldConfig" // pass field level config 
-      [control]="form.get(field.name)"> // form is formgroup created in formbuilder component 
-    </cvl-accessible-text-field>
-  
-  
-  
-  
-ParentComponent - 
+async function main(){
+  try{
+    const libs = [
+      { name: '@upmaint/core', project: 'core' },
+      { name: '@upmaint/shared', project: 'shared' },
+      { name: '@upmaint/feature', project: 'feature' }
+    ];
 
-	  <cvl-form-builder
-		............
-		(formCreated)="onFormCreated($event)">
-	  </cvl-form-builder>  
-  
-  
-	  form!: FormGroup;
+    for (const lib of libs){
+      console.log(`\nBuilding ${lib.project}...`);
+      await run('npx', ['ng','build', lib.project, '--configuration','production'], { cwd: process.cwd() });
+      const distPath = path.join(process.cwd(), 'dist', lib.project);
+      await packLib(distPath, lib.project);
+    }
 
-	  onFormCreated(form: FormGroup) {
-		this.form = form;
-	  }
-	  
-	  
-	  
-// if the parent is tab-group component 
-// tab-group.component.ts	  
-
-  // map: tabId -> FormGroup // I guess u are already doing something like this ....this is for info of the flow, no need to follow this pattern
-  private tabForms = new Map<string, FormGroup>();
-
-  onTabFormCreated(tabId: string, form: FormGroup): void {
-    this.tabForms.set(tabId, form);
+    console.log('\nAll libraries built and packed in ./sharedlibs');
+  } catch(err){
+    console.error('\nError:', err.message || err);
+    process.exit(1);
   }
-  
-  html//
-    for each tab {
-      <cvl-form-builder
-      [config]="formConfig"
-      (formCreated)="onTabFormCreated(tab.id, $event)">
-    </cvl-form-builder>
-	}
+}
+
+main();
+
+
+
+////////////////////////////////
+
+#!/usr/bin/env node
+const { spawn } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+
+function run(cmd, args, opts = {}){
+  return new Promise((resolve, reject) => {
+    const p = spawn(cmd, args, Object.assign({ stdio: 'inherit', shell: false }, opts));
+    p.on('close', code => code === 0 ? resolve() : reject(new Error(`${cmd} ${args.join(' ')} exited ${code}`)));
+    p.on('error', reject);
+  });
+}
+
+async function packLib(distPath, pkgName){
+  const abs = path.resolve(distPath);
+  if (!fs.existsSync(abs)) throw new Error(`dist path not found: ${abs}`);
+  // run npm pack in that folder
+  console.log(`\nPacking ${pkgName} from ${abs}`);
+  await run(process.platform === 'win32' ? 'cmd' : 'npm', process.platform === 'win32' ? ['/c','npm','pack'] : ['pack'], { cwd: abs });
+  // find created .tgz
+  const files = fs.readdirSync(abs).filter(f => f.endsWith('.tgz'));
+  if (!files.length) throw new Error(`no .tgz found in ${abs}`);
+  // pick newest
+  files.sort((a,b)=> fs.statSync(path.join(abs,b)).mtimeMs - fs.statSync(path.join(abs,a)).mtimeMs);
+  const tarball = path.join(abs, files[0]);
+  const outDir = path.resolve(path.join(process.cwd(), 'sharedlibs'));
+  if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
+  const dest = path.join(outDir, `${pkgName}-${files[0]}`);
+  fs.copyFileSync(tarball, dest);
+  console.log(`Copied ${files[0]} -> ${dest}`);
+}
+
+async function main(){
+  try{
+    const libs = [
+      { name: '@upmaint/core', project: 'core' },
+      { name: '@upmaint/shared', project: 'shared' },
+      { name: '@upmaint/feature', project: 'feature' }
+    ];
+
+    for (const lib of libs){
+      console.log(`\nBuilding ${lib.project}...`);
+      await run('npx', ['ng','build', lib.project, '--configuration','production'], { cwd: process.cwd() });
+      const distPath = path.join(process.cwd(), 'dist', lib.project);
+      await packLib(distPath, lib.project);
+    }
+
+    console.log('\nAll libraries built and packed in ./sharedlibs');
+  } catch(err){
+    console.error('\nError:', err.message || err);
+    process.exit(1);
+  }
+}
+
+main();
+
+
+
+
+/////////////////////////////
+shared
+
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "../../out-tsc/lib/shared",
+    "declaration": true,
+    "declarationMap": true,
+    "inlineSources": true,
+    "skipLibCheck": true,
+    "baseUrl": "./",
+    "paths": {
+      "@upmaint/core": ["../../dist/core", "../core/src/public-api"]
+    }
+  },
+  "exclude": [
+    "**/*.spec.ts",
+    "**/testhelper.ts",
+    "**/*.test.ts",
+    "**/test/**/*",
+    "**/tests/**/*",
+    "../core/src/lib/test-utils/**"
+  ],
+  "include": ["src/**/*.ts"]
+}
+
+/////////
+core
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "outDir": "../../out-tsc/lib/core",
+    "declaration": true,
+    "declarationMap": true,
+    "inlineSources": true,
+    "types": [],
+    "paths": {}
+  },
+  "exclude": [
+    "**/*.spec.ts",
+    "**/testhelper.ts",
+    "**/*.test.ts",
+    "**/test/**/*",
+    "**/tests/**/*"
+  ],
+  "include": ["src/**/*"]
+}
+
+
+//////
+
+core
+
+{
+  "name": "@upmaint/core",
+  "main": "public-api.js",
+  "module": "public-api.js",
+  "typings": "public-api.d.ts",
+  "version": "0.0.1",
+  "scripts": {
+    "build": "cd ../.. && ng build core --configuration production"
+  },
+  "peerDependencies": {
+    "@angular/common": "^20.3.9",
+    "@angular/core": "^20.3.9",
+    "@angular/router": "^20.3.9",
+    "@ngrx/store": "^18.0.0",
+    "@ngrx/effects": "^18.0.0",
+    "rxjs": "^7.5.0"
+  },
+  "dependencies": {
+    "tslib": "^2.3.0"
+  },
+  "sideEffects": false
+}
+
