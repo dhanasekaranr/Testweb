@@ -1,203 +1,212 @@
-#!/usr/bin/env node
-const { spawn } = require('child_process');
-const fs = require('fs');
-const path = require('path');
+@startuml
+title Funding Return Save - End to End Flow (Portrait with Safe JSON Samples)
 
-function run(cmd, args_or_opts, maybeOpts){
-  let cmdStr;
-  let opts = {};
-  if (Array.isArray(args_or_opts)) {
-    cmdStr = [cmd].concat(args_or_opts).join(' ');
-    opts = maybeOpts || {};
-  } else {
-    cmdStr = cmd + ' ' + (args_or_opts || '');
-    opts = maybeOpts || {};
-  }
-  return new Promise((resolve, reject) => {
-    // Use shell to allow npx/npm/cli commands to be resolved cross-platform
-    const p = spawn(cmdStr, Object.assign({ stdio: 'inherit', shell: true }, opts));
-    p.on('close', code => code === 0 ? resolve() : reject(new Error(`${cmdStr} exited ${code}`)));
-    p.on('error', reject);
-  });
+top to bottom direction
+skinparam componentStyle rectangle
+
+
+'=== UI LAYER ===
+package "UI" {
+  [Return UI Save (user clicks Save)] as BtnSave
 }
 
-async function packLib(distPath, pkgName){
-  const abs = path.resolve(distPath);
-  if (!fs.existsSync(abs)) throw new Error(`dist path not found: ${abs}`);
-  console.log(`\nPacking ${pkgName} from ${abs}`);
-  await run(process.platform === 'win32' ? 'cmd' : 'npm', process.platform === 'win32' ? ['/c','npm','pack'] : ['pack'], { cwd: abs });
-  const files = fs.readdirSync(abs).filter(f => f.endsWith('.tgz'));
-  if (!files.length) throw new Error(`no .tgz found in ${abs}`);
-  files.sort((a,b)=> fs.statSync(path.join(abs,b)).mtimeMs - fs.statSync(path.join(abs,a)).mtimeMs);
-  const tarball = path.join(abs, files[0]);
-  const outDir = path.resolve(path.join(process.cwd(), 'sharedlibs'));
-  if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
-  const dest = path.join(outDir, `${pkgName}-${files[0]}`);
-  fs.copyFileSync(tarball, dest);
-  console.log(`Copied ${files[0]} -> ${dest}`);
+'=== API LAYER ===
+package ".NET Core API" {
+  [Controller (receives request)] as Ctrl
+  [TransactionOrchestrator] as TxnOrch
+  [ApplyChanges (update EF entities)] as Apply
+  [AuditCaptureService (build AuditContext)] as AuditCap
+  [HandlerChainResolver (compute handlers)] as HandlerRes
+  [WorkItemFactory (build payload)] as PayloadBuild
+  [WorkItemQueueWriter (insert queue row)] as QueueWrite
 }
 
-async function main(){
-  try{
-    const libs = [
-      { name: '@upmaint/core', project: 'core' },
-      { name: '@upmaint/shared', project: 'shared' },
-      { name: '@upmaint/feature', project: 'feature' }
-    ];
-
-    for (const lib of libs){
-      console.log(`\nBuilding ${lib.project}...`);
-      await run('npx', ['ng','build', lib.project, '--configuration','production'], { cwd: process.cwd() });
-      const distPath = path.join(process.cwd(), 'dist', lib.project);
-      await packLib(distPath, lib.project);
-    }
-
-    console.log('\nAll libraries built and packed in ./sharedlibs');
-  } catch(err){
-    console.error('\nError:', err.message || err);
-    process.exit(1);
-  }
+'=== BUSINESS DB ===
+database "Business DB" {
+  [Loan / Funding Tables] as BizTables
 }
 
-main();
-
-
-
-////////////////////////////////
-
-#!/usr/bin/env node
-const { spawn } = require('child_process');
-const fs = require('fs');
-const path = require('path');
-
-function run(cmd, args, opts = {}){
-  return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, Object.assign({ stdio: 'inherit', shell: false }, opts));
-    p.on('close', code => code === 0 ? resolve() : reject(new Error(`${cmd} ${args.join(' ')} exited ${code}`)));
-    p.on('error', reject);
-  });
+'=== QUEUE DB ===
+database "Queue DB" {
+  [WORK_ITEM_QUEUE] as WQ
 }
 
-async function packLib(distPath, pkgName){
-  const abs = path.resolve(distPath);
-  if (!fs.existsSync(abs)) throw new Error(`dist path not found: ${abs}`);
-  // run npm pack in that folder
-  console.log(`\nPacking ${pkgName} from ${abs}`);
-  await run(process.platform === 'win32' ? 'cmd' : 'npm', process.platform === 'win32' ? ['/c','npm','pack'] : ['pack'], { cwd: abs });
-  // find created .tgz
-  const files = fs.readdirSync(abs).filter(f => f.endsWith('.tgz'));
-  if (!files.length) throw new Error(`no .tgz found in ${abs}`);
-  // pick newest
-  files.sort((a,b)=> fs.statSync(path.join(abs,b)).mtimeMs - fs.statSync(path.join(abs,a)).mtimeMs);
-  const tarball = path.join(abs, files[0]);
-  const outDir = path.resolve(path.join(process.cwd(), 'sharedlibs'));
-  if (!fs.existsSync(outDir)) fs.mkdirSync(outDir, { recursive: true });
-  const dest = path.join(outDir, `${pkgName}-${files[0]}`);
-  fs.copyFileSync(tarball, dest);
-  console.log(`Copied ${files[0]} -> ${dest}`);
+'=== WORKER SERVICE ===
+package "Worker Service" {
+  [Poller (fetch pending items)] as Poll
+  [WorkItemProcessor] as ProcItem
+  [ContextBuilder (deserialize payload)] as CtxBuild
 }
 
-async function main(){
-  try{
-    const libs = [
-      { name: '@upmaint/core', project: 'core' },
-      { name: '@upmaint/shared', project: 'shared' },
-      { name: '@upmaint/feature', project: 'feature' }
-    ];
-
-    for (const lib of libs){
-      console.log(`\nBuilding ${lib.project}...`);
-      await run('npx', ['ng','build', lib.project, '--configuration','production'], { cwd: process.cwd() });
-      const distPath = path.join(process.cwd(), 'dist', lib.project);
-      await packLib(distPath, lib.project);
-    }
-
-    console.log('\nAll libraries built and packed in ./sharedlibs');
-  } catch(err){
-    console.error('\nError:', err.message || err);
-    process.exit(1);
-  }
+'=== HANDLERS ===
+package "Handlers" {
+  [Generic_Save_Handler] as HGen
+  [FundingModule_Return_Handler] as HFundReturn
+  [FundingModule_Return_Save_Handler] as HFundReturnSave
 }
 
-main();
+'=== PROCESSORS ===
+package "Processors" {
+  [AuditTrailProcessor] as PAudit
+  [EventCreatorProcessor] as PEvent
+  [StatusUpdateProcessor] as PStatus
+  [ServiceCallProcessor] as PService
+}
+
+'=== EXTERNAL ===
+package "External Systems" {
+  [Legacy Audit Engine (C++)] as LegacyAudit
+  [Event Bus / Kafka] as EventBus
+  [Status System] as StatusSys
+  [External REST Services] as RestSvc
+}
 
 
+'===================== DATA NOTES ==========================
 
-
-/////////////////////////////
-shared
-
+'--- Transaction Meta JSON
+note right of TxnOrch
+----
 {
-  "extends": "../../tsconfig.json",
-  "compilerOptions": {
-    "outDir": "../../out-tsc/lib/shared",
-    "declaration": true,
-    "declarationMap": true,
-    "inlineSources": true,
-    "skipLibCheck": true,
-    "baseUrl": "./",
-    "paths": {
-      "@upmaint/core": ["../../dist/core", "../core/src/public-api"]
+  "module": "FUNDING",
+  "screen": "RETURN",
+  "operation": "SAVE",
+  "entityKey": "123456789",
+  "userId": "u12345",
+  "channel": "WEB_UI",
+  "appId": "FundingPortal",
+  "correlationId": "abcd-efg-123"
+}
+----
+end note
+
+'--- AuditContext JSON
+note right of AuditCap
+----
+{
+  "operationType": "UPDATE",
+  "changes": [
+    {
+      "tableName": "FUNDING_RETURN",
+      "columnName": "AMOUNT",
+      "oldValue": "1000",
+      "newValue": "1200"
+    },
+    {
+      "tableName": "FUNDING_RETURN",
+      "columnName": "RETURN_REASON",
+      "oldValue": "X",
+      "newValue": "Y"
     }
+  ]
+}
+----
+end note
+
+
+'--- HandlerConfig JSON
+note right of HandlerRes
+----
+[
+  {
+    "handlerName": "Generic_Save_Handler",
+    "moduleCode": null,
+    "screenCode": null,
+    "operationCode": null,
+    "sequenceOrder": 10
   },
-  "exclude": [
-    "**/*.spec.ts",
-    "**/testhelper.ts",
-    "**/*.test.ts",
-    "**/test/**/*",
-    "**/tests/**/*",
-    "../core/src/lib/test-utils/**"
+  {
+    "handlerName": "FundingModule_Return_Handler",
+    "moduleCode": "FUNDING",
+    "screenCode": "RETURN",
+    "operationCode": null,
+    "sequenceOrder": 20
+  },
+  {
+    "handlerName": "FundingModule_Return_Save_Handler",
+    "moduleCode": "FUNDING",
+    "screenCode": "RETURN",
+    "operationCode": "SAVE",
+    "sequenceOrder": 30
+  }
+]
+Resolved handlers:
+[ Generic_Save_Handler,
+  FundingModule_Return_Handler,
+  FundingModule_Return_Save_Handler ]
+----
+end note
+
+
+'--- WorkItem Payload JSON
+note right of QueueWrite
+----
+{
+  "meta": { ... },
+  "auditContext": { ... },
+  "handlers": [
+    "Generic_Save_Handler",
+    "FundingModule_Return_Handler",
+    "FundingModule_Return_Save_Handler"
   ],
-  "include": ["src/**/*.ts"]
+  "flags": {
+    "containsSensitiveChange": true
+  }
 }
+----
+end note
 
-/////////
-core
+
+'--- Processor context JSON
+note right of CtxBuild
+----
 {
-  "extends": "../../tsconfig.json",
-  "compilerOptions": {
-    "outDir": "../../out-tsc/lib/core",
-    "declaration": true,
-    "declarationMap": true,
-    "inlineSources": true,
-    "types": [],
-    "paths": {}
-  },
-  "exclude": [
-    "**/*.spec.ts",
-    "**/testhelper.ts",
-    "**/*.test.ts",
-    "**/test/**/*",
-    "**/tests/**/*"
-  ],
-  "include": ["src/**/*"]
+  "workItemId": 90012,
+  "payload": { ... },
+  "meta": payload.meta,
+  "auditContext": payload.auditContext,
+  "handlers": payload.handlers
 }
+----
+end note
 
 
-//////
+'===================== FLOW ==========================
 
-core
+BtnSave --> Ctrl
+Ctrl --> TxnOrch
 
-{
-  "name": "@upmaint/core",
-  "main": "public-api.js",
-  "module": "public-api.js",
-  "typings": "public-api.d.ts",
-  "version": "0.0.1",
-  "scripts": {
-    "build": "cd ../.. && ng build core --configuration production"
-  },
-  "peerDependencies": {
-    "@angular/common": "^20.3.9",
-    "@angular/core": "^20.3.9",
-    "@angular/router": "^20.3.9",
-    "@ngrx/store": "^18.0.0",
-    "@ngrx/effects": "^18.0.0",
-    "rxjs": "^7.5.0"
-  },
-  "dependencies": {
-    "tslib": "^2.3.0"
-  },
-  "sideEffects": false
-}
+TxnOrch --> Apply
+Apply --> BizTables
 
+TxnOrch --> AuditCap
+AuditCap --> HandlerRes
+HandlerRes --> PayloadBuild
+PayloadBuild --> QueueWrite
+QueueWrite --> WQ
+
+WQ --> Poll
+Poll --> ProcItem
+ProcItem --> CtxBuild
+
+CtxBuild --> HGen
+CtxBuild --> HFundReturn
+CtxBuild --> HFundReturnSave
+
+HGen --> PAudit
+HGen --> PEvent
+
+HFundReturn --> PAudit
+HFundReturn --> PEvent
+
+HFundReturnSave --> PAudit
+HFundReturnSave --> PEvent
+HFundReturnSave --> PStatus
+HFundReturnSave --> PService
+
+PAudit --> LegacyAudit
+PEvent --> EventBus
+PStatus --> StatusSys
+PService --> RestSvc
+
+@enduml
