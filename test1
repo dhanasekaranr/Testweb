@@ -1,161 +1,808 @@
-<!-- EXPAND COLUMN -->
-<ng-container matColumnDef="expand" *ngIf="tableConfig?.enableRowExpand">
-  <th mat-header-cell *matHeaderCellDef class="col-expand"></th>
+1) Shared library files
+shared/editor-dialog/shared-editor-dialog.types.ts
+import { Type } from '@angular/core';
+import { FormGroup } from '@angular/forms';
 
-  <td mat-cell *matCellDef="let row" class="col-expand">
-    <!-- show + icon only if this row has detail -->
-    <button
-      mat-icon-button
-      *ngIf="hasDetail(row); else noExpand"
-      (click)="toggleExpand(row); $event.stopPropagation()"
-      [attr.aria-label]="isExpanded(row) ? 'Collapse details' : 'Expand details'">
+export type EditorMode = 'add' | 'edit';
+export type DialogSize = 'sm' | 'md' | 'lg' | 'full';
 
-      <mat-icon>{{ isExpanded(row) ? 'remove' : 'add' }}</mat-icon>
-    </button>
-
-    <ng-template #noExpand>
-      <!-- keep spacing aligned when no detail -->
-      <span class="no-expand"></span>
-    </ng-template>
-  </td>
-</ng-container>
-2) app-table-list.component.ts — add hasDetail()
-ts
-Copy code
-hasDetail(row: any): boolean {
-  return !!row?.detail; // your data uses row.detail
-}
-3) Make sure table supports detail rows
-Your table tag must include:
-
-html
-Copy code
-<table mat-table [dataSource]="dataSource" multiTemplateDataRows>
-4) Detail row block (unchanged, but only renders when expanded)
-html
-Copy code
-<ng-container matColumnDef="detail">
-  <td mat-cell *matCellDef="let row" [attr.colspan]="displayedColumns.length" class="detail-cell">
-    <div class="detail-wrap" *ngIf="isExpanded(row)">
-      <ng-container
-        *ngIf="detailTemplate"
-        [ngTemplateOutlet]="detailTemplate"
-        [ngTemplateOutletContext]="{ $implicit: row }">
-      </ng-container>
-    </div>
-  </td>
-</ng-container>
-
-<tr mat-row *matRowDef="let row; columns: ['detail']" class="detail-row"></tr>
-5) SCSS for alignment
-scss
-Copy code
-.col-expand {
-  width: 44px;
-  white-space: nowrap;
+export interface SharedEditorInit<TValue, TContext = unknown> {
+  mode: EditorMode;
+  value: TValue | null;
+  context?: TContext;
 }
 
-.no-expand {
-  display: inline-block;
-  width: 40px; // keeps column width consistent
+export interface SharedEditor<TValue, TContext = unknown> {
+  readonly form: FormGroup;
+  init(input: SharedEditorInit<TValue, TContext>): void;
+  buildValue(): TValue;
 }
-Important
-Your displayedColumns must include 'expand' at the beginning when enableRowExpand is true.
 
-This will show + for rows with detail, and clicking opens the detail row. Clicking again shows − and collapses.
+export interface SharedEditorDialogData<TValue, TContext = unknown, TSaved = TValue> {
+  mode: EditorMode;
+  title: string;
+  subtitle?: string;
 
-If you want the entire row click to also expand (in addition to the + icon), tell me — it’s a one-line change, but for performance/UX I usually keep it icon-only.
+  value: TValue | null;
+  context?: TContext;
 
+  editorComponent: Type<SharedEditor<TValue, TContext>>;
 
+  /**
+   * Optional "best UX" mode:
+   * Parent provides submit(), dialog shows saving/errors and closes on success.
+   * Save logic is still in the parent because submit() is provided by the parent.
+   */
+  submit?: (payload: TValue, meta: { mode: EditorMode }) => Promise<TSaved>;
 
+  requireDirty?: boolean; // default true
+  canSave?: () => boolean;
+}
 
+export type SharedEditorDialogResult<TSaved> =
+  | { action: 'save'; value: TSaved }
+  | { action: 'cancel' };
 
+shared/editor-dialog/focus-invalid.util.ts
+import { AbstractControl, FormGroup } from '@angular/forms';
 
+function findFirstInvalidControlPath(group: FormGroup, prefix = ''): string | null {
+  for (const key of Object.keys(group.controls)) {
+    const ctrl: AbstractControl = group.controls[key];
+    const path = prefix ? `${prefix}.${key}` : key;
 
-You said:
-on the usage component, what changes needed ?
-
-
-ChatGPT said:
-Very little. In the usage (parent) component you only need to:
-
-Turn on expand in masterConfig
-
-Pass the detailTemplate
-
-(Optional) Add expandedChange if you want lazy-load, but for row.detail you don’t need it.
-
-1) Parent TS changes
-Your data (same)
-ts
-Copy code
-masterRows = [
-  {
-    id: '1',
-    name: 'John',
-    status: 'Open',
-    detail: { lastupdatedBy: 'kelly', lastUpdatedTime: '1/1/2025 10:00 AM' }
-  },
-  { id: '2', name: 'Mary', status: 'Closed' },
-  {
-    id: '3',
-    name: 'Jane',
-    status: 'Open',
-    detail: { lastupdatedBy: 'kale', lastUpdatedTime: '1/1/2025 12:00 AM' }
+    if (ctrl instanceof FormGroup) {
+      const nested = findFirstInvalidControlPath(ctrl, path);
+      if (nested) return nested;
+    } else if (ctrl.invalid) {
+      return path;
+    }
   }
-];
-Master table config (add enableRowExpand: true)
-ts
-Copy code
-masterConfig: TableConfig = {
-  enableRowExpand: true,     // ✅ required for + icon column
-  enableSorting: true,
-  enableFiltering: true,
-  enablePagination: false,
+  return null;
+}
 
-  columns: [
-    { columnDef: 'id', header: 'ID', cell: (r: any) => String(r.id), sortable: true, filterable: true },
-    { columnDef: 'name', header: 'Name', cell: (r: any) => r.name, sortable: true, filterable: true },
-    { columnDef: 'status', header: 'Status', cell: (r: any) => r.status, sortable: true, filterable: true }
+export function focusFirstInvalidControl(form: FormGroup, root: HTMLElement): void {
+  const path = findFirstInvalidControlPath(form);
+  if (!path) return;
+
+  const name = path.split('.').pop()!;
+  const selector = `[formcontrolname="${name}"],[formControlName="${name}"]`;
+  const el = root.querySelector(selector) as HTMLElement | null;
+  el?.focus?.();
+}
+
+shared/editor-dialog/shared-editor-dialog-shell.component.ts
+import {
+  AfterViewInit,
+  ChangeDetectionStrategy,
+  ChangeDetectorRef,
+  Component,
+  ElementRef,
+  Inject,
+  ViewChild,
+  ViewContainerRef,
+  inject,
+} from '@angular/core';
+import { CommonModule } from '@angular/common';
+import { MAT_DIALOG_DATA, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
+import { MatButtonModule } from '@angular/material/button';
+import { MatProgressBarModule } from '@angular/material/progress-bar';
+import { MatIconModule } from '@angular/material/icon';
+import { filter } from 'rxjs/operators';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+
+import {
+  SharedEditor,
+  SharedEditorDialogData,
+  SharedEditorDialogResult,
+} from './shared-editor-dialog.types';
+import { focusFirstInvalidControl } from './focus-invalid.util';
+
+@Component({
+  standalone: true,
+  selector: 'app-shared-editor-dialog-shell',
+  imports: [
+    CommonModule,
+    MatDialogModule,
+    MatButtonModule,
+    MatProgressBarModule,
+    MatIconModule,
   ],
+  templateUrl: './shared-editor-dialog-shell.component.html',
+  styleUrls: ['./shared-editor-dialog-shell.component.scss'],
+  changeDetection: ChangeDetectionStrategy.OnPush,
+})
+export class SharedEditorDialogShellComponent<TValue, TContext = unknown, TSaved = TValue>
+  implements AfterViewInit {
 
-  actions: { edit: true, delete: true }
-};
-That’s it on TS.
+  @ViewChild('host', { read: ViewContainerRef, static: true }) host!: ViewContainerRef;
 
-2) Parent HTML changes
-Pass detailTemplate:
+  private readonly cdr = inject(ChangeDetectorRef);
+  private readonly elRef = inject(ElementRef<HTMLElement>);
+  private readonly dialogRef = inject(MatDialogRef<
+    SharedEditorDialogShellComponent<TValue, TContext, TSaved>,
+    SharedEditorDialogResult<TSaved>
+  >);
 
-html
-Copy code
-<app-table-list
-  [dataList]="masterRows"
-  [tableConfig]="masterConfig"
-  [detailTemplate]="detailTpl">
-</app-table-list>
+  public editor!: SharedEditor<TValue, TContext>;
+  public saving = false;
+  public errorMsg: string | null = null;
 
-<ng-template #detailTpl let-row>
-  <div *ngIf="row.detail; else noDetail" class="detail-panel">
-    <div><b>Last Updated By:</b> {{ row.detail.lastupdatedBy }}</div>
-    <div><b>Last Updated Time:</b> {{ row.detail.lastUpdatedTime }}</div>
+  constructor(
+    @Inject(MAT_DIALOG_DATA)
+    public readonly data: SharedEditorDialogData<TValue, TContext, TSaved>,
+  ) {}
+
+  ngAfterViewInit(): void {
+    this.host.clear();
+
+    const cmpRef = this.host.createComponent(this.data.editorComponent);
+    this.editor = cmpRef.instance;
+
+    this.editor.init({
+      mode: this.data.mode,
+      value: this.data.value,
+      context: this.data.context,
+    });
+
+    if (this.data.requireDirty === undefined) this.data.requireDirty = true;
+
+    // We disableClose=true in the service, so intercept backdrop / ESC ourselves.
+    this.dialogRef.backdropClick()
+      .pipe(takeUntilDestroyed())
+      .subscribe(() => this.tryClose());
+
+    this.dialogRef.keydownEvents()
+      .pipe(
+        takeUntilDestroyed(),
+        filter(e => e.key === 'Escape')
+      )
+      .subscribe((e) => {
+        e.preventDefault();
+        this.tryClose();
+      });
+
+    this.cdr.markForCheck();
+  }
+
+  saveDisabled(): boolean {
+    if (!this.editor) return true;
+    if (this.saving) return true;
+    if (this.editor.form.invalid) return true;
+    if (this.data.canSave && !this.data.canSave()) return true;
+    if (this.data.requireDirty && this.editor.form.pristine) return true;
+    return false;
+  }
+
+  tryClose(): void {
+    if (this.saving) return;
+
+    const dirty = !!this.editor?.form && this.editor.form.dirty;
+    if (dirty) {
+      const ok = window.confirm('You have unsaved changes. Discard them?');
+      if (!ok) return;
+    }
+
+    this.dialogRef.close({ action: 'cancel' });
+  }
+
+  async onSave(): Promise<void> {
+    if (!this.editor) return;
+
+    this.errorMsg = null;
+
+    this.editor.form.markAllAsTouched();
+    this.editor.form.updateValueAndValidity({ emitEvent: false });
+
+    if (this.editor.form.invalid) {
+      focusFirstInvalidControl(this.editor.form, this.elRef.nativeElement);
+      this.cdr.markForCheck();
+      return;
+    }
+
+    if (this.data.canSave && !this.data.canSave()) return;
+
+    const payload = this.editor.buildValue();
+
+    // Mode A: close immediately, parent saves after close.
+    if (!this.data.submit) {
+      this.dialogRef.close({ action: 'save', value: payload as unknown as TSaved });
+      return;
+    }
+
+    // Mode B: parent provided submit(), dialog stays open and shows saving/error.
+    this.saving = true;
+    this.cdr.markForCheck();
+
+    try {
+      const saved = await this.data.submit(payload, { mode: this.data.mode });
+      this.dialogRef.close({ action: 'save', value: saved });
+    } catch (err: any) {
+      this.errorMsg = err?.message ?? 'Save failed. Please try again.';
+      this.saving = false;
+      this.cdr.markForCheck();
+    }
+  }
+}
+
+shared/editor-dialog/shared-editor-dialog-shell.component.html
+<div class="sed-header">
+  <div class="sed-titlewrap">
+    <h2 class="sed-title">{{ data.title }}</h2>
+    <div class="sed-subtitle" *ngIf="data.subtitle">{{ data.subtitle }}</div>
   </div>
 
-  <ng-template #noDetail>
-    <div class="detail-panel muted">No detail available.</div>
-  </ng-template>
-</ng-template>
-3) Optional: if you want to lazy-load details
-Only then you add:
+  <button mat-icon-button type="button"
+          (click)="tryClose()"
+          [disabled]="saving"
+          aria-label="Close dialog">
+    <mat-icon>close</mat-icon>
+  </button>
+</div>
 
-html
-Copy code
-<app-table-list
-  ...
-  (expandedChange)="onExpanded($event)">
-</app-table-list>
-ts
-Copy code
-onExpanded(row: any | null) {
-  if (!row) return;
-  // fetch details by row.id and assign row.detail or cache[row.id]
+<mat-progress-bar *ngIf="saving" mode="indeterminate"></mat-progress-bar>
+
+<div class="sed-error" *ngIf="errorMsg">
+  {{ errorMsg }}
+</div>
+
+<div class="sed-content" [class.is-saving]="saving">
+  <ng-template #host></ng-template>
+</div>
+
+<div class="sed-footer">
+  <button mat-button type="button" (click)="tryClose()" [disabled]="saving">
+    Cancel
+  </button>
+
+  <button mat-flat-button type="button"
+          (click)="onSave()"
+          [disabled]="saveDisabled()">
+    Save
+  </button>
+</div>
+
+shared/editor-dialog/shared-editor-dialog-shell.component.scss
+:host {
+  display: block;
 }
+
+.sed-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 16px 8px;
+}
+
+.sed-titlewrap { min-width: 0; }
+
+.sed-title {
+  margin: 0;
+  font-size: 20px;
+  line-height: 28px;
+  font-weight: 600;
+}
+
+.sed-subtitle {
+  margin-top: 4px;
+  opacity: 0.75;
+  font-size: 13px;
+}
+
+.sed-error {
+  margin: 8px 16px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(255, 0, 0, 0.08);
+}
+
+.sed-content {
+  padding: 8px 16px 16px;
+  overflow: auto;
+  /* height is controlled by global dialog CSS (panelClass) */
+}
+
+.sed-content.is-saving {
+  pointer-events: none;
+  opacity: 0.88;
+}
+
+.sed-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 16px 16px;
+}
+
+2) Responsive dialog sizing (GLOBAL styles)
+
+Put this in src/styles.scss (global), because Material dialogs live in the overlay and component-scoped styles won’t reliably reach them.
+
+src/styles.scss (add this)
+/* =========================
+   Shared Editor Dialog - responsive sizing
+   ========================= */
+
+/*
+  We use panelClass: "shared-editor-dialog" + size class: "sed-sm|sed-md|sed-lg|sed-full"
+  Then control the dialog container/surface via CSS variables and viewport units.
+
+  dvh/dvw handle mobile/embedded better than vh/vw in modern browsers; we include fallbacks.
+*/
+
+.shared-editor-dialog {
+  /* Defaults (md) */
+  --sed-max-w: 760px;
+  --sed-min-w: 360px;
+
+  --sed-max-h: calc(100dvh - 24px);
+  --sed-max-h-fallback: calc(100vh - 24px);
+
+  --sed-pad-safe-top: env(safe-area-inset-top, 0px);
+  --sed-pad-safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.shared-editor-dialog.sed-sm { --sed-max-w: 520px; --sed-min-w: 320px; }
+.shared-editor-dialog.sed-md { --sed-max-w: 760px; --sed-min-w: 360px; }
+.shared-editor-dialog.sed-lg { --sed-max-w: 1040px; --sed-min-w: 420px; }
+.shared-editor-dialog.sed-full {
+  --sed-max-w: calc(100dvw - 16px);
+  --sed-max-h: calc(100dvh - 16px);
+  --sed-max-h-fallback: calc(100vh - 16px);
+  --sed-min-w: 0px;
+}
+
+/* Target the MDC dialog surface */
+.shared-editor-dialog .mat-mdc-dialog-container .mdc-dialog__surface {
+  /* width */
+  width: min(var(--sed-max-w), calc(100dvw - 24px));
+  max-width: calc(100dvw - 24px);
+  min-width: min(var(--sed-min-w), calc(100dvw - 24px));
+
+  /* height */
+  max-height: var(--sed-max-h);
+  /* fallback if dvh not supported */
+  max-height: var(--sed-max-h-fallback);
+
+  /* allow internal scrolling */
+  overflow: hidden;
+
+  /* better on constrained host viewports */
+  border-radius: 14px;
+}
+
+/* Make content area adapt on tiny viewports */
+@media (max-width: 600px) {
+  .shared-editor-dialog {
+    --sed-max-w: calc(100dvw - 16px);
+    --sed-max-h: calc(100dvh - 16px);
+    --sed-max-h-fallback: calc(100vh - 16px);
+    --sed-min-w: 0px;
+  }
+
+  .shared-editor-dialog .mat-mdc-dialog-container .mdc-dialog__surface {
+    border-radius: 12px;
+  }
+}
+
+
+This approach is host-viewport friendly: if your VB plugin runs the web UI in a constrained view (smaller body), the overlay uses that viewport and the dialog sizes accordingly.
+
+3) Service with size presets (SharedEditorDialogService)
+shared/editor-dialog/shared-editor-dialog.service.ts
+import { Injectable } from '@angular/core';
+import { MatDialog } from '@angular/material/dialog';
+import { Observable } from 'rxjs';
+import { map } from 'rxjs/operators';
+
+import {
+  DialogSize,
+  SharedEditorDialogData,
+  SharedEditorDialogResult,
+} from './shared-editor-dialog.types';
+import { SharedEditorDialogShellComponent } from './shared-editor-dialog-shell.component';
+
+@Injectable({ providedIn: 'root' })
+export class SharedEditorDialogService {
+  constructor(private readonly dialog: MatDialog) {}
+
+  open<TValue, TContext = unknown, TSaved = TValue>(
+    data: SharedEditorDialogData<TValue, TContext, TSaved>,
+    opts?: { size?: DialogSize }
+  ): Observable<SharedEditorDialogResult<TSaved>> {
+    const size = opts?.size ?? 'md';
+
+    const ref = this.dialog.open<
+      SharedEditorDialogShellComponent<TValue, TContext, TSaved>,
+      SharedEditorDialogData<TValue, TContext, TSaved>,
+      SharedEditorDialogResult<TSaved>
+    >(SharedEditorDialogShellComponent<TValue, TContext, TSaved>, {
+      disableClose: true,          // we enforce dirty-check & consistent closing
+      autoFocus: false,            // prevent weird focus jumps in embedded hosts
+      restoreFocus: true,
+      data,
+      panelClass: ['shared-editor-dialog', `sed-${size}`],
+    });
+
+    return ref.afterClosed().pipe(
+      map(res => res ?? ({ action: 'cancel' } as SharedEditorDialogResult<TSaved>))
+    );
+  }
+
+  openAdd<TValue, TContext = unknown, TSaved = TValue>(
+    data: Omit<SharedEditorDialogData<TValue, TContext, TSaved>, 'mode' | 'value'> & { value?: TValue | null },
+    opts?: { size?: DialogSize }
+  ) {
+    return this.open<TValue, TContext, TSaved>(
+      { ...data, mode: 'add', value: data.value ?? null },
+      opts
+    );
+  }
+
+  openEdit<TValue, TContext = unknown, TSaved = TValue>(
+    data: Omit<SharedEditorDialogData<TValue, TContext, TSaved>, 'mode'>,
+    opts?: { size?: DialogSize }
+  ) {
+    return this.open<TValue, TContext, TSaved>(
+      { ...data, mode: 'edit' },
+      opts
+    );
+  }
+}
+
+4) Feature example: Customers screen + editor
+features/customers/customer-row.model.ts
+export interface CustomerRow {
+  id?: string;
+  name: string;
+  status: 'Active' | 'Inactive';
+}
+
+features/customers/editors/customer-row-editor.component.ts
+import { ChangeDetectionStrategy, Component } from '@angular/core';
+import { FormBuilder, Validators, FormGroup, ReactiveFormsModule } from '@angular/forms';
+import { MatFormFieldModule } from '@angular/material/form-field';
+import { MatInputModule } from '@angular/material/input';
+import { MatSelectModule } from '@angular/material/select';
+
+import { SharedEditor, SharedEditorInit } from '../../../shared/editor-dialog/shared-editor-dialog.types';
+import { CustomerRow } from '../customer-row.model';
+
+@Component({
+  standalone: true,
+  imports: [ReactiveFormsModule, MatFormFieldModule, MatInputModule, MatSelectModule],
+  templateUrl: './customer-row-editor.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+})
+export class CustomerRowEditorComponent implements SharedEditor<CustomerRow> {
+  readonly form: FormGroup;
+  private currentId?: string;
+
+  constructor(private readonly fb: FormBuilder) {
+    this.form = this.fb.group({
+      name: ['', Validators.required],
+      status: ['Active', Validators.required],
+    });
+  }
+
+  init(input: SharedEditorInit<CustomerRow>): void {
+    this.currentId = input.value?.id;
+
+    this.form.reset({
+      name: input.value?.name ?? '',
+      status: input.value?.status ?? 'Active',
+    });
+
+    this.form.markAsPristine();
+  }
+
+  buildValue(): CustomerRow {
+    const v = this.form.getRawValue();
+    return { id: this.currentId, name: v['name'], status: v['status'] };
+  }
+}
+
+features/customers/editors/customer-row-editor.component.html
+<form [formGroup]="form" class="grid" style="display:grid; gap:12px;">
+  <mat-form-field appearance="outline">
+    <mat-label>Name</mat-label>
+    <input matInput formControlName="name" />
+    <mat-error *ngIf="form.controls['name'].hasError('required')">
+      Name is required
+    </mat-error>
+  </mat-form-field>
+
+  <mat-form-field appearance="outline">
+    <mat-label>Status</mat-label>
+    <mat-select formControlName="status">
+      <mat-option value="Active">Active</mat-option>
+      <mat-option value="Inactive">Inactive</mat-option>
+    </mat-select>
+  </mat-form-field>
+</form>
+
+features/customers/customers-api.service.ts
+import { Injectable } from '@angular/core';
+import { Observable, of, delay } from 'rxjs';
+import { CustomerRow } from './customer-row.model';
+
+@Injectable({ providedIn: 'root' })
+export class CustomersApiService {
+  create(row: CustomerRow): Observable<CustomerRow> {
+    const saved: CustomerRow = { ...row, id: crypto.randomUUID() };
+    return of(saved).pipe(delay(250));
+  }
+
+  update(id: string, row: CustomerRow): Observable<CustomerRow> {
+    const saved: CustomerRow = { ...row, id };
+    return of(saved).pipe(delay(250));
+  }
+}
+
+features/customers/customers.component.ts
+
+This uses the best UX mode: dialog stays open while the parent (via submit) saves.
+
+import { Component, ChangeDetectionStrategy } from '@angular/core';
+import { MatTableModule } from '@angular/material/table';
+import { MatButtonModule } from '@angular/material/button';
+import { firstValueFrom } from 'rxjs';
+
+import { SharedEditorDialogService } from '../../shared/editor-dialog/shared-editor-dialog.service';
+import { CustomerRowEditorComponent } from './editors/customer-row-editor.component';
+import { CustomersApiService } from './customers-api.service';
+import { CustomerRow } from './customer-row.model';
+
+@Component({
+  standalone: true,
+  imports: [MatTableModule, MatButtonModule],
+  templateUrl: './customers.component.html',
+  changeDetection: ChangeDetectionStrategy.OnPush,
+})
+export class CustomersComponent {
+  cols = ['name', 'status', 'actions'] as const;
+  rows: CustomerRow[] = [
+    { id: '1', name: 'Alice', status: 'Active' },
+    { id: '2', name: 'Bob', status: 'Inactive' },
+  ];
+
+  constructor(
+    private readonly dialog: SharedEditorDialogService,
+    private readonly api: CustomersApiService,
+  ) {}
+
+  async addCustomer(): Promise<void> {
+    await firstValueFrom(
+      this.dialog.openAdd<CustomerRow, unknown, CustomerRow>({
+        title: 'Add Customer',
+        subtitle: 'Create a new customer record',
+        editorComponent: CustomerRowEditorComponent,
+        requireDirty: true,
+        submit: async (payload) => {
+          const saved = await firstValueFrom(this.api.create(payload));
+          this.rows = [saved, ...this.rows];
+          return saved;
+        },
+      }, { size: 'md' })
+    );
+  }
+
+  async editCustomer(row: CustomerRow): Promise<void> {
+    await firstValueFrom(
+      this.dialog.openEdit<CustomerRow, unknown, CustomerRow>({
+        title: 'Edit Customer',
+        subtitle: `Editing: ${row.name}`,
+        value: row,
+        editorComponent: CustomerRowEditorComponent,
+        requireDirty: true,
+        submit: async (payload) => {
+          const saved = await firstValueFrom(this.api.update(payload.id!, payload));
+          this.rows = this.rows.map(r => r.id === saved.id ? saved : r);
+          return saved;
+        },
+      }, { size: 'md' })
+    );
+  }
+}
+
+features/customers/customers.component.html
+<div style="display:flex; justify-content:flex-end; margin-bottom:12px;">
+  <button mat-flat-button (click)="addCustomer()">Add</button>
+</div>
+
+<table mat-table [dataSource]="rows" class="mat-elevation-z1" style="width:100%;">
+  <ng-container matColumnDef="name">
+    <th mat-header-cell *matHeaderCellDef>Name</th>
+    <td mat-cell *matCellDef="let r">{{ r.name }}</td>
+  </ng-container>
+
+  <ng-container matColumnDef="status">
+    <th mat-header-cell *matHeaderCellDef>Status</th>
+    <td mat-cell *matCellDef="let r">{{ r.status }}</td>
+  </ng-container>
+
+  <ng-container matColumnDef="actions">
+    <th mat-header-cell *matHeaderCellDef></th>
+    <td mat-cell *matCellDef="let r" style="text-align:right;">
+      <button mat-button (click)="editCustomer(r)">Edit</button>
+    </td>
+  </ng-container>
+
+  <tr mat-header-row *matHeaderRowDef="cols"></tr>
+  <tr mat-row *matRowDef="let row; columns: cols"></tr>
+</table>
+
+5) README.md (for developers)
+shared/editor-dialog/README.md
+# SharedEditorDialog (Angular 20)
+
+A production-ready pattern for "Add/Edit Row" dialogs at enterprise scale:
+- Generic dialog shell (title/subtitle/actions/dirty-check/loading/error)
+- Feature-specific editors (each screen owns fields/validators/mapping)
+- Save stays in the parent (API calls + table updates)
+- Responsive sizing controlled by global CSS (panelClass), supports embedded host viewports
+
+## Why this exists
+A single "fully generic" form dialog across 200 screens becomes a config monster.
+This approach keeps shared concerns shared (shell + UX rules) and keeps business forms where they belong (feature code).
+
+---
+
+## Installation
+
+1) Copy folder:
+`shared/editor-dialog/*`
+
+2) Add global CSS to `src/styles.scss`:
+
+- Required:
+  - `.shared-editor-dialog` rules
+  - size presets `.sed-sm|sed-md|sed-lg|sed-full`
+  - MDC surface sizing selectors
+
+These styles control width/height responsively with `dvw/dvh` and safe-area support.
+
+3) Ensure Angular Material is set up (MDC-based dialog).
+
+---
+
+## How it works (high level)
+
+### SharedEditorDialogService
+Wraps `MatDialog.open()` to enforce enterprise defaults:
+- `disableClose: true` (we implement consistent dirty-check close behavior)
+- `autoFocus: false` (prevents focus issues in embedded hosts/webviews)
+- `panelClass: ['shared-editor-dialog', 'sed-md']` to enable responsive CSS sizing
+
+### SharedEditorDialogShellComponent
+- Creates the editor component dynamically (one-time per open)
+- Calls `editor.init({mode, value, context})`
+- On Save:
+  - Validates, focuses first invalid control
+  - If `submit` is NOT provided: closes with payload (parent saves after close)
+  - If `submit` IS provided: shows loading state, calls parent submit(), shows error banner, closes only on success
+
+### Feature editor component
+Implements:
+- `form: FormGroup`
+- `init(input)`
+- `buildValue()`
+
+The editor owns:
+- fields / validators
+- enable/disable rules
+- conditional UI
+- mapping form -> DTO
+
+---
+
+## Usage
+
+### 1) Create an editor component
+Example editor:
+- `CustomerRowEditorComponent implements SharedEditor<CustomerRow>`
+- Build a reactive form
+- Implement `init()` to set initial values and mark pristine
+- Implement `buildValue()` to return the DTO/payload
+
+### 2) Open from parent (recommended: submit mode)
+```ts
+this.dialog.openEdit<CustomerRow, unknown, CustomerRow>({
+  title: 'Edit Customer',
+  value: row,
+  editorComponent: CustomerRowEditorComponent,
+  submit: async (payload) => {
+    const saved = await firstValueFrom(this.api.update(payload.id!, payload));
+    this.rows = this.rows.map(r => r.id === saved.id ? saved : r);
+    return saved;
+  },
+}, { size: 'md' });
+
+Dialog sizing & responsiveness
+
+Sizing is controlled by CSS (global) using panel classes:
+
+shared-editor-dialog (base)
+
+sed-sm, sed-md, sed-lg, sed-full (preset)
+
+Why CSS-based sizing?
+
+Material dialogs render in an overlay attached to body.
+Using CSS is the most reliable cross-host way to:
+
+honor constrained host viewports (embedded plugin/webview)
+
+adapt to browser window resizing
+
+avoid per-screen hardcoded widths
+
+Embedded host notes (VB ActiveX + Chrome plugin)
+
+The overlay uses the host viewport size (whatever the embedded webview exposes).
+
+If the host viewport is small, the dialog automatically shrinks due to max-width: calc(100dvw - ...) and max-height: calc(100dvh - ...).
+
+If the embedded host has severe constraints, use { size: 'full' } for a near-fullscreen experience.
+
+Best practices
+
+Keep editor components feature-owned (do NOT centralize business rules into the shell).
+
+Return a typed DTO from buildValue().
+
+Prefer submit mode for better UX (loading + inline error + close only on success).
+
+Use context for extra info (parentId, permissions, lookup caches) rather than adding ad-hoc globals.
+
+Don’t subscribe in the shell; use minimal event hooks and OnPush.
+
+Common extensions
+
+Server field validation mapping
+
+Map server errors like { field: 'name', message: '...' } to form.get('name').setErrors({ server: true })
+
+Readonly mode
+
+Add readonly?: boolean into context
+
+In editor init() disable controls accordingly
+
+Delete action
+
+Add optional delete?: () => Promise<void> to dialog data and show a Delete button in footer
+
+Troubleshooting
+
+Dialog not resizing?
+
+Confirm panelClass is applied and global CSS is in styles.scss
+
+Confirm you are targeting MDC surface:
+.mat-mdc-dialog-container .mdc-dialog__surface
+
+Editor not showing?
+
+Ensure editor is standalone: true
+
+Ensure it implements SharedEditor<T>
+
+Ensure service passes editorComponent
+
+Focus issues in embedded host?
+
+autoFocus: false is already set in the service
+
+Keep your editor fields in natural tab order
+
+
+---
+
+## What you still might want (but I didn’t assume)
+If your embedded host sometimes launches with weird viewport sizing (common), you may also want:
+- a **“Full” size** default in embedded mode (detect via userAgent or a config flag)
+- a host-provided CSS class on `<body>` like `.host-embedded` to force `sed-full`
+
+If you tell me how you can detect “embedded vs browser” (query param? config.json? userAgent?), I’ll add a tiny hook that auto-selects `size: 'full'` only for the plugin-host scenario.
