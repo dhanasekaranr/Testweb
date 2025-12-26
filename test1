@@ -1,808 +1,522 @@
-1) Shared library files
-shared/editor-dialog/shared-editor-dialog.types.ts
-import { Type } from '@angular/core';
-import { FormGroup } from '@angular/forms';
-
-export type EditorMode = 'add' | 'edit';
-export type DialogSize = 'sm' | 'md' | 'lg' | 'full';
-
-export interface SharedEditorInit<TValue, TContext = unknown> {
-  mode: EditorMode;
-  value: TValue | null;
-  context?: TContext;
-}
-
-export interface SharedEditor<TValue, TContext = unknown> {
-  readonly form: FormGroup;
-  init(input: SharedEditorInit<TValue, TContext>): void;
-  buildValue(): TValue;
-}
-
-export interface SharedEditorDialogData<TValue, TContext = unknown, TSaved = TValue> {
-  mode: EditorMode;
-  title: string;
-  subtitle?: string;
-
-  value: TValue | null;
-  context?: TContext;
-
-  editorComponent: Type<SharedEditor<TValue, TContext>>;
-
-  /**
-   * Optional "best UX" mode:
-   * Parent provides submit(), dialog shows saving/errors and closes on success.
-   * Save logic is still in the parent because submit() is provided by the parent.
-   */
-  submit?: (payload: TValue, meta: { mode: EditorMode }) => Promise<TSaved>;
-
-  requireDirty?: boolean; // default true
-  canSave?: () => boolean;
-}
-
-export type SharedEditorDialogResult<TSaved> =
-  | { action: 'save'; value: TSaved }
-  | { action: 'cancel' };
-
-shared/editor-dialog/focus-invalid.util.ts
-import { AbstractControl, FormGroup } from '@angular/forms';
-
-function findFirstInvalidControlPath(group: FormGroup, prefix = ''): string | null {
-  for (const key of Object.keys(group.controls)) {
-    const ctrl: AbstractControl = group.controls[key];
-    const path = prefix ? `${prefix}.${key}` : key;
-
-    if (ctrl instanceof FormGroup) {
-      const nested = findFirstInvalidControlPath(ctrl, path);
-      if (nested) return nested;
-    } else if (ctrl.invalid) {
-      return path;
-    }
-  }
-  return null;
-}
-
-export function focusFirstInvalidControl(form: FormGroup, root: HTMLElement): void {
-  const path = findFirstInvalidControlPath(form);
-  if (!path) return;
-
-  const name = path.split('.').pop()!;
-  const selector = `[formcontrolname="${name}"],[formControlName="${name}"]`;
-  const el = root.querySelector(selector) as HTMLElement | null;
-  el?.focus?.();
-}
-
-shared/editor-dialog/shared-editor-dialog-shell.component.ts
-import {
-  AfterViewInit,
-  ChangeDetectionStrategy,
-  ChangeDetectorRef,
-  Component,
-  ElementRef,
-  Inject,
-  ViewChild,
-  ViewContainerRef,
-  inject,
-} from '@angular/core';
-import { CommonModule } from '@angular/common';
-import { MAT_DIALOG_DATA, MatDialogModule, MatDialogRef } from '@angular/material/dialog';
-import { MatButtonModule } from '@angular/material/button';
-import { MatProgressBarModule } from '@angular/material/progress-bar';
-import { MatIconModule } from '@angular/material/icon';
-import { filter } from 'rxjs/operators';
-import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
-
-import {
-  SharedEditor,
-  SharedEditorDialogData,
-  SharedEditorDialogResult,
-} from './shared-editor-dialog.types';
-import { focusFirstInvalidControl } from './focus-invalid.util';
-
-@Component({
-  standalone: true,
-  selector: 'app-shared-editor-dialog-shell',
-  imports: [
-    CommonModule,
-    MatDialogModule,
-    MatButtonModule,
-    MatProgressBarModule,
-    MatIconModule,
-  ],
-  templateUrl: './shared-editor-dialog-shell.component.html',
-  styleUrls: ['./shared-editor-dialog-shell.component.scss'],
-  changeDetection: ChangeDetectionStrategy.OnPush,
-})
-export class SharedEditorDialogShellComponent<TValue, TContext = unknown, TSaved = TValue>
-  implements AfterViewInit {
-
-  @ViewChild('host', { read: ViewContainerRef, static: true }) host!: ViewContainerRef;
-
-  private readonly cdr = inject(ChangeDetectorRef);
-  private readonly elRef = inject(ElementRef<HTMLElement>);
-  private readonly dialogRef = inject(MatDialogRef<
-    SharedEditorDialogShellComponent<TValue, TContext, TSaved>,
-    SharedEditorDialogResult<TSaved>
-  >);
-
-  public editor!: SharedEditor<TValue, TContext>;
-  public saving = false;
-  public errorMsg: string | null = null;
-
-  constructor(
-    @Inject(MAT_DIALOG_DATA)
-    public readonly data: SharedEditorDialogData<TValue, TContext, TSaved>,
-  ) {}
-
-  ngAfterViewInit(): void {
-    this.host.clear();
-
-    const cmpRef = this.host.createComponent(this.data.editorComponent);
-    this.editor = cmpRef.instance;
-
-    this.editor.init({
-      mode: this.data.mode,
-      value: this.data.value,
-      context: this.data.context,
-    });
-
-    if (this.data.requireDirty === undefined) this.data.requireDirty = true;
-
-    // We disableClose=true in the service, so intercept backdrop / ESC ourselves.
-    this.dialogRef.backdropClick()
-      .pipe(takeUntilDestroyed())
-      .subscribe(() => this.tryClose());
-
-    this.dialogRef.keydownEvents()
-      .pipe(
-        takeUntilDestroyed(),
-        filter(e => e.key === 'Escape')
-      )
-      .subscribe((e) => {
-        e.preventDefault();
-        this.tryClose();
-      });
-
-    this.cdr.markForCheck();
-  }
-
-  saveDisabled(): boolean {
-    if (!this.editor) return true;
-    if (this.saving) return true;
-    if (this.editor.form.invalid) return true;
-    if (this.data.canSave && !this.data.canSave()) return true;
-    if (this.data.requireDirty && this.editor.form.pristine) return true;
-    return false;
-  }
-
-  tryClose(): void {
-    if (this.saving) return;
-
-    const dirty = !!this.editor?.form && this.editor.form.dirty;
-    if (dirty) {
-      const ok = window.confirm('You have unsaved changes. Discard them?');
-      if (!ok) return;
-    }
-
-    this.dialogRef.close({ action: 'cancel' });
-  }
-
-  async onSave(): Promise<void> {
-    if (!this.editor) return;
-
-    this.errorMsg = null;
-
-    this.editor.form.markAllAsTouched();
-    this.editor.form.updateValueAndValidity({ emitEvent: false });
-
-    if (this.editor.form.invalid) {
-      focusFirstInvalidControl(this.editor.form, this.elRef.nativeElement);
-      this.cdr.markForCheck();
-      return;
-    }
-
-    if (this.data.canSave && !this.data.canSave()) return;
-
-    const payload = this.editor.buildValue();
-
-    // Mode A: close immediately, parent saves after close.
-    if (!this.data.submit) {
-      this.dialogRef.close({ action: 'save', value: payload as unknown as TSaved });
-      return;
-    }
-
-    // Mode B: parent provided submit(), dialog stays open and shows saving/error.
-    this.saving = true;
-    this.cdr.markForCheck();
-
-    try {
-      const saved = await this.data.submit(payload, { mode: this.data.mode });
-      this.dialogRef.close({ action: 'save', value: saved });
-    } catch (err: any) {
-      this.errorMsg = err?.message ?? 'Save failed. Please try again.';
-      this.saving = false;
-      this.cdr.markForCheck();
-    }
-  }
-}
-
-shared/editor-dialog/shared-editor-dialog-shell.component.html
-<div class="sed-header">
-  <div class="sed-titlewrap">
-    <h2 class="sed-title">{{ data.title }}</h2>
-    <div class="sed-subtitle" *ngIf="data.subtitle">{{ data.subtitle }}</div>
-  </div>
-
-  <button mat-icon-button type="button"
-          (click)="tryClose()"
-          [disabled]="saving"
-          aria-label="Close dialog">
-    <mat-icon>close</mat-icon>
-  </button>
-</div>
-
-<mat-progress-bar *ngIf="saving" mode="indeterminate"></mat-progress-bar>
-
-<div class="sed-error" *ngIf="errorMsg">
-  {{ errorMsg }}
-</div>
-
-<div class="sed-content" [class.is-saving]="saving">
-  <ng-template #host></ng-template>
-</div>
-
-<div class="sed-footer">
-  <button mat-button type="button" (click)="tryClose()" [disabled]="saving">
-    Cancel
-  </button>
-
-  <button mat-flat-button type="button"
-          (click)="onSave()"
-          [disabled]="saveDisabled()">
-    Save
-  </button>
-</div>
-
-shared/editor-dialog/shared-editor-dialog-shell.component.scss
-:host {
-  display: block;
-}
-
-.sed-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 16px 16px 8px;
-}
-
-.sed-titlewrap { min-width: 0; }
-
-.sed-title {
-  margin: 0;
-  font-size: 20px;
-  line-height: 28px;
-  font-weight: 600;
-}
-
-.sed-subtitle {
-  margin-top: 4px;
-  opacity: 0.75;
-  font-size: 13px;
-}
-
-.sed-error {
-  margin: 8px 16px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  background: rgba(255, 0, 0, 0.08);
-}
-
-.sed-content {
-  padding: 8px 16px 16px;
-  overflow: auto;
-  /* height is controlled by global dialog CSS (panelClass) */
-}
-
-.sed-content.is-saving {
-  pointer-events: none;
-  opacity: 0.88;
-}
-
-.sed-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 0 16px 16px;
-}
-
-2) Responsive dialog sizing (GLOBAL styles)
-
-Put this in src/styles.scss (global), because Material dialogs live in the overlay and component-scoped styles won’t reliably reach them.
-
-src/styles.scss (add this)
-/* =========================
-   Shared Editor Dialog - responsive sizing
-   ========================= */
-
-/*
-  We use panelClass: "shared-editor-dialog" + size class: "sed-sm|sed-md|sed-lg|sed-full"
-  Then control the dialog container/surface via CSS variables and viewport units.
-
-  dvh/dvw handle mobile/embedded better than vh/vw in modern browsers; we include fallbacks.
-*/
-
-.shared-editor-dialog {
-  /* Defaults (md) */
-  --sed-max-w: 760px;
-  --sed-min-w: 360px;
-
-  --sed-max-h: calc(100dvh - 24px);
-  --sed-max-h-fallback: calc(100vh - 24px);
-
-  --sed-pad-safe-top: env(safe-area-inset-top, 0px);
-  --sed-pad-safe-bottom: env(safe-area-inset-bottom, 0px);
-}
-
-.shared-editor-dialog.sed-sm { --sed-max-w: 520px; --sed-min-w: 320px; }
-.shared-editor-dialog.sed-md { --sed-max-w: 760px; --sed-min-w: 360px; }
-.shared-editor-dialog.sed-lg { --sed-max-w: 1040px; --sed-min-w: 420px; }
-.shared-editor-dialog.sed-full {
-  --sed-max-w: calc(100dvw - 16px);
-  --sed-max-h: calc(100dvh - 16px);
-  --sed-max-h-fallback: calc(100vh - 16px);
-  --sed-min-w: 0px;
-}
-
-/* Target the MDC dialog surface */
-.shared-editor-dialog .mat-mdc-dialog-container .mdc-dialog__surface {
-  /* width */
-  width: min(var(--sed-max-w), calc(100dvw - 24px));
-  max-width: calc(100dvw - 24px);
-  min-width: min(var(--sed-min-w), calc(100dvw - 24px));
-
-  /* height */
-  max-height: var(--sed-max-h);
-  /* fallback if dvh not supported */
-  max-height: var(--sed-max-h-fallback);
-
-  /* allow internal scrolling */
-  overflow: hidden;
-
-  /* better on constrained host viewports */
-  border-radius: 14px;
-}
-
-/* Make content area adapt on tiny viewports */
-@media (max-width: 600px) {
-  .shared-editor-dialog {
-    --sed-max-w: calc(100dvw - 16px);
-    --sed-max-h: calc(100dvh - 16px);
-    --sed-max-h-fallback: calc(100vh - 16px);
-    --sed-min-w: 0px;
-  }
-
-  .shared-editor-dialog .mat-mdc-dialog-container .mdc-dialog__surface {
-    border-radius: 12px;
-  }
-}
-
-
-This approach is host-viewport friendly: if your VB plugin runs the web UI in a constrained view (smaller body), the overlay uses that viewport and the dialog sizes accordingly.
-
-3) Service with size presets (SharedEditorDialogService)
-shared/editor-dialog/shared-editor-dialog.service.ts
-import { Injectable } from '@angular/core';
-import { MatDialog } from '@angular/material/dialog';
-import { Observable } from 'rxjs';
-import { map } from 'rxjs/operators';
-
-import {
-  DialogSize,
-  SharedEditorDialogData,
-  SharedEditorDialogResult,
-} from './shared-editor-dialog.types';
-import { SharedEditorDialogShellComponent } from './shared-editor-dialog-shell.component';
-
-@Injectable({ providedIn: 'root' })
-export class SharedEditorDialogService {
-  constructor(private readonly dialog: MatDialog) {}
-
-  open<TValue, TContext = unknown, TSaved = TValue>(
-    data: SharedEditorDialogData<TValue, TContext, TSaved>,
-    opts?: { size?: DialogSize }
-  ): Observable<SharedEditorDialogResult<TSaved>> {
-    const size = opts?.size ?? 'md';
-
-    const ref = this.dialog.open<
-      SharedEditorDialogShellComponent<TValue, TContext, TSaved>,
-      SharedEditorDialogData<TValue, TContext, TSaved>,
-      SharedEditorDialogResult<TSaved>
-    >(SharedEditorDialogShellComponent<TValue, TContext, TSaved>, {
-      disableClose: true,          // we enforce dirty-check & consistent closing
-      autoFocus: false,            // prevent weird focus jumps in embedded hosts
-      restoreFocus: true,
-      data,
-      panelClass: ['shared-editor-dialog', `sed-${size}`],
-    });
-
-    return ref.afterClosed().pipe(
-      map(res => res ?? ({ action: 'cancel' } as SharedEditorDialogResult<TSaved>))
-    );
-  }
-
-  openAdd<TValue, TContext = unknown, TSaved = TValue>(
-    data: Omit<SharedEditorDialogData<TValue, TContext, TSaved>, 'mode' | 'value'> & { value?: TValue | null },
-    opts?: { size?: DialogSize }
-  ) {
-    return this.open<TValue, TContext, TSaved>(
-      { ...data, mode: 'add', value: data.value ?? null },
-      opts
-    );
-  }
-
-  openEdit<TValue, TContext = unknown, TSaved = TValue>(
-    data: Omit<SharedEditorDialogData<TValue, TContext, TSaved>, 'mode'>,
-    opts?: { size?: DialogSize }
-  ) {
-    return this.open<TValue, TContext, TSaved>(
-      { ...data, mode: 'edit' },
-      opts
-    );
-  }
-}
-
-4) Feature example: Customers screen + editor
-features/customers/customer-row.model.ts
-export interface CustomerRow {
-  id?: string;
-  name: string;
-  status: 'Active' | 'Inactive';
-}
-
-features/customers/editors/customer-row-editor.component.ts
-import { ChangeDetectionStrategy, Component } from '@angular/core';
-import { FormBuilder, Validators, FormGroup, ReactiveFormsModule } from '@angular/forms';
-import { MatFormFieldModule } from '@angular/material/form-field';
-import { MatInputModule } from '@angular/material/input';
-import { MatSelectModule } from '@angular/material/select';
-
-import { SharedEditor, SharedEditorInit } from '../../../shared/editor-dialog/shared-editor-dialog.types';
-import { CustomerRow } from '../customer-row.model';
-
-@Component({
-  standalone: true,
-  imports: [ReactiveFormsModule, MatFormFieldModule, MatInputModule, MatSelectModule],
-  templateUrl: './customer-row-editor.component.html',
-  changeDetection: ChangeDetectionStrategy.OnPush,
-})
-export class CustomerRowEditorComponent implements SharedEditor<CustomerRow> {
-  readonly form: FormGroup;
-  private currentId?: string;
-
-  constructor(private readonly fb: FormBuilder) {
-    this.form = this.fb.group({
-      name: ['', Validators.required],
-      status: ['Active', Validators.required],
-    });
-  }
-
-  init(input: SharedEditorInit<CustomerRow>): void {
-    this.currentId = input.value?.id;
-
-    this.form.reset({
-      name: input.value?.name ?? '',
-      status: input.value?.status ?? 'Active',
-    });
-
-    this.form.markAsPristine();
-  }
-
-  buildValue(): CustomerRow {
-    const v = this.form.getRawValue();
-    return { id: this.currentId, name: v['name'], status: v['status'] };
-  }
-}
-
-features/customers/editors/customer-row-editor.component.html
-<form [formGroup]="form" class="grid" style="display:grid; gap:12px;">
-  <mat-form-field appearance="outline">
-    <mat-label>Name</mat-label>
-    <input matInput formControlName="name" />
-    <mat-error *ngIf="form.controls['name'].hasError('required')">
-      Name is required
-    </mat-error>
-  </mat-form-field>
-
-  <mat-form-field appearance="outline">
-    <mat-label>Status</mat-label>
-    <mat-select formControlName="status">
-      <mat-option value="Active">Active</mat-option>
-      <mat-option value="Inactive">Inactive</mat-option>
-    </mat-select>
-  </mat-form-field>
-</form>
-
-features/customers/customers-api.service.ts
-import { Injectable } from '@angular/core';
-import { Observable, of, delay } from 'rxjs';
-import { CustomerRow } from './customer-row.model';
-
-@Injectable({ providedIn: 'root' })
-export class CustomersApiService {
-  create(row: CustomerRow): Observable<CustomerRow> {
-    const saved: CustomerRow = { ...row, id: crypto.randomUUID() };
-    return of(saved).pipe(delay(250));
-  }
-
-  update(id: string, row: CustomerRow): Observable<CustomerRow> {
-    const saved: CustomerRow = { ...row, id };
-    return of(saved).pipe(delay(250));
-  }
-}
-
-features/customers/customers.component.ts
-
-This uses the best UX mode: dialog stays open while the parent (via submit) saves.
-
-import { Component, ChangeDetectionStrategy } from '@angular/core';
-import { MatTableModule } from '@angular/material/table';
-import { MatButtonModule } from '@angular/material/button';
-import { firstValueFrom } from 'rxjs';
-
-import { SharedEditorDialogService } from '../../shared/editor-dialog/shared-editor-dialog.service';
-import { CustomerRowEditorComponent } from './editors/customer-row-editor.component';
-import { CustomersApiService } from './customers-api.service';
-import { CustomerRow } from './customer-row.model';
-
-@Component({
-  standalone: true,
-  imports: [MatTableModule, MatButtonModule],
-  templateUrl: './customers.component.html',
-  changeDetection: ChangeDetectionStrategy.OnPush,
-})
-export class CustomersComponent {
-  cols = ['name', 'status', 'actions'] as const;
-  rows: CustomerRow[] = [
-    { id: '1', name: 'Alice', status: 'Active' },
-    { id: '2', name: 'Bob', status: 'Inactive' },
-  ];
-
-  constructor(
-    private readonly dialog: SharedEditorDialogService,
-    private readonly api: CustomersApiService,
-  ) {}
-
-  async addCustomer(): Promise<void> {
-    await firstValueFrom(
-      this.dialog.openAdd<CustomerRow, unknown, CustomerRow>({
-        title: 'Add Customer',
-        subtitle: 'Create a new customer record',
-        editorComponent: CustomerRowEditorComponent,
-        requireDirty: true,
-        submit: async (payload) => {
-          const saved = await firstValueFrom(this.api.create(payload));
-          this.rows = [saved, ...this.rows];
-          return saved;
-        },
-      }, { size: 'md' })
-    );
-  }
-
-  async editCustomer(row: CustomerRow): Promise<void> {
-    await firstValueFrom(
-      this.dialog.openEdit<CustomerRow, unknown, CustomerRow>({
-        title: 'Edit Customer',
-        subtitle: `Editing: ${row.name}`,
-        value: row,
-        editorComponent: CustomerRowEditorComponent,
-        requireDirty: true,
-        submit: async (payload) => {
-          const saved = await firstValueFrom(this.api.update(payload.id!, payload));
-          this.rows = this.rows.map(r => r.id === saved.id ? saved : r);
-          return saved;
-        },
-      }, { size: 'md' })
-    );
-  }
-}
-
-features/customers/customers.component.html
-<div style="display:flex; justify-content:flex-end; margin-bottom:12px;">
-  <button mat-flat-button (click)="addCustomer()">Add</button>
-</div>
-
-<table mat-table [dataSource]="rows" class="mat-elevation-z1" style="width:100%;">
-  <ng-container matColumnDef="name">
-    <th mat-header-cell *matHeaderCellDef>Name</th>
-    <td mat-cell *matCellDef="let r">{{ r.name }}</td>
-  </ng-container>
-
-  <ng-container matColumnDef="status">
-    <th mat-header-cell *matHeaderCellDef>Status</th>
-    <td mat-cell *matCellDef="let r">{{ r.status }}</td>
-  </ng-container>
-
-  <ng-container matColumnDef="actions">
-    <th mat-header-cell *matHeaderCellDef></th>
-    <td mat-cell *matCellDef="let r" style="text-align:right;">
-      <button mat-button (click)="editCustomer(r)">Edit</button>
-    </td>
-  </ng-container>
-
-  <tr mat-header-row *matHeaderRowDef="cols"></tr>
-  <tr mat-row *matRowDef="let row; columns: cols"></tr>
-</table>
-
-5) README.md (for developers)
-shared/editor-dialog/README.md
-# SharedEditorDialog (Angular 20)
-
-A production-ready pattern for "Add/Edit Row" dialogs at enterprise scale:
-- Generic dialog shell (title/subtitle/actions/dirty-check/loading/error)
-- Feature-specific editors (each screen owns fields/validators/mapping)
-- Save stays in the parent (API calls + table updates)
-- Responsive sizing controlled by global CSS (panelClass), supports embedded host viewports
-
-## Why this exists
-A single "fully generic" form dialog across 200 screens becomes a config monster.
-This approach keeps shared concerns shared (shell + UX rules) and keeps business forms where they belong (feature code).
-
----
-
-## Installation
-
-1) Copy folder:
-`shared/editor-dialog/*`
-
-2) Add global CSS to `src/styles.scss`:
-
-- Required:
-  - `.shared-editor-dialog` rules
-  - size presets `.sed-sm|sed-md|sed-lg|sed-full`
-  - MDC surface sizing selectors
-
-These styles control width/height responsively with `dvw/dvh` and safe-area support.
-
-3) Ensure Angular Material is set up (MDC-based dialog).
-
----
-
-## How it works (high level)
-
-### SharedEditorDialogService
-Wraps `MatDialog.open()` to enforce enterprise defaults:
-- `disableClose: true` (we implement consistent dirty-check close behavior)
-- `autoFocus: false` (prevents focus issues in embedded hosts/webviews)
-- `panelClass: ['shared-editor-dialog', 'sed-md']` to enable responsive CSS sizing
-
-### SharedEditorDialogShellComponent
-- Creates the editor component dynamically (one-time per open)
-- Calls `editor.init({mode, value, context})`
-- On Save:
-  - Validates, focuses first invalid control
-  - If `submit` is NOT provided: closes with payload (parent saves after close)
-  - If `submit` IS provided: shows loading state, calls parent submit(), shows error banner, closes only on success
-
-### Feature editor component
-Implements:
-- `form: FormGroup`
-- `init(input)`
-- `buildValue()`
-
-The editor owns:
-- fields / validators
-- enable/disable rules
-- conditional UI
-- mapping form -> DTO
-
----
-
-## Usage
-
-### 1) Create an editor component
-Example editor:
-- `CustomerRowEditorComponent implements SharedEditor<CustomerRow>`
-- Build a reactive form
-- Implement `init()` to set initial values and mark pristine
-- Implement `buildValue()` to return the DTO/payload
-
-### 2) Open from parent (recommended: submit mode)
-```ts
-this.dialog.openEdit<CustomerRow, unknown, CustomerRow>({
-  title: 'Edit Customer',
-  value: row,
-  editorComponent: CustomerRowEditorComponent,
-  submit: async (payload) => {
-    const saved = await firstValueFrom(this.api.update(payload.id!, payload));
-    this.rows = this.rows.map(r => r.id === saved.id ? saved : r);
-    return saved;
+Folder structure
+cypress/
+  config/
+    local.json
+    dev.json
+    qa.json
+  e2e/
+    smoke/
+      funding.routes.smoke.cy.ts
+  support/
+    e2e.ts
+    commands.ts
+    app/
+      types.ts
+      routes.ts
+      context.ts
+      url.ts
+      route-filter.ts
+      route-runner.ts
+  tsconfig.json
+cypress.config.ts
+README.cypress.md
+package.json
+
+1) package.json scripts
+
+If you use cross-env, install it: npm i -D cross-env
+
+{
+  "devDependencies": {
+    "cypress": "^14.0.0",
+    "cross-env": "^7.0.3",
+    "typescript": "^5.0.0"
   },
-}, { size: 'md' });
+  "scripts": {
+    "cy:open:local": "cross-env CYPRESS_ENV=local cypress open",
+    "cy:run:local":  "cross-env CYPRESS_ENV=local cypress run",
+    "cy:run:dev":    "cross-env CYPRESS_ENV=dev cypress run",
+    "cy:run:qa":     "cross-env CYPRESS_ENV=qa cypress run",
 
-Dialog sizing & responsiveness
+    "cy:run:dev:override": "cross-env CYPRESS_ENV=dev cypress run --env loanAppGk=123456789,contextType=DEV1"
+  }
+}
 
-Sizing is controlled by CSS (global) using panel classes:
+2) Env config files
+cypress/config/local.json
+{
+  "baseUrl": "http://localhost:4200",
+  "env": {
+    "loanAppGk": "10000001",
+    "contextType": "LOCAL"
+  }
+}
 
-shared-editor-dialog (base)
+cypress/config/dev.json
+{
+  "baseUrl": "https://dev.yourcompany.com",
+  "env": {
+    "loanAppGk": "20000002",
+    "contextType": "DEV1"
+  }
+}
 
-sed-sm, sed-md, sed-lg, sed-full (preset)
+cypress/config/qa.json
+{
+  "baseUrl": "https://qa.yourcompany.com",
+  "env": {
+    "loanAppGk": "30000003",
+    "contextType": "QA1"
+  }
+}
 
-Why CSS-based sizing?
 
-Material dialogs render in an overlay attached to body.
-Using CSS is the most reliable cross-host way to:
+Cypress config is driven from cypress.config.ts (Cypress docs). 
+Cypress Documentation
 
-honor constrained host viewports (embedded plugin/webview)
+You can also override baseUrl via OS env var like CYPRESS_BASE_URL=... (Cypress docs). 
+Cypress Documentation
 
-adapt to browser window resizing
+3) Cypress config with env loader
+cypress.config.ts
+import { defineConfig } from 'cypress';
+import fs from 'node:fs';
+import path from 'node:path';
 
-avoid per-screen hardcoded widths
+type EnvFile = {
+  baseUrl: string;
+  env?: Record<string, any>;
+};
 
-Embedded host notes (VB ActiveX + Chrome plugin)
+function loadEnvFile(envName: string): EnvFile {
+  const p = path.resolve(__dirname, `cypress/config/${envName}.json`);
+  if (!fs.existsSync(p)) throw new Error(`Missing Cypress env config: ${p}`);
+  return JSON.parse(fs.readFileSync(p, 'utf-8')) as EnvFile;
+}
 
-The overlay uses the host viewport size (whatever the embedded webview exposes).
+export default defineConfig({
+  video: false,
+  screenshotOnRunFailure: true,
+  chromeWebSecurity: true,
 
-If the host viewport is small, the dialog automatically shrinks due to max-width: calc(100dvw - ...) and max-height: calc(100dvh - ...).
+  // reasonable defaults; override if your app is slow in QA
+  defaultCommandTimeout: 10_000,
+  pageLoadTimeout: 60_000,
+  requestTimeout: 30_000,
+  responseTimeout: 30_000,
 
-If the embedded host has severe constraints, use { size: 'full' } for a near-fullscreen experience.
+  retries: {
+    runMode: 1,
+    openMode: 0
+  },
 
-Best practices
+  reporter: 'spec',
 
-Keep editor components feature-owned (do NOT centralize business rules into the shell).
+  e2e: {
+    specPattern: 'cypress/e2e/**/*.cy.ts',
+    supportFile: 'cypress/support/e2e.ts',
 
-Return a typed DTO from buildValue().
+    setupNodeEvents(on, config) {
+      const envName =
+        (process.env.CYPRESS_ENV as string) ||
+        (config.env?.envName as string) ||
+        'local';
 
-Prefer submit mode for better UX (loading + inline error + close only on success).
+      const envFile = loadEnvFile(envName);
 
-Use context for extra info (parentId, permissions, lookup caches) rather than adding ad-hoc globals.
+      // allow OS-level override (CYPRESS_BASE_URL) without editing files
+      const baseUrlOverride =
+        (process.env.CYPRESS_BASE_URL as string) ||
+        (process.env.CYPRESS_baseUrl as string);
 
-Don’t subscribe in the shell; use minimal event hooks and OnPush.
+      config.baseUrl = baseUrlOverride || envFile.baseUrl;
 
-Common extensions
+      // merge env: CLI --env > config.env > env file
+      config.env = {
+        ...envFile.env,
+        ...config.env,
+        envName
+      };
 
-Server field validation mapping
+      return config;
+    }
+  }
+});
 
-Map server errors like { field: 'name', message: '...' } to form.get('name').setErrors({ server: true })
+4) Cypress TypeScript project config
+cypress/tsconfig.json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "types": ["cypress", "node"],
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "skipLibCheck": true
+  },
+  "include": ["**/*.ts"]
+}
 
-Readonly mode
+5) Common types + route registry
+cypress/support/app/types.ts
+export type FundingContext = {
+  loanAppGk: string;
+  contextType: string;
+};
 
-Add readonly?: boolean into context
+export type WaitOn = {
+  alias: string;
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  url: string | RegExp;
+  timeoutMs?: number;
+};
 
-In editor init() disable controls accordingly
+export type AppRoute = {
+  id: string;
+  path: string;
 
-Delete action
+  // page-ready assertion (required)
+  readyByCy: string;
 
-Add optional delete?: () => Promise<void> to dialog data and show a Delete button in footer
+  // optional: network calls to wait on for stability
+  waitOn?: WaitOn[];
+
+  // optional: tags to filter routes in CI (smoke, funding, etc.)
+  tags?: string[];
+};
+
+cypress/support/app/routes.ts
+import { AppRoute } from './types';
+
+export const FUNDING_ROUTES: AppRoute[] = [
+  {
+    id: 'returnreasons',
+    path: '/funding/returnreasons',
+    readyByCy: 'page-returnreasons',
+    tags: ['smoke', 'funding']
+  },
+  {
+    id: 'commodity',
+    path: '/funding/commodity',
+    readyByCy: 'page-commodity',
+    tags: ['smoke', 'funding']
+  },
+  {
+    id: 'booking',
+    path: '/funding/booking',
+    readyByCy: 'page-booking',
+    tags: ['smoke', 'funding']
+  },
+  {
+    id: 'prefundinfo',
+    path: '/funding/prefundinfo',
+    readyByCy: 'page-prefundinfo',
+    tags: ['smoke', 'funding']
+  }
+];
+
+6) Context resolver (run params override defaults)
+cypress/support/app/context.ts
+import { FundingContext } from './types';
+
+export function resolveFundingContext(overrides?: Partial<FundingContext>): FundingContext {
+  const loanAppGk = (overrides?.loanAppGk ?? Cypress.env('loanAppGk')) as string;
+  const contextType = (overrides?.contextType ?? Cypress.env('contextType')) as string;
+
+  if (!loanAppGk || !contextType) {
+    throw new Error(
+      `Missing context. Provide loanAppGk/contextType in env config or via CLI: --env loanAppGk=...,contextType=...`
+    );
+  }
+
+  return { loanAppGk, contextType };
+}
+
+7) URL builder (always injects loanAppGk + contextType)
+
+This merges params correctly even if you later add routes with their own query string.
+
+cypress/support/app/url.ts
+import { FundingContext } from './types';
+
+export function buildUrlWithFundingContext(
+  path: string,
+  ctx: FundingContext,
+  extra?: Record<string, string>
+) {
+  const normalized = path.startsWith('/') ? path : `/${path}`;
+
+  const [base, query = ''] = normalized.split('?');
+  const params = new URLSearchParams(query);
+
+  params.set('loanAppGk', ctx.loanAppGk);
+  params.set('contextType', ctx.contextType);
+
+  if (extra) {
+    for (const [k, v] of Object.entries(extra)) {
+      params.set(k, v);
+    }
+  }
+
+  const q = params.toString();
+  return q ? `${base}?${q}` : base;
+}
+
+8) Optional route filtering (so you can scale to 100+)
+
+Supports:
+
+--env tags=smoke (only routes having that tag)
+
+--env include=booking,prefundinfo (only these route ids)
+
+--env exclude=prefundinfo (skip these)
+
+cypress/support/app/route-filter.ts
+import { AppRoute } from './types';
+
+function csvEnv(name: string): string[] {
+  const raw = (Cypress.env(name) as string | undefined) ?? '';
+  return raw
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+}
+
+export function filterRoutes(all: AppRoute[]): AppRoute[] {
+  const tags = csvEnv('tags');
+  const include = csvEnv('include');
+  const exclude = new Set(csvEnv('exclude'));
+
+  let routes = [...all];
+
+  if (tags.length) {
+    routes = routes.filter(r => (r.tags ?? []).some(t => tags.includes(t)));
+  }
+
+  if (include.length) {
+    const includeSet = new Set(include);
+    routes = routes.filter(r => includeSet.has(r.id));
+  }
+
+  routes = routes.filter(r => !exclude.has(r.id));
+  return routes;
+}
+
+9) Route runner (fast + stable)
+cypress/support/app/route-runner.ts
+import { AppRoute, FundingContext } from './types';
+import { resolveFundingContext } from './context';
+import { buildUrlWithFundingContext } from './url';
+
+export function visitAndAssertRoute(route: AppRoute, overrides?: Partial<FundingContext>) {
+  const ctx = resolveFundingContext(overrides);
+
+  // Register intercepts BEFORE visiting to avoid missing initial calls
+  (route.waitOn ?? []).forEach(w => {
+    cy.intercept(w.method ?? 'GET', w.url).as(w.alias);
+  });
+
+  cy.visit(buildUrlWithFundingContext(route.path, ctx));
+
+  // Optional waits for deterministic smoke (use only where needed)
+  (route.waitOn ?? []).forEach(w => {
+    cy.wait(`@${w.alias}`, { timeout: w.timeoutMs ?? 30_000 });
+  });
+
+  // Page-ready assertion
+  cy.get(`[data-cy="${route.readyByCy}"]`, { timeout: 30_000 }).should('be.visible');
+}
+
+10) Commands (keeps tests clean)
+cypress/support/commands.ts
+import { AppRoute, FundingContext } from './app/types';
+import { visitAndAssertRoute } from './app/route-runner';
+
+declare global {
+  namespace Cypress {
+    interface Chainable {
+      getByCy(value: string): Chainable<JQuery<HTMLElement>>;
+      smokeRoute(route: AppRoute, overrides?: Partial<FundingContext>): Chainable<void>;
+    }
+  }
+}
+
+Cypress.Commands.add('getByCy', (value: string) => {
+  return cy.get(`[data-cy="${value}"]`);
+});
+
+Cypress.Commands.add('smokeRoute', (route: AppRoute, overrides?: Partial<FundingContext>) => {
+  visitAndAssertRoute(route, overrides);
+});
+
+cypress/support/e2e.ts
+import './commands';
+
+// Don't blindly suppress errors. Fix the app.
+// Use this only if you have known noisy exceptions you can't control.
+Cypress.on('uncaught:exception', () => false);
+
+11) Smoke spec (your 4 screens)
+cypress/e2e/smoke/funding.routes.smoke.cy.ts
+import { FUNDING_ROUTES } from '../../support/app/routes';
+import { filterRoutes } from '../../support/app/route-filter';
+
+describe('Smoke: Funding routes', () => {
+  const routes = filterRoutes(FUNDING_ROUTES);
+
+  routes.forEach((r) => {
+    it(`loads ${r.id}`, () => {
+      cy.smokeRoute(r); // uses CLI overrides if provided, else env defaults
+    });
+  });
+
+  it('can change loanAppGk mid-run (query param injection)', () => {
+    cy.smokeRoute(routes[0], { loanAppGk: '99999999' });
+    cy.smokeRoute(routes[1], { loanAppGk: '88888888', contextType: 'QA1' });
+  });
+});
+
+README (markdown)
+
+Create this file: README.cypress.md
+
+# Cypress E2E Smoke Setup (Angular 20 + Cypress 14)
+
+This setup runs route smoke tests against:
+- local (`http://localhost:4200`)
+- dev
+- qa
+
+All routes are visited with required query params:
+- `loanAppGk`
+- `contextType`
+
+## Non-negotiable app requirement (avoid flaky tests)
+Each route must expose a stable page-ready marker:
+- Return Reasons page: `data-cy="page-returnreasons"`
+- Commodity page: `data-cy="page-commodity"`
+- Booking page: `data-cy="page-booking"`
+- PrefundInfo page: `data-cy="page-prefundinfo"`
+
+If you don't add these `data-cy` markers, your smoke tests will be brittle and expensive to maintain.
+
+---
+
+## Install
+```bash
+npm i -D cypress@^14 typescript cross-env
+
+Config files
+
+Environment configs live here:
+
+cypress/config/local.json
+
+cypress/config/dev.json
+
+cypress/config/qa.json
+
+Each file defines:
+
+baseUrl
+
+default env.loanAppGk and env.contextType
+
+cypress.config.ts loads the correct JSON based on CYPRESS_ENV.
+
+Run locally
+npm run cy:open:local
+npm run cy:run:local
+
+Run in dev / qa
+npm run cy:run:dev
+npm run cy:run:qa
+
+Override loanAppGk/contextType at runtime
+
+CLI overrides win over config defaults:
+
+npm run cy:run:dev -- --env loanAppGk=123456789,contextType=DEV1
+
+Override baseUrl without changing files
+
+You can override baseUrl via OS env var:
+
+CYPRESS_BASE_URL=https://some-env.company.com npm run cy:run:qa
+
+Route registry (single source of truth)
+
+Funding routes are defined in:
+
+cypress/support/app/routes.ts
+
+To add a new screen:
+
+Add route entry:
+
+{ id: 'newscreen', path: '/funding/newscreen', readyByCy: 'page-newscreen', tags: ['smoke','funding'] }
+
+
+Add data-cy="page-newscreen" to that screen's page root element in Angular.
+
+Optional: add waitOn if the page needs a key API call to finish before it is stable:
+
+waitOn: [{ alias: 'load', url: /\/api\/funding\/newscreen/ }]
+
+Filtering (for large suites)
+
+Supported filters:
+
+--env tags=smoke (only routes that include the tag)
+
+--env include=booking,prefundinfo (only these ids)
+
+--env exclude=prefundinfo (skip these ids)
+
+Examples:
+
+npm run cy:run:qa -- --env tags=smoke
+npm run cy:run:qa -- --env include=booking,prefundinfo
+npm run cy:run:qa -- --env exclude=prefundinfo
+
+How query params are injected
+
+Every visit goes through:
+
+resolveFundingContext() (reads Cypress.env('loanAppGk') + Cypress.env('contextType'))
+
+buildUrlWithFundingContext() (merges/injects params into the URL)
+
+visitAndAssertRoute() (visit + optional waits + ready assertion)
+
+Files:
+
+cypress/support/app/context.ts
+
+cypress/support/app/url.ts
+
+cypress/support/app/route-runner.ts
+
+CI notes (basic)
+
+Prefer cypress run in CI
+
+Keep selectors stable (data-cy)
+
+Only use waitOn when needed; over-waiting slows everything down.
 
 Troubleshooting
+Tests fail only in QA
 
-Dialog not resizing?
+Increase pageLoadTimeout and responseTimeout in cypress.config.ts
 
-Confirm panelClass is applied and global CSS is in styles.scss
+Add waitOn for the API call that defines page readiness
 
-Confirm you are targeting MDC surface:
-.mat-mdc-dialog-container .mdc-dialog__surface
+Page-ready selector not found
 
-Editor not showing?
+Ensure the route actually renders the marker:
 
-Ensure editor is standalone: true
+<div data-cy="page-booking">...</div>
 
-Ensure it implements SharedEditor<T>
-
-Ensure service passes editorComponent
-
-Focus issues in embedded host?
-
-autoFocus: false is already set in the service
-
-Keep your editor fields in natural tab order
-
-
----
-
-## What you still might want (but I didn’t assume)
-If your embedded host sometimes launches with weird viewport sizing (common), you may also want:
-- a **“Full” size** default in embedded mode (detect via userAgent or a config flag)
-- a host-provided CSS class on `<body>` like `.host-embedded` to force `sed-full`
-
-If you tell me how you can detect “embedded vs browser” (query param? config.json? userAgent?), I’ll add a tiny hook that auto-selects `size: 'full'` only for the plugin-host scenario.
+Ensure it is visible (not display:none behind a spinner)
