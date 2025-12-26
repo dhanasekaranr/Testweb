@@ -1,1 +1,71 @@
 
+import { defineConfig } from 'cypress';
+import fs from 'node:fs';
+
+type EnvFile = {
+  baseUrl: string;
+  env?: Record<string, any>;
+};
+
+function readJsonFile(url: URL) {
+  // Node can read from file:// URLs, but converting to string keeps it explicit and portable.
+  const raw = fs.readFileSync(url, 'utf-8');
+  return JSON.parse(raw);
+}
+
+function loadEnvFile(envName: string): EnvFile {
+  // Resolve relative to THIS config file (works in ESM, no __dirname needed)
+  const fileUrl = new URL(`./cypress/config/${envName}.json`, import.meta.url);
+
+  // Friendly error if missing
+  try {
+    return readJsonFile(fileUrl) as EnvFile;
+  } catch (e: any) {
+    throw new Error(
+      `Missing/invalid Cypress env config: ${fileUrl.toString()}\n` +
+      `Create cypress/config/${envName}.json (example: local.json/dev.json/qa.json)\n` +
+      `Original error: ${e?.message ?? e}`
+    );
+  }
+}
+
+export default defineConfig({
+  video: false,
+  screenshotOnRunFailure: true,
+  reporter: 'spec',
+
+  defaultCommandTimeout: 10_000,
+  pageLoadTimeout: 60_000,
+  requestTimeout: 30_000,
+  responseTimeout: 30_000,
+
+  retries: { runMode: 1, openMode: 0 },
+
+  e2e: {
+    specPattern: 'cypress/e2e/**/*.cy.ts',
+    supportFile: 'cypress/support/e2e.ts',
+
+    setupNodeEvents(on, config) {
+      // pick env config
+      const envName =
+        (process.env.CYPRESS_ENV as string) ||
+        (config.env?.envName as string) ||
+        'local';
+
+      const envFile = loadEnvFile(envName);
+
+      // allow OS-level override without editing json
+      const baseUrlOverride = process.env.CYPRESS_BASE_URL as string | undefined;
+
+      // CLI --env has highest precedence; then whatever is already in config.env; then json defaults
+      config.baseUrl = baseUrlOverride || envFile.baseUrl;
+      config.env = {
+        ...(envFile.env ?? {}),
+        ...(config.env ?? {}),
+        envName
+      };
+
+      return config;
+    }
+  }
+});
