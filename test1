@@ -1,71 +1,277 @@
+cypress/support/app/stub.ts
 
-import { defineConfig } from 'cypress';
-import fs from 'node:fs';
+import type { Endpoint } from './types';
 
-type EnvFile = {
-  baseUrl: string;
-  env?: Record<string, any>;
+export type StubReply<T = any> =
+  | { fixture: string }
+  | { body: T; statusCode?: number }
+  | ((req: Cypress.Interception) => void);
+
+export function stubEndpoint<T>(endpoint: Endpoint, alias: string, reply: StubReply<T>) {
+  cy.intercept(endpoint.method, endpoint.url, (req) => {
+    if (typeof reply === 'function') return reply(req);
+
+    if ('fixture' in reply) {
+      req.reply({ fixture: reply.fixture });
+      return;
+    }
+
+    req.reply({ statusCode: reply.statusCode ?? 200, body: reply.body });
+  }).as(alias);
+}
+
+export function waitAlias(alias: string, timeoutMs = 30_000) {
+  return cy.wait(`@${alias}`, { timeout: timeoutMs });
+}
+
+
+cypress/support/app/funding-screen.ts
+
+import type { Endpoint, FundingContext } from './types';
+import { assertPageLoaded } from './layout';
+import { stubEndpoint, waitAlias, type StubReply } from './stub';
+
+export function createFundingScreenKit(opts: {
+  id: string;
+  path: string;
+  pageName: string;
+  endpoints?: { load?: Endpoint; save?: Endpoint };
+}) {
+  const aLoad = `${opts.id}:load`;
+  const aSave = `${opts.id}:save`;
+
+  return {
+    route: { id: opts.id, path: opts.path, pageName: opts.pageName },
+
+    visit(overrides?: Partial<FundingContext>, extraQuery?: Record<string,string>) {
+      cy.visitFunding(opts.path, overrides, extraQuery);
+      assertPageLoaded(opts.pageName);
+    },
+
+    stubLoad<T>(reply: StubReply<T>) {
+      if (!opts.endpoints?.load) throw new Error(`[${opts.id}] load endpoint not configured`);
+      stubEndpoint(opts.endpoints.load, aLoad, reply);
+    },
+    waitLoad(timeoutMs?: number) {
+      return waitAlias(aLoad, timeoutMs);
+    },
+
+    stubSave<T>(reply: StubReply<T>) {
+      if (!opts.endpoints?.save) throw new Error(`[${opts.id}] save endpoint not configured`);
+      stubEndpoint(opts.endpoints.save, aSave, reply);
+    },
+    waitSave(timeoutMs?: number) {
+      return waitAlias(aSave, timeoutMs);
+    }
+  };
+}
+
+C) Booking: fixtures + DTO factory + screen kit + 3 behavior tests (single save API)
+C1) Fixtures
+
+cypress/fixtures/funding/booking/loadbooking.json
+
+{
+  "bookingId": "BK-10001",
+  "status": "Pending",
+  "billingInfo": "BillToDealer",
+  "alsAccountCode": "ALS001",
+  "amount": 1000,
+  "currency": "USD"
+}
+
+
+cypress/fixtures/funding/booking/savebooking.success.json
+
+{
+  "bookingId": "BK-10001",
+  "status": "Pending",
+  "billingInfo": "BillToDealer",
+  "alsAccountCode": "ALS001",
+  "amount": 1000,
+  "currency": "USD"
+}
+
+C2) DTO factory (request/response is same BookingPageDto)
+
+cypress/support/data/booking.factory.ts
+
+export type BookingPageDto = {
+  bookingId: string;
+  status: string;
+  billingInfo: string;
+  alsAccountCode: string;
+  amount: number;
+  currency?: string;
 };
 
-function readJsonFile(url: URL) {
-  // Node can read from file:// URLs, but converting to string keeps it explicit and portable.
-  const raw = fs.readFileSync(url, 'utf-8');
-  return JSON.parse(raw);
+export function bookingDto(overrides: Partial<BookingPageDto> = {}): BookingPageDto {
+  return {
+    bookingId: 'BK-10001',
+    status: 'Pending',
+    billingInfo: 'BillToDealer',
+    alsAccountCode: 'ALS001',
+    amount: 1000,
+    currency: 'USD',
+    ...overrides
+  };
 }
 
-function loadEnvFile(envName: string): EnvFile {
-  // Resolve relative to THIS config file (works in ESM, no __dirname needed)
-  const fileUrl = new URL(`./cypress/config/${envName}.json`, import.meta.url);
+C3) Booking API matchers
 
-  // Friendly error if missing
-  try {
-    return readJsonFile(fileUrl) as EnvFile;
-  } catch (e: any) {
-    throw new Error(
-      `Missing/invalid Cypress env config: ${fileUrl.toString()}\n` +
-      `Create cypress/config/${envName}.json (example: local.json/dev.json/qa.json)\n` +
-      `Original error: ${e?.message ?? e}`
-    );
+cypress/support/screens/booking.api.ts
+
+export const BookingApi = {
+  // CHANGE these to your real endpoints
+  load: /\/api\/funding\/booking(\?.*)?$/i,
+  save: /\/api\/funding\/booking\/save$/i
+};
+
+C4) Material select helper (works with mat-select)
+
+cypress/support/app/material.ts
+
+export function selectMatOption(triggerCy: string, optionText: string) {
+  cy.get(`[data-cy="${triggerCy}"]`).click();
+  cy.get('mat-option').contains(optionText).click();
+}
+
+C5) Booking screen kit (reuses base kit + uses dynamic field data-cy)
+
+Because your fields now get data-cy like Booking__field-status, your Cypress selectors are stable.
+
+cypress/support/screens/booking.screen.ts
+
+import { createFundingScreenKit } from '../app/funding-screen';
+import { BookingApi } from './booking.api';
+import { selectMatOption } from '../app/material';
+
+export const BookingBase = createFundingScreenKit({
+  id: 'booking',
+  path: '/funding/booking',
+  pageName: 'Booking',
+  endpoints: {
+    load: { method: 'GET', url: BookingApi.load },
+    save: { method: 'POST', url: BookingApi.save }
   }
-}
+});
 
-export default defineConfig({
-  video: false,
-  screenshotOnRunFailure: true,
-  reporter: 'spec',
+export const BookingScreen = {
+  ...BookingBase,
 
-  defaultCommandTimeout: 10_000,
-  pageLoadTimeout: 60_000,
-  requestTimeout: 30_000,
-  responseTimeout: 30_000,
+  // these match your Angular-generated pattern: `${pageName}__field-${fieldName}`
+  cy: {
+    status: 'Booking__field-status',
+    billingInfo: 'Booking__field-billingInfo',
+    alsAccountCode: 'Booking__field-alsAccountCode',
+    amount: 'Booking__field-amount'
+  },
 
-  retries: { runMode: 1, openMode: 0 },
+  els: {
+    amount: () => cy.get(`[data-cy="Booking__field-amount"]`),
+    saveBtn: () => cy.get('[data-cy="btn-save"]'),
+    toastSuccess: () => cy.get('[data-cy="toast-success"]')
+  },
 
-  e2e: {
-    specPattern: 'cypress/e2e/**/*.cy.ts',
-    supportFile: 'cypress/support/e2e.ts',
+  changeStatus(v: string) {
+    selectMatOption(this.cy.status, v);
+  },
+  changeBillingInfo(v: string) {
+    selectMatOption(this.cy.billingInfo, v);
+  },
+  changeAlsAccountCode(v: string) {
+    selectMatOption(this.cy.alsAccountCode, v);
+  },
+  setAmount(v: number) {
+    this.els.amount().clear().type(String(v), { delay: 0 });
+  },
+  save() {
+    this.els.saveBtn().click();
+  }
+};
 
-    setupNodeEvents(on, config) {
-      // pick env config
-      const envName =
-        (process.env.CYPRESS_ENV as string) ||
-        (config.env?.envName as string) ||
-        'local';
+C6) Booking behavior tests (3 scenarios)
 
-      const envFile = loadEnvFile(envName);
+cypress/e2e/funding/booking/booking.behavior.cy.ts
 
-      // allow OS-level override without editing json
-      const baseUrlOverride = process.env.CYPRESS_BASE_URL as string | undefined;
+import { BookingScreen } from '../../../support/screens/booking.screen';
+import type { BookingPageDto } from '../../../support/data/booking.factory';
 
-      // CLI --env has highest precedence; then whatever is already in config.env; then json defaults
-      config.baseUrl = baseUrlOverride || envFile.baseUrl;
-      config.env = {
-        ...(envFile.env ?? {}),
-        ...(config.env ?? {}),
-        envName
+describe('Booking - behavior (single save endpoint)', () => {
+  it('Scenario 1: loadBooking binds data', () => {
+    BookingScreen.stubLoad({ fixture: 'funding/booking/loadbooking.json' });
+
+    BookingScreen.visit();
+    BookingScreen.waitLoad();
+
+    // simple proof the form is bound
+    BookingScreen.els.amount().should('have.value', '1000');
+  });
+
+  it('Scenario 2: change status + saveBooking', () => {
+    BookingScreen.stubLoad({ fixture: 'funding/booking/loadbooking.json' });
+
+    cy.fixture('funding/booking/loadbooking.json').then((loaded: BookingPageDto) => {
+      const expected: BookingPageDto = { ...loaded, status: 'Approved' };
+
+      BookingScreen.stubSave((req) => {
+        // If your API posts full BookingPageDto, this is valid.
+        // If it posts only changed fields, switch to expect(req.body).to.include({ status: 'Approved' })
+        expect(req.body).to.deep.include(expected);
+        req.reply({ statusCode: 200, body: expected }); // response = same dto
+      });
+
+      BookingScreen.visit();
+      BookingScreen.waitLoad();
+
+      BookingScreen.changeStatus('Approved');
+      BookingScreen.save();
+
+      BookingScreen.waitSave();
+      BookingScreen.els.toastSuccess().should('be.visible');
+    });
+  });
+
+  it('Scenario 3: change billingInfo + alsAccountCode + saveBooking', () => {
+    BookingScreen.stubLoad({ fixture: 'funding/booking/loadbooking.json' });
+
+    cy.fixture('funding/booking/loadbooking.json').then((loaded: BookingPageDto) => {
+      const expected: BookingPageDto = {
+        ...loaded,
+        billingInfo: 'BillToCustomer',
+        alsAccountCode: 'ALS999'
       };
 
-      return config;
-    }
-  }
+      BookingScreen.stubSave((req) => {
+        expect(req.body).to.deep.include(expected);
+        req.reply({ statusCode: 200, body: expected });
+      });
+
+      BookingScreen.visit();
+      BookingScreen.waitLoad();
+
+      BookingScreen.changeBillingInfo('BillToCustomer');
+      BookingScreen.changeAlsAccountCode('ALS999');
+      BookingScreen.save();
+
+      BookingScreen.waitSave();
+      BookingScreen.els.toastSuccess().should('be.visible');
+    });
+  });
+});
+
+D) Optional: Smoke test for routes (still works with params)
+
+cypress/e2e/smoke/funding.routes.smoke.cy.ts
+
+import { FUNDING_ROUTES } from '../../support/app/routes';
+import { assertPageLoaded } from '../../support/app/layout';
+
+describe('Smoke: Funding routes', () => {
+  FUNDING_ROUTES.forEach(r => {
+    it(`loads ${r.id}`, () => {
+      cy.visitFunding(r.path);
+      assertPageLoaded(r.pageName);
+    });
+  });
 });
