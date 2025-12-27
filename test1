@@ -1,96 +1,66 @@
-/**
- * Angular Material helpers (mat-select / mat-option).
- *
- * Assumptions:
- * - Your shared leaf component stamps data-cy on the actual <mat-select>:
- *     <mat-select [attr.data-cy]="dataCy"> ... </mat-select>
- *
- * If data-cy is on a wrapper element instead, this helper still tries to find
- * the nested <mat-select> or the combobox trigger.
- */
+import { BookingScreen } from '../../../support/screens/booking.screen';
+import type { BookingPageDto } from '../../../support/data/booking.factory';
 
-type OpenTarget =
-  | { cy: string }
-  | { selector: string };
+describe('Booking - behavior', () => {
+  it('Scenario 1: loadBooking binds initial dto', () => {
+    BookingScreen.stubLoad({ fixture: 'funding/booking/loadbooking.json' });
 
-function getTargetEl(target: OpenTarget): Cypress.Chainable<JQuery<HTMLElement>> {
-  if ('cy' in target) return cy.get(`[data-cy="${target.cy}"]`);
-  return cy.get(target.selector);
-}
+    BookingScreen.visit();
+    BookingScreen.waitLoad();
 
-function clickMatSelectTarget($el: JQuery<HTMLElement>) {
-  // Case 1: data-cy is on <mat-select> itself
-  if ($el.is('mat-select')) {
-    cy.wrap($el).click();
-    return;
-  }
+    // quick proof binding happened
+    BookingScreen.els.amount().should('have.value', '1000');
+  });
 
-  // Case 2: data-cy is on wrapper -> find inner mat-select
-  const inner = $el.find('mat-select');
-  if (inner.length) {
-    cy.wrap(inner).click();
-    return;
-  }
+  it('Scenario 2: change status + saveBooking (single save endpoint)', () => {
+    BookingScreen.stubLoad({ fixture: 'funding/booking/loadbooking.json' });
 
-  // Case 3: fallback -> click combobox trigger (Material uses role="combobox")
-  const combo = $el.find('[role="combobox"]').first();
-  if (combo.length) {
-    cy.wrap(combo).click({ force: true });
-    return;
-  }
+    cy.fixture('funding/booking/loadbooking.json').then((loaded: BookingPageDto) => {
+      const expected: BookingPageDto = { ...loaded, status: 'Approved' };
 
-  throw new Error(
-    `Unable to open mat-select for target. Put data-cy on <mat-select> or ensure wrapper contains mat-select/combobox trigger.`
-  );
-}
+      BookingScreen.stubSave((req) => {
+        // If backend posts full BookingPageDto:
+        expect(req.body).to.deep.include(expected);
 
-/**
- * Opens the mat-select panel for a given data-cy (or selector).
- */
-export function openMatSelect(targetCy: string) {
-  getTargetEl({ cy: targetCy }).then(($el) => clickMatSelectTarget($el));
-  // Wait for overlay panel to show up (mat-option list lives in the overlay container)
-  cy.get('.cdk-overlay-container .cdk-overlay-pane', { timeout: 10_000 })
-    .should('be.visible');
-}
+        // response = same dto
+        req.reply({ statusCode: 200, body: expected });
+      });
 
-/**
- * Selects a mat-option by visible text.
- * - Works with overlay-based options (Material renders options under .cdk-overlay-container)
- * - Guards against selecting disabled options
- */
-export function selectMatOption(targetCy: string, optionText: string) {
-  openMatSelect(targetCy);
+      BookingScreen.visit();
+      BookingScreen.waitLoad();
 
-  // Options live in overlay; match by text.
-  // Use contains() to be a little resilient (spacing, etc.)
-  cy.get('.cdk-overlay-container mat-option', { timeout: 10_000 })
-    .contains(optionText)
-    .should(($opt) => {
-      const cls = $opt.attr('class') ?? '';
-      const disabled =
-        cls.includes('mat-mdc-option-disabled') ||
-        cls.includes('mat-option-disabled') ||
-        $opt.attr('aria-disabled') === 'true';
-      expect(disabled, `Option "${optionText}" should not be disabled`).to.eq(false);
-    })
-    .click();
+      BookingScreen.changeStatus('Approved');
+      BookingScreen.save();
 
-  // Panel should close after selection
-  cy.get('.cdk-overlay-container .cdk-overlay-pane').should('not.exist');
-}
-
-/**
- * Assert the selected value text shown in the mat-select trigger.
- * (Material renders selected text inside the select trigger)
- */
-export function assertMatSelectValue(targetCy: string, expectedText: string) {
-  // This works well with MDC mat-select:
-  // <mat-select ...> <div class="mat-mdc-select-value"> ... </div>
-  cy.get(`[data-cy="${targetCy}"]`)
-    .should('be.visible')
-    .within(() => {
-      cy.get('.mat-mdc-select-value-text, .mat-select-value-text', { timeout: 5_000 })
-        .should('contain.text', expectedText);
+      BookingScreen.waitSave();
+      BookingScreen.els.toastSuccess().should('be.visible');
     });
-}
+  });
+
+  it('Scenario 3: change billingInfo + alsAccountCode + saveBooking', () => {
+    BookingScreen.stubLoad({ fixture: 'funding/booking/loadbooking.json' });
+
+    cy.fixture('funding/booking/loadbooking.json').then((loaded: BookingPageDto) => {
+      const expected: BookingPageDto = {
+        ...loaded,
+        billingInfo: 'BillToCustomer',
+        alsAccountCode: 'ALS999'
+      };
+
+      BookingScreen.stubSave((req) => {
+        expect(req.body).to.deep.include(expected);
+        req.reply({ statusCode: 200, body: expected });
+      });
+
+      BookingScreen.visit();
+      BookingScreen.waitLoad();
+
+      BookingScreen.changeBillingInfo('BillToCustomer');
+      BookingScreen.changeAlsAccountCode('ALS999');
+      BookingScreen.save();
+
+      BookingScreen.waitSave();
+      BookingScreen.els.toastSuccess().should('be.visible');
+    });
+  });
+});
