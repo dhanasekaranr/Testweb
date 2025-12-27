@@ -1,21 +1,19 @@
-const API_PREFIX = '/api/v1.0';
+/**
+ * Select a Material tab by its visible label.
+ * Works with Angular Material MDC tabs (Angular 15+ / Material 15+).
+ */
+export function selectMatTabOnPage(pageName: string, tabLabel: string) {
+  // Tabs are part of the page DOM (not in overlay), so scope under page-root
+  cy.get(`[data-cy="page-root"][data-page-name="${pageName}"]`, { timeout: 30_000 })
+    .should('be.visible')
+    .within(() => {
+      // robust selector: role="tab"
+      cy.contains('[role="tab"]', tabLabel, { timeout: 10_000 })
+        .should('be.visible')
+        .click();
 
-function esc(s: string) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function normPath(path: string) {
-  return path.startsWith('/') ? path.slice(1) : path;
-}
-
-// GET: allow optional trailing slash + optional querystring
-export function apiGet(path: string): RegExp {
-  const p = esc(normPath(path));
-  return new RegExp(`${esc(API_PREFIX)}/+${p}/?(\\?.*)?$`, 'i');
-}
-
-// POST: allow optional trailing slash (no query expected, but harmless if added)
-export function apiPost(path: string): RegExp {
-  const p = esc(normPath(path));
-  return new RegExp(`${esc(API_PREFIX)}/+${p}/?$`, 'i');
+      // make sure it became selected
+      cy.contains('[role="tab"]', tabLabel)
+        .should('have.attr', 'aria-selected', 'true');
+    });
 }
