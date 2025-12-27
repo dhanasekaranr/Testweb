@@ -1,66 +1,21 @@
-import { BookingScreen } from '../../../support/screens/booking.screen';
-import type { BookingPageDto } from '../../../support/data/booking.factory';
+const API_PREFIX = '/api/v1.0';
 
-describe('Booking - behavior', () => {
-  it('Scenario 1: loadBooking binds initial dto', () => {
-    BookingScreen.stubLoad({ fixture: 'funding/booking/loadbooking.json' });
+function esc(s: string) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
-    BookingScreen.visit();
-    BookingScreen.waitLoad();
+function normPath(path: string) {
+  return path.startsWith('/') ? path.slice(1) : path;
+}
 
-    // quick proof binding happened
-    BookingScreen.els.amount().should('have.value', '1000');
-  });
+// GET: allow optional trailing slash + optional querystring
+export function apiGet(path: string): RegExp {
+  const p = esc(normPath(path));
+  return new RegExp(`${esc(API_PREFIX)}/+${p}/?(\\?.*)?$`, 'i');
+}
 
-  it('Scenario 2: change status + saveBooking (single save endpoint)', () => {
-    BookingScreen.stubLoad({ fixture: 'funding/booking/loadbooking.json' });
-
-    cy.fixture('funding/booking/loadbooking.json').then((loaded: BookingPageDto) => {
-      const expected: BookingPageDto = { ...loaded, status: 'Approved' };
-
-      BookingScreen.stubSave((req) => {
-        // If backend posts full BookingPageDto:
-        expect(req.body).to.deep.include(expected);
-
-        // response = same dto
-        req.reply({ statusCode: 200, body: expected });
-      });
-
-      BookingScreen.visit();
-      BookingScreen.waitLoad();
-
-      BookingScreen.changeStatus('Approved');
-      BookingScreen.save();
-
-      BookingScreen.waitSave();
-      BookingScreen.els.toastSuccess().should('be.visible');
-    });
-  });
-
-  it('Scenario 3: change billingInfo + alsAccountCode + saveBooking', () => {
-    BookingScreen.stubLoad({ fixture: 'funding/booking/loadbooking.json' });
-
-    cy.fixture('funding/booking/loadbooking.json').then((loaded: BookingPageDto) => {
-      const expected: BookingPageDto = {
-        ...loaded,
-        billingInfo: 'BillToCustomer',
-        alsAccountCode: 'ALS999'
-      };
-
-      BookingScreen.stubSave((req) => {
-        expect(req.body).to.deep.include(expected);
-        req.reply({ statusCode: 200, body: expected });
-      });
-
-      BookingScreen.visit();
-      BookingScreen.waitLoad();
-
-      BookingScreen.changeBillingInfo('BillToCustomer');
-      BookingScreen.changeAlsAccountCode('ALS999');
-      BookingScreen.save();
-
-      BookingScreen.waitSave();
-      BookingScreen.els.toastSuccess().should('be.visible');
-    });
-  });
-});
+// POST: allow optional trailing slash (no query expected, but harmless if added)
+export function apiPost(path: string): RegExp {
+  const p = esc(normPath(path));
+  return new RegExp(`${esc(API_PREFIX)}/+${p}/?$`, 'i');
+}
