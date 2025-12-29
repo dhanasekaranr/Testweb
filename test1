@@ -1,3 +1,48 @@
+2.2 Material select helper (works with prefixed data-cy on <mat-select>)
+
+cypress/support/app/material.ts
+
+/**
+ * Select option from mat-select by visible text.
+ * Assumes data-cy is on the <mat-select>.
+ */
+export function selectMatOption(selectCy: string, optionText: string) {
+  cy.get(`[data-cy="${selectCy}"]`, { timeout: 10_000 })
+    .should('be.visible')
+    .click();
+
+  // Options are rendered in CDK overlay container
+  cy.get('.cdk-overlay-container mat-option', { timeout: 10_000 })
+    .contains(optionText)
+    .should('be.visible')
+    .click();
+
+  // Panel should close
+  cy.get('.cdk-overlay-container .cdk-overlay-pane', { timeout: 10_000 })
+    .should('not.exist');
+}
+
+2.3 Tab helper (Billing Information tab)
+
+cypress/support/app/material-tabs.ts
+
+export function selectMatTab(pageName: string, tabLabel: string) {
+  cy.get(`[data-cy="page-root"][data-page-name="${pageName}"]`, { timeout: 30_000 })
+    .should('be.visible')
+    .within(() => {
+      cy.contains('[role="tab"]', tabLabel, { timeout: 10_000 })
+        .should('be.visible')
+        .click();
+
+      cy.contains('[role="tab"]', tabLabel)
+        .should('have.attr', 'aria-selected', 'true');
+    });
+}
+
+2.4 Enabled/disabled assert (Chai expect; works with disabled OR aria-disabled)
+
+cypress/support/app/assert.ts
+
 export function assertDisabled(el: Cypress.Chainable<JQuery<HTMLElement>>) {
   el.should(($e) => {
     const disabledProp = ($e as any).prop?.('disabled');
@@ -23,3 +68,218 @@ export function assertEnabled(el: Cypress.Chainable<JQuery<HTMLElement>>) {
     expect(isDisabled, 'element should be enabled').to.eq(false);
   });
 }
+
+3) API matching (fixes double-slash issues like /api/v1.0//booking)
+3.1 Regex matchers tolerant of .../api/v1.0/ + .../api/v1.0//
+
+cypress/support/app/api-match.ts
+
+const API_PREFIX = '/api/v1.0';
+
+function esc(s: string) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+function normPath(path: string) {
+  return path.startsWith('/') ? path.slice(1) : path;
+}
+
+// GET: allow querystring; allow 1+ slashes between prefix and path
+export function apiGet(path: string): RegExp {
+  const p = esc(normPath(path));
+  return new RegExp(`${esc(API_PREFIX)}/+${p}/?(\\?.*)?$`, 'i');
+}
+
+// POST: allow optional trailing slash
+export function apiPost(path: string): RegExp {
+  const p = esc(normPath(path));
+  return new RegExp(`${esc(API_PREFIX)}/+${p}/?$`, 'i');
+}
+
+3.2 Funding API in one place
+
+cypress/support/api/funding.api.ts
+
+import { apiGet, apiPost } from '../app/api-match';
+
+export const FundingApi = {
+  booking: {
+    load: apiGet('/booking'),
+    save: apiPost('/booking/save')
+  },
+  commodity: {
+    load: apiGet('/commodity'),
+    save: apiPost('/commodity/save')
+  },
+  returnreasons: {
+    load: apiGet('/returnreasons'),
+    save: apiPost('/returnreasons/save')
+  },
+  prefundinfo: {
+    load: apiGet('/prefundinfo'),
+    save: apiPost('/prefundinfo/save')
+  }
+} as const;
+
+4) Booking screen (prefix-aware)
+
+cypress/support/screens/booking.screen.ts
+
+import { createFundingScreenKit } from '../app/funding-screen';
+import { FundingApi } from '../api/funding.api';
+import { cyField, cyBtn, cyToast } from '../app/cy-ids';
+import { selectMatOption } from '../app/material';
+import { selectMatTab } from '../app/material-tabs';
+import { assertDisabled, assertEnabled } from '../app/assert';
+
+export const BookingBase = createFundingScreenKit({
+  id: 'booking',
+  path: '/funding/booking',
+  pageName: 'Booking',
+  endpoints: {
+    load: { method: 'GET', url: FundingApi.booking.load },
+    save: { method: 'POST', url: FundingApi.booking.save }
+  }
+});
+
+export const BookingScreen = {
+  ...BookingBase,
+
+  pageName: 'Booking',
+
+  // store field names once; build full data-cy using helpers
+  fields: {
+    status: 'status',
+    amount: 'amount',
+    billingInfo: 'billingInfo',
+    alsAccountCode: 'alsAccountCode'
+  },
+
+  tabs: {
+    billing: 'Billing Information'
+  },
+
+  els: {
+    field: (fieldName: string) => cy.get(`[data-cy="${cyField('Booking', fieldName)}"]`, { timeout: 10_000 }),
+    saveBtn: () => cy.get(`[data-cy="${cyBtn('Booking', 'save')}"]`, { timeout: 10_000 }),
+    toastSuccess: () => cy.get(`[data-cy="${cyToast('Booking', 'success')}"]`, { timeout: 10_000 })
+  },
+
+  assertSaveDisabled() {
+    assertDisabled(this.els.saveBtn());
+  },
+
+  assertSaveEnabled() {
+    assertEnabled(this.els.saveBtn());
+  },
+
+  changeStatus(newStatus: string) {
+    selectMatOption(cyField(this.pageName, this.fields.status), newStatus);
+    this.assertSaveEnabled(); // rule: change enables save
+  },
+
+  setAmount(v: number) {
+    this.els.field(this.fields.amount).clear().type(String(v), { delay: 0 });
+    this.assertSaveEnabled();
+  },
+
+  goToBillingTab() {
+    selectMatTab(this.pageName, this.tabs.billing);
+  },
+
+  changeBillingInfo(v: string) {
+    this.goToBillingTab();
+    selectMatOption(cyField(this.pageName, this.fields.billingInfo), v);
+    this.assertSaveEnabled();
+  },
+
+  changeAlsAccountCode(v: string) {
+    this.goToBillingTab();
+    selectMatOption(cyField(this.pageName, this.fields.alsAccountCode), v);
+    this.assertSaveEnabled();
+  },
+
+  save() {
+    this.assertSaveEnabled();
+    this.els.saveBtn().click();
+  }
+};
+
+5) Booking behavior spec (3 scenarios + Save disabled until status changes)
+
+cypress/e2e/funding/booking/booking.behavior.cy.ts
+
+import { BookingScreen } from '../../../support/screens/booking.screen';
+
+// Use your @sharedlib type if you want:
+import type { BookingPageDto } from '../../../support/data/booking.factory';
+// or: import type { BookingPageDto } from '@sharedlib/...';
+
+describe('Booking - behavior', () => {
+  it('Scenario 1: loads and save is disabled by default', () => {
+    BookingScreen.stubLoad({ fixture: 'funding/booking/loadbooking.json' });
+
+    BookingScreen.visit();
+    BookingScreen.waitLoad();
+
+    BookingScreen.assertSaveDisabled();
+  });
+
+  it('Scenario 2: change status enables save, save posts dto', () => {
+    BookingScreen.stubLoad({ fixture: 'funding/booking/loadbooking.json' });
+
+    cy.fixture('funding/booking/loadbooking.json').then((loaded: BookingPageDto) => {
+      const expected: BookingPageDto = { ...loaded, status: 'Approved' };
+
+      BookingScreen.stubSave((req) => {
+        // If your save posts the entire page DTO:
+        expect(req.body).to.deep.include(expected);
+        req.reply({ statusCode: 200, body: expected });
+      });
+
+      BookingScreen.visit();
+      BookingScreen.waitLoad();
+
+      BookingScreen.assertSaveDisabled();
+
+      BookingScreen.changeStatus('Approved');
+      BookingScreen.save();
+
+      BookingScreen.waitSave();
+      BookingScreen.els.toastSuccess().should('be.visible');
+    });
+  });
+
+  it('Scenario 3: billing tab change + save (single save endpoint)', () => {
+    BookingScreen.stubLoad({ fixture: 'funding/booking/loadbooking.json' });
+
+    cy.fixture('funding/booking/loadbooking.json').then((loaded: BookingPageDto) => {
+      const expected: BookingPageDto = {
+        ...loaded,
+        status: 'Approved', // include status change if your UI requires save enabled by status change
+        billingInfo: 'BillToCustomer',
+        alsAccountCode: 'ALS999'
+      };
+
+      BookingScreen.stubSave((req) => {
+        expect(req.body).to.deep.include(expected);
+        req.reply({ statusCode: 200, body: expected });
+      });
+
+      BookingScreen.visit();
+      BookingScreen.waitLoad();
+
+      BookingScreen.assertSaveDisabled();
+
+      // If save enable truly requires status change first, do it:
+      BookingScreen.changeStatus('Approved');
+
+      BookingScreen.changeBillingInfo('BillToCustomer');
+      BookingScreen.changeAlsAccountCode('ALS999');
+
+      BookingScreen.save();
+      BookingScreen.waitSave();
+
+      BookingScreen.els.toastSuccess().should('be.visible');
+    });
+  });
+});
