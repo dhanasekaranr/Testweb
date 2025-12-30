@@ -1,4 +1,492 @@
-// cypress/support/app/mat-table.ts
+# Cypress E2E (Angular 20 + Cypress 14.5 + Node 24) — End-to-End Setup
+
+This README is the **current, consolidated** setup after the latest changes:
+
+- **ESM-safe** `cypress.config.ts` (no `__dirname`)
+- **Global** `/lookup` intercept (fixture) executed **before every test**
+- Screen pattern: `ScreenBase + createFundingScreenKit()` (`BookingScreen = { ...BookingBase, ...createFundingScreenKit(...) }`)
+- Scenario #2: Status must become **`Waived`** to enable Save
+- Reliable `mat-select` utilities + reusable `mat-table` assertions
+- `stubEndpoints()` = single generic interceptor registrar used by `stubLoad()` and `stubSave()`
+- `waitSaveOk()` only used when you truly need to validate save completion
+
+---
+
+## Table of contents
+
+- [1. Install](#1-install)
+- [2. Folder structure](#2-folder-structure)
+- [3. Environment configs](#3-environment-configs)
+- [4. Cypress config (ESM-safe)](#4-cypress-config-esm-safe)
+- [5. Cypress support bootstrap (global lookup intercept)](#5-cypress-support-bootstrap-global-lookup-intercept)
+- [6. URL param injection (Funding)](#6-url-param-injection-funding)
+- [7. Generic stubbing: stubEndpoints + stubLoad/stubSave](#7-generic-stubbing-stubendpoints--stubloadstubsave)
+- [8. Screen kit pattern (createFundingScreenKit)](#8-screen-kit-pattern-createfundingscreenkit)
+- [9. Booking screen implementation](#9-booking-screen-implementation)
+- [10. Scenario #2 test: assert Waived then save success](#10-scenario-2-test-assert-waived-then-save-success)
+- [11. Material helpers (mat-select)](#11-material-helpers-mat-select)
+- [12. Generic mat-table validation utility](#12-generic-mat-table-validation-utility)
+- [13. Smoke tests for routes](#13-smoke-tests-for-routes)
+- [14. Angular app changes required (data-cy conventions)](#14-angular-app-changes-required-data-cy-conventions)
+- [15. Troubleshooting](#15-troubleshooting)
+
+---
+
+## 1. Install
+
+```bash
+npm i -D cypress@^14.5.0 cross-env@^10.1.0 typescript@^5
+```
+
+`package.json` scripts:
+
+```json
+{
+  "scripts": {
+    "cy:open:local": "cross-env CYPRESS_ENV=local cypress open",
+    "cy:run:local":  "cross-env CYPRESS_ENV=local cypress run",
+    "cy:run:dev":    "cross-env CYPRESS_ENV=dev cypress run",
+    "cy:run:qa":     "cross-env CYPRESS_ENV=qa cypress run"
+  }
+}
+```
+
+---
+
+## 2. Folder structure
+
+```text
+cypress/
+  config/
+    local.json
+    dev.json
+    qa.json
+  e2e/
+    smoke/
+      funding.routes.smoke.cy.ts
+    funding/
+      booking/
+        booking.behavior.cy.ts
+  fixtures/
+    common/
+      lookup.json
+    funding/
+      booking/
+        loadbooking.json
+  support/
+    e2e.ts
+    commands.ts
+    app/
+      types.ts
+      url.ts
+      stub.ts
+      funding-screen.ts
+      material.ts
+      mat-table.ts
+      routes.ts
+    screens/
+      booking.screen.ts
+cypress.config.ts
+cypress/tsconfig.json
+```
+
+---
+
+## 3. Environment configs
+
+`cypress/config/local.json`
+
+```json
+{
+  "baseUrl": "http://localhost:4200",
+  "env": {
+    "loanAppGk": "10000001",
+    "contextType": "LOCAL",
+    "vbxRoute": "Y"
+  }
+}
+```
+
+Use `dev.json` / `qa.json` with same shape.
+
+---
+
+## 4. Cypress config (ESM-safe)
+
+`cypress.config.ts`
+
+```ts
+import { defineConfig } from 'cypress';
+import fs from 'node:fs';
+
+type EnvFile = { baseUrl: string; env?: Record<string, any> };
+
+function loadEnvFile(envName: string): EnvFile {
+  const fileUrl = new URL(`./cypress/config/${envName}.json`, import.meta.url);
+  return JSON.parse(fs.readFileSync(fileUrl, 'utf-8')) as EnvFile;
+}
+
+export default defineConfig({
+  video: false,
+  screenshotOnRunFailure: true,
+
+  defaultCommandTimeout: 10_000,
+  pageLoadTimeout: 60_000,
+  requestTimeout: 30_000,
+  responseTimeout: 30_000,
+
+  e2e: {
+    specPattern: 'cypress/e2e/**/*.cy.ts',
+    supportFile: 'cypress/support/e2e.ts',
+
+    setupNodeEvents(on, config) {
+      const envName = (process.env.CYPRESS_ENV as string) || 'local';
+      const envFile = loadEnvFile(envName);
+
+      config.baseUrl = (process.env.CYPRESS_BASE_URL as string) || envFile.baseUrl;
+
+      // precedence: JSON defaults < CLI --env overrides
+      config.env = {
+        ...(envFile.env ?? {}),
+        ...(config.env ?? {}),
+        envName
+      };
+
+      return config;
+    }
+  }
+});
+```
+
+---
+
+## 5. Cypress support bootstrap (global lookup intercept)
+
+**Goal:** Every test gets the `/lookup` fixture **before any visit**.
+
+Cypress clears intercepts between tests, so you register this in a **global `beforeEach()`**.
+
+`cypress/support/e2e.ts`
+
+```ts
+import './commands';
+
+// Global intercepts: runs before EVERY test
+beforeEach(() => {
+  // Generic lookup stub used by all tests.
+  // Tests can override by registering a later intercept in the spec.
+  cy.intercept('GET', '**/api/v1.0/lookup**', { fixture: 'common/lookup.json' }).as('lookup');
+});
+```
+
+---
+
+## 6. URL param injection (Funding)
+
+Funding routes must include:
+
+- `loanAppGk`
+- `contextType`
+- `@vbxRoute=Y`
+
+We inject those in one place.
+
+`cypress/support/app/url.ts`
+
+```ts
+export function buildFundingUrl(path: string) {
+  const loanAppGk = Cypress.env('loanAppGk');
+  const contextType = Cypress.env('contextType');
+  const vbxRoute = Cypress.env('vbxRoute') ?? 'Y';
+
+  const qs = new URLSearchParams();
+  if (loanAppGk) qs.set('loanAppGk', String(loanAppGk));
+  if (contextType) qs.set('contextType', String(contextType));
+  qs.set('@vbxRoute', String(vbxRoute)); // special param name
+
+  return `${path}?${qs.toString()}`;
+}
+```
+
+---
+
+## 7. Generic stubbing: stubEndpoints + stubLoad/stubSave
+
+This is the key: `stubLoad()` and `stubSave()` are thin wrappers around a **single generic** function that registers intercepts.
+
+### `cypress/support/app/stub.ts`
+
+```ts
+/// <reference types="cypress" />
+
+export type AnyMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE' | RegExp;
+
+export interface RouteDef {
+  alias: string;  // no @
+  method: AnyMethod;
+  url: RegExp;
+  // if omitted => spy only (pass-through)
+  reply?: { statusCode?: number; body?: any } | { fixture: string; statusCode?: number };
+}
+
+// stable /api/v1.0 helper
+export function apiV10(path: string): RegExp {
+  const p = path.startsWith('/') ? path : `/${path}`;
+  const escaped = p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // supports trailing slash + query params
+  return new RegExp(`/api/v1\\.0${escaped}/?(\\?.*)?$`, 'i');
+}
+
+/**
+ * Generic interceptor registrar.
+ * MUST be called BEFORE the action that triggers the request.
+ */
+export function stubEndpoints(defs: RouteDef[]) {
+  defs.forEach((d) => {
+    if (!d.reply) {
+      cy.intercept({ method: d.method as any, url: d.url as any }).as(d.alias);
+      return;
+    }
+
+    cy.intercept({ method: d.method as any, url: d.url as any }, (req) => {
+      if ('fixture' in d.reply) {
+        req.reply({ statusCode: d.reply.statusCode ?? 200, fixture: d.reply.fixture });
+      } else {
+        req.reply({ statusCode: d.reply.statusCode ?? 200, body: d.reply.body ?? {} });
+      }
+    }).as(d.alias);
+  });
+}
+
+export function waitOk(alias: string, timeoutMs = 30_000) {
+  return cy.wait(`@${alias}`, { timeout: timeoutMs }).then((i) => {
+    expect(i.response?.statusCode, `${alias} status`).to.be.oneOf([200, 201, 204]);
+    return i;
+  });
+}
+
+// -------- Booking wrappers (example) --------
+
+export function stubBookingLoad() {
+  stubEndpoints([
+    { alias: 'booking.load', method: 'GET', url: apiV10('/booking'), reply: { fixture: 'funding/booking/loadbooking.json' } }
+    // lookup is already globally stubbed in support/e2e.ts
+  ]);
+}
+
+export function stubBookingSave() {
+  stubEndpoints([
+    // IMPORTANT: Must match your real endpoint.
+    // If your app uses /booking (no /save), change it here.
+    { alias: 'booking.save', method: /(POST|PUT|PATCH)/, url: apiV10('/booking/save'), reply: { statusCode: 200, body: { ok: true } } }
+  ]);
+}
+```
+
+**Why `waitSave()` fails:** because the request didn’t match `booking.save` or never fired. Fix is always:
+- register intercept **before** click
+- correct url/method matcher
+- ensure UI actually enables save
+
+---
+
+## 8. Screen kit pattern (createFundingScreenKit)
+
+`cypress/support/app/types.ts`
+
+```ts
+export interface FundingScreenBase {
+  pageName: string; // ex: 'Booking'
+  path: string;     // ex: '/funding/booking'
+}
+```
+
+`cypress/support/app/funding-screen.ts`
+
+```ts
+import { FundingScreenBase } from './types';
+import { buildFundingUrl } from './url';
+import { waitOk } from './stub';
+
+export interface FundingScreenKit {
+  visit(): void;
+
+  stubLoad(): void;
+  waitLoad(): Cypress.Chainable<any>;
+
+  stubSave(): void;
+  waitSaveOk(): Cypress.Chainable<any>;
+}
+
+/**
+ * Booking-focused kit.
+ * If you later want fully generic: make aliases configurable per screen.
+ */
+export function createFundingScreenKit(
+  base: FundingScreenBase,
+  deps: { stubLoad: () => void; stubSave: () => void }
+): FundingScreenKit {
+  return {
+    visit() {
+      cy.visit(buildFundingUrl(base.path));
+      cy.get('[data-cy="page-root"]', { timeout: 20_000 })
+        .should('be.visible')
+        .and('have.attr', 'data-page-name', base.pageName);
+    },
+
+    stubLoad: deps.stubLoad,
+    waitLoad() {
+      return waitOk('booking.load');
+    },
+
+    stubSave: deps.stubSave,
+    waitSaveOk() {
+      return waitOk('booking.save');
+    }
+  };
+}
+```
+
+---
+
+## 9. Booking screen implementation
+
+`cypress/support/app/material.ts` is referenced below; see section 11.
+
+`cypress/support/screens/booking.screen.ts`
+
+```ts
+import { FundingScreenBase } from '../app/types';
+import { createFundingScreenKit } from '../app/funding-screen';
+import { stubBookingLoad, stubBookingSave } from '../app/stub';
+import { matSelectChangeByText, assertMatSelectValueText } from '../app/material';
+
+export const BookingBase: FundingScreenBase = {
+  pageName: 'Booking',
+  path: '/funding/booking'
+};
+
+export const BookingScreen = {
+  ...BookingBase,
+  ...createFundingScreenKit(BookingBase, {
+    stubLoad: stubBookingLoad,
+    stubSave: stubBookingSave
+  }),
+
+  ids: {
+    status: 'Booking__field-status',
+    save: 'Booking__btn-save'
+  },
+
+  changeStatusToWaived() {
+    matSelectChangeByText(this.ids.status, 'Waived');
+  },
+
+  assertStatusIsWaived() {
+    assertMatSelectValueText(this.ids.status, 'Waived');
+  },
+
+  assertSaveEnabled() {
+    cy.get(`[data-cy="${this.ids.save}"]`).should('be.enabled');
+  },
+
+  clickSave() {
+    cy.get(`[data-cy="${this.ids.save}"]`).click();
+  }
+};
+```
+
+---
+
+## 10. Scenario #2 test: assert Waived then save success
+
+This is the correct flow. If you remove `waitSaveOk()`, you are not proving save occurred.
+
+`cypress/e2e/funding/booking/booking.behavior.cy.ts`
+
+```ts
+import { BookingScreen } from '../../../support/screens/booking.screen';
+
+describe('Booking - Scenario #2', () => {
+  beforeEach(() => {
+    // MUST register intercepts before actions
+    BookingScreen.stubLoad();
+    BookingScreen.stubSave();
+
+    BookingScreen.visit();
+    BookingScreen.waitLoad();
+  });
+
+  it('changes Status to Waived and saves successfully', () => {
+    BookingScreen.changeStatusToWaived();
+    BookingScreen.assertStatusIsWaived();
+
+    BookingScreen.assertSaveEnabled();
+    BookingScreen.clickSave();
+
+    // Proof of save success:
+    BookingScreen.waitSaveOk().then((i) => {
+      // Optional payload assert - adjust to your API shape
+      // expect(i.request.body).to.deep.include({ status: 'Waived' });
+    });
+  });
+});
+```
+
+**Why you still see `/lookup`:** mat-select triggers lookup calls to load options. That is normal and unrelated to save.
+
+---
+
+## 11. Material helpers (mat-select)
+
+These are stable for Angular Material because options render in the overlay container.
+
+`cypress/support/app/material.ts`
+
+```ts
+/// <reference types="cypress" />
+
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+export function matSelectChangeByText(selectCy: string, optionText: string) {
+  cy.get(`[data-cy="${selectCy}"]`, { timeout: 10_000 })
+    .should('be.visible')
+    .then(($root) => {
+      const $matSelect = $root.is('mat-select') ? $root : $root.find('mat-select').first();
+      expect($matSelect.length, `mat-select under data-cy="${selectCy}"`).to.be.greaterThan(0);
+      cy.wrap($matSelect).click({ force: true });
+    });
+
+  cy.get('mat-option', { timeout: 20_000 })
+    .contains(new RegExp(`^\\s*${escapeRegExp(optionText)}\\s*$`))
+    .scrollIntoView()
+    .click({ force: true });
+
+  // commit selection & close overlay
+  cy.get('body').click(0, 0);
+}
+
+export function assertMatSelectValueText(selectCy: string, expectedText: string) {
+  cy.get(`[data-cy="${selectCy}"]`, { timeout: 10_000 })
+    .should('be.visible')
+    .then(($root) => {
+      const $matSelect = $root.is('mat-select') ? $root : $root.find('mat-select').first();
+      cy.wrap($matSelect)
+        .find('.mat-mdc-select-min-line, .mat-mdc-select-value-text, .mat-select-value-text')
+        .should('contain.text', expectedText);
+    });
+}
+```
+
+---
+
+## 12. Generic mat-table validation utility
+
+Use this to validate first row data and readonly Yes/No dropdown in a cell.
+
+`cypress/support/app/mat-table.ts`
+
+```ts
 /// <reference types="cypress" />
 
 type TextMatcher = string | RegExp;
@@ -12,7 +500,7 @@ function getTableRoot(tableCy: string) {
 }
 
 function getRows(tableCy: string) {
-  // Works across MDC + non-MDC Material table renderings
+  // works for MDC and legacy table rendering
   return getTableRoot(tableCy).find('tbody tr, .mat-mdc-row, mat-row');
 }
 
@@ -24,10 +512,6 @@ export function getMatTableRow(tableCy: string, rowIndex: number) {
   return getRows(tableCy).eq(rowIndex).should('exist');
 }
 
-/**
- * Get a cell in a row by Material column name.
- * Example: column="status" targets `.mat-column-status`
- */
 export function getMatTableCell(tableCy: string, rowIndex: number, column: string) {
   return getMatTableRow(tableCy, rowIndex)
     .find(`.mat-column-${column}`)
@@ -35,15 +519,11 @@ export function getMatTableCell(tableCy: string, rowIndex: number, column: strin
     .should('exist');
 }
 
-/**
- * Reads the visible value of a cell.
- * Special-cases readonly mat-select (disabled) and returns the displayed selected text.
- */
 export function getMatTableCellValue(tableCy: string, rowIndex: number, column: string) {
   return getMatTableCell(tableCy, rowIndex, column).then(($cell) => {
     const $c = Cypress.$($cell);
 
-    // If the cell contains a mat-select (even disabled), read its displayed value text
+    // If cell contains a readonly mat-select, read selected display text
     const selectText =
       $c.find('.mat-mdc-select-min-line').first().text() ||
       $c.find('.mat-select-value-text').first().text() ||
@@ -69,22 +549,16 @@ export function assertMatTableCellValue(
   });
 }
 
-/**
- * Assert multiple columns for a given row.
- * expected = { columnName: 'value', otherCol: /regex/ }
- */
 export function assertMatTableRowValues(
   tableCy: string,
   rowIndex: number,
   expected: Record<string, TextMatcher>
 ) {
-  // run sequentially in Cypress chain
   cy.wrap(Object.entries(expected)).each(([col, exp]) => {
     assertMatTableCellValue(tableCy, rowIndex, col, exp);
   });
 }
 
-/** Convenience: first row */
 export function assertMatTableFirstRowValues(
   tableCy: string,
   expected: Record<string, TextMatcher>
@@ -92,3 +566,162 @@ export function assertMatTableFirstRowValues(
   assertMatTableHasAtLeastRows(tableCy, 1);
   assertMatTableRowValues(tableCy, 0, expected);
 }
+```
+
+### Usage
+
+```ts
+import { assertMatTableFirstRowValues } from '../../support/app/mat-table';
+
+it('validates first row including readonly yes/no dropdown cell', () => {
+  assertMatTableFirstRowValues('Booking__tbl-readonly', {
+    accountNo: '123456789',
+    customerName: 'John Smith',
+    waivedFlag: 'Yes'
+  });
+});
+```
+
+---
+
+## 13. Smoke tests for routes
+
+`cypress/support/app/routes.ts`
+
+```ts
+export const fundingRoutes = [
+  { id: 'booking', path: '/funding/booking', pageName: 'Booking' }
+  // add more screens here
+] as const;
+```
+
+`cypress/e2e/smoke/funding.routes.smoke.cy.ts`
+
+```ts
+import { fundingRoutes } from '../../support/app/routes';
+import { buildFundingUrl } from '../../support/app/url';
+
+describe('Funding Routes Smoke', () => {
+  fundingRoutes.forEach((r) => {
+    it(`loads ${r.id}`, () => {
+      cy.visit(buildFundingUrl(r.path));
+      cy.get('[data-cy="page-root"]', { timeout: 20_000 })
+        .should('be.visible')
+        .and('have.attr', 'data-page-name', r.pageName);
+    });
+  });
+});
+```
+
+---
+
+## 14. Angular app changes required (data-cy conventions)
+
+### Page root
+
+Your shell/layout should stamp:
+
+- `data-cy="page-root"`
+- `data-page-name="<PageName>"`
+
+Example:
+
+```html
+<div data-cy="page-root" [attr.data-page-name]="pageName">
+  <router-outlet></router-outlet>
+</div>
+```
+
+### Form fields
+
+For status mat-select:
+
+```html
+<mat-form-field data-cy="Booking__field-status">
+  <mat-label>Status</mat-label>
+  <mat-select [formControl]="form.controls.status">
+    <mat-option *ngFor="let o of statusOptions" [value]="o.value">{{ o.label }}</mat-option>
+  </mat-select>
+</mat-form-field>
+```
+
+### Save button
+
+```html
+<button mat-raised-button color="primary" data-cy="Booking__btn-save" (click)="save()" [disabled]="!canSave">
+  Save
+</button>
+```
+
+### Readonly mat-table container
+
+```html
+<div data-cy="Booking__tbl-readonly">
+  <table mat-table [dataSource]="rows">
+    <!-- matColumnDef="accountNo", etc -->
+  </table>
+</div>
+```
+
+---
+
+## 15. Troubleshooting
+
+### `cy.wait('@booking.save')` timed out. No request occurred
+
+This means the request either **never fired** or **did not match** the intercept alias.
+
+- Ensure `stubSave()` runs **before** clicking Save
+- Ensure status really changed to `Waived`:
+  - `assertMatSelectValueText('Booking__field-status', 'Waived')`
+- Ensure intercept matches real save URL:
+  - `/api/v1.0/booking/save` vs `/api/v1.0/booking`
+  - method POST vs PUT/PATCH
+
+### Why is it calling `/lookup` instead of save?
+
+Because mat-select option loading triggers `/lookup`. Save is only fired after:
+- UI enables Save
+- you click Save
+- and the request matches your intercept
+
+### Temporary API logging
+
+```ts
+cy.intercept({ method: '*', url: /\/api\/v1\.0\/.*/i }, (req) => {
+  Cypress.log({ name: 'API', message: `${req.method} ${req.url}` });
+});
+```
+
+### Overriding global lookup stub in a spec
+
+Your global intercept is in `support/e2e.ts`. If a test needs different lookup data:
+
+```ts
+beforeEach(() => {
+  cy.intercept('GET', '**/api/v1.0/lookup**', { fixture: 'booking/lookup.override.json' }).as('lookup');
+});
+```
+
+The later intercept wins.
+
+---
+
+## Fixtures (examples)
+
+`cypress/fixtures/common/lookup.json`
+
+```json
+{ "items": [] }
+```
+
+`cypress/fixtures/funding/booking/loadbooking.json`
+
+```json
+{
+  "id": "B-100",
+  "status": "Open",
+  "customerName": "John Smith"
+}
+```
+
