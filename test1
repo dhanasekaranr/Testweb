@@ -1,33 +1,94 @@
-// cypress/support/app/material.ts
-const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// cypress/support/app/mat-table.ts
+/// <reference types="cypress" />
 
-export function matSelectChangeByText(selectCy: string, optionText: string) {
-  // Works whether data-cy is on mat-select OR on a wrapping element (mat-form-field/div)
-  cy.get(`[data-cy="${selectCy}"]`, { timeout: 10_000 })
-    .should('be.visible')
-    .then(($root) => {
-      const $matSelect = $root.is('mat-select') ? $root : $root.find('mat-select').first();
-      expect($matSelect.length, `mat-select found under data-cy="${selectCy}"`).to.be.greaterThan(0);
-      cy.wrap($matSelect).click({ force: true });
-    });
+type TextMatcher = string | RegExp;
 
-  // Options render in the overlay container (outside the component DOM)
-  cy.get('mat-option', { timeout: 20_000 })
-    .contains(new RegExp(`^\\s*${escapeRegExp(optionText)}\\s*$`))
-    .scrollIntoView()
-    .click({ force: true });
-
-  // Close overlay / commit selection (some apps need this)
-  cy.get('body').click(0, 0);
+function normalizeText(s: string) {
+  return s.replace(/\s+/g, ' ').trim();
 }
 
-export function assertMatSelectValueText(selectCy: string, expectedText: string) {
-  cy.get(`[data-cy="${selectCy}"]`, { timeout: 10_000 })
-    .should('be.visible')
-    .then(($root) => {
-      const $matSelect = $root.is('mat-select') ? $root : $root.find('mat-select').first();
-      cy.wrap($matSelect)
-        .find('.mat-mdc-select-min-line, .mat-mdc-select-value-text, .mat-select-value-text')
-        .should('contain.text', expectedText);
-    });
+function getTableRoot(tableCy: string) {
+  return cy.get(`[data-cy="${tableCy}"]`, { timeout: 20_000 }).should('be.visible');
+}
+
+function getRows(tableCy: string) {
+  // Works across MDC + non-MDC Material table renderings
+  return getTableRoot(tableCy).find('tbody tr, .mat-mdc-row, mat-row');
+}
+
+export function assertMatTableHasAtLeastRows(tableCy: string, minRows = 1) {
+  getRows(tableCy).should('have.length.at.least', minRows);
+}
+
+export function getMatTableRow(tableCy: string, rowIndex: number) {
+  return getRows(tableCy).eq(rowIndex).should('exist');
+}
+
+/**
+ * Get a cell in a row by Material column name.
+ * Example: column="status" targets `.mat-column-status`
+ */
+export function getMatTableCell(tableCy: string, rowIndex: number, column: string) {
+  return getMatTableRow(tableCy, rowIndex)
+    .find(`.mat-column-${column}`)
+    .first()
+    .should('exist');
+}
+
+/**
+ * Reads the visible value of a cell.
+ * Special-cases readonly mat-select (disabled) and returns the displayed selected text.
+ */
+export function getMatTableCellValue(tableCy: string, rowIndex: number, column: string) {
+  return getMatTableCell(tableCy, rowIndex, column).then(($cell) => {
+    const $c = Cypress.$($cell);
+
+    // If the cell contains a mat-select (even disabled), read its displayed value text
+    const selectText =
+      $c.find('.mat-mdc-select-min-line').first().text() ||
+      $c.find('.mat-select-value-text').first().text() ||
+      $c.find('.mat-mdc-select-value-text').first().text();
+
+    const raw = selectText || $c.text();
+    return normalizeText(raw);
+  });
+}
+
+export function assertMatTableCellValue(
+  tableCy: string,
+  rowIndex: number,
+  column: string,
+  expected: TextMatcher
+) {
+  return getMatTableCellValue(tableCy, rowIndex, column).then((actual) => {
+    if (expected instanceof RegExp) {
+      expect(actual, `cell(${rowIndex}, ${column})`).to.match(expected);
+    } else {
+      expect(actual, `cell(${rowIndex}, ${column})`).to.eq(expected);
+    }
+  });
+}
+
+/**
+ * Assert multiple columns for a given row.
+ * expected = { columnName: 'value', otherCol: /regex/ }
+ */
+export function assertMatTableRowValues(
+  tableCy: string,
+  rowIndex: number,
+  expected: Record<string, TextMatcher>
+) {
+  // run sequentially in Cypress chain
+  cy.wrap(Object.entries(expected)).each(([col, exp]) => {
+    assertMatTableCellValue(tableCy, rowIndex, col, exp);
+  });
+}
+
+/** Convenience: first row */
+export function assertMatTableFirstRowValues(
+  tableCy: string,
+  expected: Record<string, TextMatcher>
+) {
+  assertMatTableHasAtLeastRows(tableCy, 1);
+  assertMatTableRowValues(tableCy, 0, expected);
 }
