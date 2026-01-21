@@ -1,1017 +1,976 @@
-AdminApi/
-├─ AdminApi.csproj
-├─ Program.cs
-├─ appsettings.json
-├─ Controllers/
-│  └─ ScreenPilotController.cs
-├─ Domain/
-│  ├─ Entities/
-│  │  ├─ ScreenPilot.cs
-│  │  ├─ User.cs
-│  │  ├─ Role.cs
-│  │  ├─ UserRole.cs
-│  │  ├─ Module.cs
-│  │  └─ RoleModule.cs
-│  └─ Enums/
-│     └─ ModuleAction.cs
-├─ Infrastructure/
-│  ├─ Auth/
-│  │  ├─ RequiresModulePermissionAttribute.cs
-│  │  ├─ ModulePermissionRequirement.cs
-│  │  └─ ModulePermissionHandler.cs
-│  ├─ Data/
-│  │  ├─ AppDbContext.cs
-│  │  ├─ AppPrimaryDbContext.cs
-│  │  ├─ AppSecondaryDbContext.cs
-│  │  ├─ IAppDbContextAccessor.cs
-│  │  ├─ AppDbContextAccessor.cs
-│  │  └─ DbRouteAccessor.cs
-│  └─ Options/
-│     ├─ DbOptions.cs
-│     └─ AuthorizationOverrideOptions.cs
-├─ Application/
-│  ├─ Abstractions/
-│  │  ├─ IAccessDecisionService.cs
-│  │  └─ IDbKeyCarrier.cs
-│  ├─ Access/
-│  │  ├─ AccessDecision.cs
-│  │  └─ AccessDecisionService.cs
-│  ├─ Common/
-│  │  ├─ PageMeta.cs
-│  │  ├─ BasePageDto.cs
-│  │  ├─ PageRequest.cs
-│  │  ├─ ActionCtrlDto.cs
-│  │  └─ Exceptions.cs
-│  └─ ScreenPilot/
-│     ├─ Dto/
-│     │  ├─ ScreenPilotDto.cs
-│     │  └─ ScreenPilotListDto.cs
-│     ├─ Requests/
-│     │  └─ ScreenPilotListRequest.cs
-│     ├─ Queries/
-│     │  ├─ GetScreenPilotQuery.cs
-│     │  └─ SearchScreenPilotsQuery.cs
-│     ├─ Commands/
-│     │  ├─ UpdateScreenPilotCommand.cs
-│     │  └─ DeleteScreenPilotCommand.cs
-│     └─ Rules/
-│        └─ ScreenPilotRules.cs
-└─ Web/
-   └─ Filters/
-      ├─ ApiExceptionFilter.cs
-      ├─ ValidateModelFilter.cs
-      ├─ ResponseMetaFilter.cs
-      └─ DbKeyFromRequestFilter.cs
-Program.cs
-csharp
-Copy code
-using AdminApi.Application.Abstractions;
-using AdminApi.Application.Access;
-using AdminApi.Infrastructure.Data;
-using AdminApi.Infrastructure.Options;
-using AdminApi.Infrastructure.Auth;
-using AdminApi.Web.Filters;
-using MediatR;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
+VB6 → Angular 21 UI Generator
+End-to-end setup: Custom Agents + Agent Skills + VS Code Extension Tools
 
-var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddHttpContextAccessor();
-builder.Services.AddMemoryCache();
+This doc is written so your VS Code extension developer can implement the full workflow without guessing.
 
-// Options
-builder.Services.Configure<DbOptions>(builder.Configuration.GetSection("Databases"));
-builder.Services.Configure<AuthorizationOverrideOptions>(builder.Configuration.GetSection("AuthorizationOverrides"));
+1) What you’re building
 
-// EF (Oracle shown; swap to SQL Server if needed)
-builder.Services.AddDbContext<AppPrimaryDbContext>((sp, o) =>
+You’re building a tool-driven conversion system:
+
+Custom Agents orchestrate steps and enforce guardrails (who does what + which tools they can use). Custom agents are .agent.md files (YAML frontmatter + instructions body) and VS Code discovers them from .github/agents.
+
+Agent Skills provide reusable domain playbooks (mapping rules, examples, scripts/resources) loaded only when relevant. Skills live under .github/skills/<skill>/SKILL.md and are preview in VS Code (requires enabling a setting).
+
+VS Code Extension contributes Language Model Tools (tool-calling functions like extractScreenSpec, generateAngularUi, etc.) that agents invoke. Tools must be declared in package.json and registered at runtime.
+
+Non-negotiable architecture: agents don’t “hand-write Angular screens.” They call your deterministic tools that generate config-driven UI using your shared primitives.
+
+2) Prerequisites
+2.1 VS Code / Copilot requirements
+
+Custom Agents are available starting VS Code 1.106.
+
+Agent Skills support in VS Code is preview and requires enabling chat.useAgentSkills.
+
+Developers should use the model picker to choose models per task; premium models may have a multiplier/cost indicator.
+
+2.2 Extension requirements
+
+Your extension must implement Language Model Tools API and/or a Chat Participant (optional).
+
+Tools are invokable through vscode.lm.invokeTool(...) and inputs are validated against the tool schema declared in package.json.
+
+3) Repo layout (what lives in the application repo)
+
+Create these folders in the migration repo (not the extension repo):
+
+.github/
+  agents/
+    vb6-ui-analyzer.agent.md
+    screen-spec-refiner.agent.md
+    angular-ui-generator.agent.md
+    ui-kit-gatekeeper.agent.md
+    ui-fix-and-stabilize.agent.md
+
+  skills/
+    vb6-angular-ui/
+      SKILL.md
+      mapping/
+        vb-control-map.md
+        split-strategy.md
+      examples/
+        golden-screens/
+          tabbed-form/
+          table-heavy/
+          mixed/
+      templates/
+        config-snippets.md
+        naming-rules.md
+      contracts/
+        page-layout.contract.md
+        shared-tab-group.contract.md
+        form-builder.contract.md
+        shared-mat-table.contract.md
+
+  copilot-instructions.md
+  instructions/
+    angular-ui.instructions.md
+    forbidden-patterns.instructions.md
+
+ui-kit-catalog/
+  components/
+  golden-screens/
+  schemas/
+  patterns/
+
+
+Why this split
+
+.github/agents = workflow personas + tool permissions. VS Code detects .md files in that folder as agents.
+
+.github/skills = domain playbook + examples + resources (loaded only when needed).
+
+copilot-instructions.md / .github/instructions/* = always-on standards (different from skills).
+
+ui-kit-catalog = your real contracts/schemas/golden references used by the tools.
+
+4) Enable Agent Skills in VS Code (one-time per developer)
+
+Open VS Code Settings
+
+Enable chat.useAgentSkills
+
+Reload VS Code
+
+Verify skills are discovered: Copilot uses the name and description from each SKILL.md frontmatter to decide relevance.
+
+5) Custom Agent setup (what files to create)
+5.1 Agent file rules (what VS Code expects)
+
+A custom agent is a Markdown file with optional YAML frontmatter. Frontmatter supports fields like name, description, tools, model, target, and handoffs. You can reference tools in the body using #tool:<tool-name>.
+
+Important: if a tool in the agent file isn’t available, VS Code ignores it.
+
+5.2 Recommended agent lineup (and what each one does)
+Agent	Job	Allowed tools	Output
+VB6 UI Analyzer	Parse .frm + events to a clean parse-model and initial ScreenSpec	extractScreenSpec, read-only helpers	generated/<screenId>/screen.spec.json
+ScreenSpec Refiner	Normalize naming, apply split strategy (tabs → child components), fill mapping gaps	refineScreenSpec, validateUiConfigs	Updated ScreenSpec (deterministic)
+Angular UI Generator	Generate Angular wrapper + configs using shared primitives	generateAngularUi, applyWorkspaceEdits	apps/.../<screenId>/*
+UI Kit Gatekeeper	Enforce compliance + schema validation + quality gates	validateUiConfigs, runAngularGates	pass/fail + report
+Fix & Stabilize	Minimal diffs to fix gates; no refactors	patchAngularUi, runAngularGates	small patch PR-ready
+
+You can add more agents later, but start with these 5 so output stays predictable.
+
+6) Skill setup (what the SKILL contains)
+6.1 Skill file format + location
+
+A skill is a directory under .github/skills/<skill>/ containing SKILL.md with YAML frontmatter (name, description). VS Code recommends .github/skills and also supports personal skills in user profile locations.
+
+6.2 What your skill must include
+
+Your vb6-angular-ui skill should contain:
+
+Mapping rules: VB controls → Shared primitives
+
+Split strategy: how to turn one VB .frm into parent + child tab components
+
+Golden screens: canonical examples the generator must match
+
+Contracts: config schema expectations for PageLayout/TabGroup/FormBuilder/SharedMatTable
+
+Anti-patterns: what to never generate (raw Material tabs/tables/forms, bespoke reactive form templates)
+
+Copilot loads skills progressively (metadata → body → referenced resources), which is why skills work well for a big UI kit.
+
+7) VS Code extension: how to wire agents/skills into real generation
+7.1 The extension’s responsibility
+
+Your extension provides deterministic, testable functions as tools:
+
+extractScreenSpec(frmPath) → screen.spec.json
+
+refineScreenSpec(screenSpecPath, options) → updated spec
+
+generateAngularUi(screenSpecPath, targetFeaturePath) → files
+
+validateUiConfigs(targetPath/specPath) → report
+
+runAngularGates(appOrWorkspace) → lint/build/test results
+
+writeMigrationReport(...) → markdown report
+
+Agents then call these via tool calling. Tools in VS Code can be extension tools, built-in tools, or MCP tools.
+
+7.2 Tool calling API (must-do items)
+
+Declare tools in package.json under the languageModelTools contribution point.
+
+Register tools at runtime with vscode.lm.registerTool(...).
+
+Optionally, your chat participant can invoke tools using vscode.lm.invokeTool(...).
+
+7.3 Minimal package.json tool contribution (example)
+
+(Tool names below are placeholders; match your real tool IDs and reference names.)
+
 {
-    var cs = sp.GetRequiredService<IOptions<DbOptions>>().Value.A;
-    o.UseOracle(cs);
-});
-builder.Services.AddDbContext<AppSecondaryDbContext>((sp, o) =>
-{
-    var cs = sp.GetRequiredService<IOptions<DbOptions>>().Value.B;
-    o.UseOracle(cs);
-});
-
-// Db routing/accessor
-builder.Services.AddScoped<IDbRouteAccessor, DbRouteAccessor>();
-builder.Services.AddScoped<IAppDbContextAccessor, AppDbContextAccessor>();
-
-// AuthN/AuthZ (JWT auth config omitted for brevity)
-builder.Services.AddAuthentication(/* your JWT */);
-builder.Services.AddAuthorization(o =>
-{
-    o.AddPolicy("ModulePermission", p =>
-        p.RequireAuthenticatedUser()
-         .AddRequirements(new ModulePermissionRequirement()));
-});
-builder.Services.AddSingleton<IAuthorizationHandler, ModulePermissionHandler>();
-
-// Core services
-builder.Services.AddScoped<IAccessDecisionService, AccessDecisionService>();
-
-// MediatR
-builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(Program).Assembly));
-
-// MVC + Filters
-builder.Services.AddControllers(o =>
-{
-    o.Filters.Add(new DbKeyFromRequestFilter());
-    o.Filters.Add(new ApiExceptionFilter());
-    o.Filters.Add(new ValidateModelFilter());
-    o.Filters.Add(new ResponseMetaFilter());
-});
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
-
-var app = builder.Build();
-
-app.UseSwagger();
-app.UseSwaggerUI();
-
-app.UseAuthentication();
-app.UseAuthorization();
-
-app.MapControllers();
-
-app.Run();
-appsettings.json
-json
-Copy code
-{
-  "Databases": {
-    "A": "User Id=APP_A;Password=***;Data Source=orclpdb1",
-    "B": "User Id=APP_B;Password=***;Data Source=orclpdb1"
-  },
-  "AuthorizationOverrides": {
-    "AuthorizationOverrides": [
-      { "Module": "ScreenPilot", "Action": "Edit", "AllowedRoleIds": [1,2,3] }
+  "contributes": {
+    "languageModelTools": [
+      {
+        "name": "vb6ui_extractScreenSpec",
+        "toolReferenceName": "extractScreenSpec",
+        "displayName": "Extract ScreenSpec from VB6 Form",
+        "canBeReferencedInPrompt": true,
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "frmPath": { "type": "string", "description": "Absolute path to .frm file" }
+          },
+          "required": ["frmPath"]
+        }
+      }
     ]
-  },
-  "Logging": { "LogLevel": { "Default": "Information", "Microsoft.AspNetCore": "Warning" } }
-}
-Domain / Entities
-csharp
-Copy code
-// Domain/Enums/ModuleAction.cs
-namespace AdminApi.Domain.Enums;
-public enum ModuleAction { Read, Add, Edit, Delete }
-csharp
-Copy code
-// Domain/Entities/ScreenPilot.cs
-namespace AdminApi.Domain.Entities;
-public sealed class ScreenPilot
-{
-    public Guid Id { get; set; }
-    public string Name { get; set; } = default!;
-    public int Status { get; set; }
-    public DateTime CreatedUtc { get; set; }
-    public DateTime? UpdatedUtc { get; set; }
-}
-csharp
-Copy code
-// Domain/Entities/User.cs
-namespace AdminApi.Domain.Entities;
-public sealed class User { public string Id { get; set; } = default!; }
-csharp
-Copy code
-// Domain/Entities/Role.cs
-namespace AdminApi.Domain.Entities;
-public sealed class Role { public int Id { get; set; } }
-csharp
-Copy code
-// Domain/Entities/UserRole.cs
-namespace AdminApi.Domain.Entities;
-public sealed class UserRole { public string UserId { get; set; } = default!; public int RoleId { get; set; } }
-csharp
-Copy code
-// Domain/Entities/Module.cs
-namespace AdminApi.Domain.Entities;
-public sealed class Module { public int Id { get; set; } public string Name { get; set; } = default!; }
-csharp
-Copy code
-// Domain/Entities/RoleModule.cs
-namespace AdminApi.Domain.Entities;
-public sealed class RoleModule
-{
-    public int RoleId { get; set; }
-    public int ModuleId { get; set; }
-    public bool CanRead { get; set; }
-    public bool CanAdd { get; set; }
-    public bool CanEdit { get; set; }
-    public bool CanDelete { get; set; }
-    public Module? Module { get; set; }
-}
-Infrastructure / Data
-csharp
-Copy code
-// Infrastructure/Data/AppDbContext.cs
-using AdminApi.Domain.Entities;
-using Microsoft.EntityFrameworkCore;
-
-namespace AdminApi.Infrastructure.Data;
-public class AppDbContext(DbContextOptions options) : DbContext(options)
-{
-    public DbSet<User> Users => Set<User>();
-    public DbSet<Role> Roles => Set<Role>();
-    public DbSet<UserRole> UserRoles => Set<UserRole>();
-    public DbSet<Module> Modules => Set<Module>();
-    public DbSet<RoleModule> RoleModules => Set<RoleModule>();
-    public DbSet<ScreenPilot> ScreenPilots => Set<ScreenPilot>();
-
-    protected override void OnModelCreating(ModelBuilder b)
-    {
-        b.Entity<RoleModule>().HasKey(x => new { x.RoleId, x.ModuleId });
-        b.Entity<Module>().HasIndex(x => x.Name).IsUnique();
-        b.Entity<ScreenPilot>().HasKey(x => x.Id);
-    }
-}
-csharp
-Copy code
-// Infrastructure/Data/AppPrimaryDbContext.cs
-namespace AdminApi.Infrastructure.Data;
-public sealed class AppPrimaryDbContext(DbContextOptions<AppPrimaryDbContext> o) : AppDbContext(o);
-csharp
-Copy code
-// Infrastructure/Data/AppSecondaryDbContext.cs
-namespace AdminApi.Infrastructure.Data;
-public sealed class AppSecondaryDbContext(DbContextOptions<AppSecondaryDbContext> o) : AppDbContext(o);
-csharp
-Copy code
-// Infrastructure/Data/IAppDbContextAccessor.cs
-namespace AdminApi.Infrastructure.Data;
-public interface IAppDbContextAccessor
-{
-    AppDbContext Db { get; }
-    string DbKey { get; }
-}
-csharp
-Copy code
-// Infrastructure/Data/DbRouteAccessor.cs
-using Microsoft.AspNetCore.Http;
-
-namespace AdminApi.Infrastructure.Data;
-public interface IDbRouteAccessor { string CurrentKey { get; } }
-public sealed class DbRouteAccessor(IHttpContextAccessor http) : IDbRouteAccessor
-{
-    public string CurrentKey => http.HttpContext?.Items["DbKey"] as string ?? "A";
-}
-csharp
-Copy code
-// Infrastructure/Data/AppDbContextAccessor.cs
-namespace AdminApi.Infrastructure.Data;
-public sealed class AppDbContextAccessor(
-    IDbRouteAccessor route,
-    AppPrimaryDbContext a,
-    AppSecondaryDbContext b) : IAppDbContextAccessor
-{
-    public AppDbContext Db => route.CurrentKey == "B" ? b : a;
-    public string DbKey => route.CurrentKey;
-}
-Infrastructure / Options
-csharp
-Copy code
-// Infrastructure/Options/DbOptions.cs
-namespace AdminApi.Infrastructure.Options;
-public sealed class DbOptions { public string A { get; set; } = ""; public string B { get; set; } = ""; }
-csharp
-Copy code
-// Infrastructure/Options/AuthorizationOverrideOptions.cs
-namespace AdminApi.Infrastructure.Options;
-public sealed class AuthorizationOverrideOptions
-{
-    public List<AuthorizationOverride> AuthorizationOverrides { get; set; } = new();
-}
-public sealed class AuthorizationOverride
-{
-    public string Module { get; set; } = default!;
-    public string Action { get; set; } = default!; // "Read"|"Add"|"Edit"|"Delete"
-    public int[] AllowedRoleIds { get; set; } = Array.Empty<int>();
-    public DateTimeOffset? ExpiresUtc { get; set; }
-}
-Infrastructure / Auth
-csharp
-Copy code
-// Infrastructure/Auth/RequiresModulePermissionAttribute.cs
-using AdminApi.Domain.Enums;
-
-namespace AdminApi.Infrastructure.Auth;
-[AttributeUsage(AttributeTargets.Class | AttributeTargets.Method, AllowMultiple = true)]
-public sealed class RequiresModulePermissionAttribute(string moduleName, ModuleAction action) : Attribute
-{
-    public string ModuleName { get; } = moduleName;
-    public ModuleAction Action { get; } = action;
-}
-csharp
-Copy code
-// Infrastructure/Auth/ModulePermissionRequirement.cs
-using Microsoft.AspNetCore.Authorization;
-
-namespace AdminApi.Infrastructure.Auth;
-public sealed class ModulePermissionRequirement : IAuthorizationRequirement { }
-csharp
-Copy code
-// Infrastructure/Auth/ModulePermissionHandler.cs
-using AdminApi.Domain.Entities;
-using AdminApi.Domain.Enums;
-using AdminApi.Infrastructure.Data;
-using AdminApi.Infrastructure.Options;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Http;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Caching.Memory;
-using Microsoft.Extensions.Options;
-using System.Security.Claims;
-
-namespace AdminApi.Infrastructure.Auth;
-public sealed class ModulePermissionHandler(
-    IHttpContextAccessor http,
-    IAppDbContextAccessor acc,
-    IMemoryCache cache,
-    IOptionsMonitor<AuthorizationOverrideOptions> overrides)
-    : AuthorizationHandler<ModulePermissionRequirement>
-{
-    protected override async Task HandleRequirementAsync(AuthorizationHandlerContext ctx, ModulePermissionRequirement _)
-    {
-        var ep = http.HttpContext?.GetEndpoint();
-        var needs = ep?.Metadata.GetOrderedMetadata<RequiresModulePermissionAttribute>() ?? [];
-        if (needs.Count == 0) { ctx.Succeed(_); return; }
-
-        var userId = ctx.User.FindFirst("userId")?.Value
-                  ?? ctx.User.FindFirst(ClaimTypes.NameIdentifier)?.Value;
-        if (string.IsNullOrEmpty(userId)) return;
-
-        var roleKey = $"roles:{acc.DbKey}:{userId}";
-        if (!cache.TryGetValue(roleKey, out HashSet<int>? roleIds))
-        {
-            roleIds = await acc.Db.Set<UserRole>().Where(ur => ur.UserId == userId)
-                        .Select(ur => ur.RoleId).ToHashSetAsync();
-            cache.Set(roleKey, roleIds, TimeSpan.FromMinutes(2));
-        }
-
-        var grantKey = $"grants:{acc.DbKey}:{userId}";
-        if (!cache.TryGetValue(grantKey, out HashSet<string>? grants))
-        {
-            var rows = await (from rm in acc.Db.Set<RoleModule>().Include(x => x.Module)
-                              where roleIds.Contains(rm.RoleId)
-                              select new { rm.Module!.Name, rm.CanRead, rm.CanAdd, rm.CanEdit, rm.CanDelete })
-                             .ToListAsync();
-
-            grants = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var g in rows)
-            {
-                if (g.CanRead)  grants.Add($"{g.Name}:Read");
-                if (g.CanAdd)   grants.Add($"{g.Name}:Add");
-                if (g.CanEdit)  grants.Add($"{g.Name}:Edit");
-                if (g.CanDelete)grants.Add($"{g.Name}:Delete");
-            }
-            cache.Set(grantKey, grants, TimeSpan.FromMinutes(2));
-        }
-
-        bool ByOverride(string m, ModuleAction a)
-            => overrides.CurrentValue.AuthorizationOverrides
-               .Where(o => o.Module.Equals(m, StringComparison.OrdinalIgnoreCase)
-                        && o.Action.Equals(a.ToString(), StringComparison.OrdinalIgnoreCase)
-                        && (o.ExpiresUtc is null || o.ExpiresUtc > DateTimeOffset.UtcNow))
-               .Any(o => o.AllowedRoleIds.Any(roleIds.Contains));
-
-        var ok = needs.All(n => ByOverride(n.ModuleName, n.Action)
-                             || grants.Contains($"{n.ModuleName}:{n.Action}"));
-        if (ok) ctx.Succeed(_);
-    }
-}
-Application / Common
-csharp
-Copy code
-// Application/Common/PageMeta.cs
-namespace AdminApi.Application.Common;
-public sealed record PageMeta(
-    bool PageEnabled = true,
-    string? DisabledMessage = null,
-    string CorrelationId = "",
-    string Username = "",
-    string? Id = null,
-    int? TotalCount = null
-);
-csharp
-Copy code
-// Application/Common/BasePageDto.cs
-namespace AdminApi.Application.Common;
-public abstract class BasePageDto
-{
-    public PageMeta Meta { get; set; } = new();
-    public PageRequest? PageRequest { get; set; }
-}
-csharp
-Copy code
-// Application/Common/PageRequest.cs
-namespace AdminApi.Application.Common;
-public sealed record PageRequest(int PageIndex = 0, int PageSize = 25);
-csharp
-Copy code
-// Application/Common/ActionCtrlDto.cs
-namespace AdminApi.Application.Common;
-public sealed class ActionCtrlDto
-{
-    public required string Name { get; init; }
-    public string? Value { get; init; }
-    public bool Enabled { get; init; }
-    public string? Message { get; init; }
-
-    public static ActionCtrlDto Enable(string name, string? value = null)
-        => new() { Name = name, Value = value, Enabled = true };
-
-    public static ActionCtrlDto Disable(string name, string? value = null, string? msg = null)
-        => new() { Name = name, Value = value, Enabled = false, Message = msg };
-}
-csharp
-Copy code
-// Application/Common/Exceptions.cs
-namespace AdminApi.Application.Common;
-public sealed class ReadOnlyByBusinessRuleException(string message) : Exception(message);
-Application / Access
-csharp
-Copy code
-// Application/Access/AccessDecision.cs
-namespace AdminApi.Application.Access;
-public sealed record AccessDecision(
-    string Module,
-    bool CanRead, bool CanAdd, bool CanEdit, bool CanDelete,
-    bool PageEnabled, string? DisabledMessage);
-csharp
-Copy code
-// Application/Abstractions/IAccessDecisionService.cs
-using System.Security.Claims;
-
-namespace AdminApi.Application.Abstractions;
-public interface IAccessDecisionService
-{
-    Task<AdminApi.Application.Access.AccessDecision> EvaluateAsync(string module, ClaimsPrincipal user, CancellationToken ct);
-}
-csharp
-Copy code
-// Application/Access/AccessDecisionService.cs
-using AdminApi.Application.Abstractions;
-using AdminApi.Application.Access;
-using AdminApi.Domain.Entities;
-using AdminApi.Domain.Enums;
-using AdminApi.Infrastructure.Data;
-using AdminApi.Infrastructure.Options;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Caching.Memory;
-using Microsoft.Extensions.Options;
-using System.Security.Claims;
-
-namespace AdminApi.Application.Access;
-public sealed class AccessDecisionService(
-    IAppDbContextAccessor acc,
-    IMemoryCache cache,
-    IOptionsMonitor<AuthorizationOverrideOptions> overrides) : IAccessDecisionService
-{
-    public async Task<AccessDecision> EvaluateAsync(string module, ClaimsPrincipal user, CancellationToken ct)
-    {
-        var userId = user.FindFirst("userId")?.Value ?? user.FindFirst(ClaimTypes.NameIdentifier)?.Value ?? "";
-
-        var roleKey = $"roles:{acc.DbKey}:{userId}";
-        if (!cache.TryGetValue(roleKey, out HashSet<int>? roleIds))
-        {
-            roleIds = await acc.Db.Set<UserRole>().Where(ur => ur.UserId == userId)
-                        .Select(ur => ur.RoleId).ToHashSetAsync(ct);
-            cache.Set(roleKey, roleIds, TimeSpan.FromMinutes(2));
-        }
-
-        var grantKey = $"grants:{acc.DbKey}:{userId}";
-        if (!cache.TryGetValue(grantKey, out HashSet<string>? grants))
-        {
-            var rows = await (from rm in acc.Db.Set<RoleModule>().Include(x => x.Module)
-                              where roleIds.Contains(rm.RoleId)
-                              select new { rm.Module!.Name, rm.CanRead, rm.CanAdd, rm.CanEdit, rm.CanDelete })
-                             .ToListAsync(ct);
-
-            grants = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var g in rows)
-            {
-                if (g.CanRead)  grants.Add($"{g.Name}:{ModuleAction.Read}");
-                if (g.CanAdd)   grants.Add($"{g.Name}:{ModuleAction.Add}");
-                if (g.CanEdit)  grants.Add($"{g.Name}:{ModuleAction.Edit}");
-                if (g.CanDelete)grants.Add($"{g.Name}:{ModuleAction.Delete}");
-            }
-            cache.Set(grantKey, grants, TimeSpan.FromMinutes(2));
-        }
-
-        bool Has(ModuleAction a)
-        {
-            var viaRole = grants.Contains($"{module}:{a}");
-            var viaOverride = overrides.CurrentValue.AuthorizationOverrides
-                .Where(o => o.Module.Equals(module, StringComparison.OrdinalIgnoreCase)
-                         && o.Action.Equals(a.ToString(), StringComparison.OrdinalIgnoreCase)
-                         && (o.ExpiresUtc is null || o.ExpiresUtc > DateTimeOffset.UtcNow))
-                .Any(o => o.AllowedRoleIds.Any(roleIds.Contains));
-            return viaRole || viaOverride;
-        }
-
-        var canRead   = Has(ModuleAction.Read);
-        var canAdd    = Has(ModuleAction.Add);
-        var canEdit   = Has(ModuleAction.Edit);
-        var canDelete = Has(ModuleAction.Delete);
-
-        // Page-level: if no write perms → read-only UI (you can extend with global page lock here)
-        var pageEnabled = canAdd || canEdit || canDelete;
-        string? message = pageEnabled ? null : "You don’t have access to modify this module.";
-
-        return new(module, canRead, canAdd, canEdit, canDelete, pageEnabled, message);
-    }
-}
-Application / ScreenPilot DTOs & Requests
-csharp
-Copy code
-// Application/ScreenPilot/Dto/ScreenPilotDto.cs
-using AdminApi.Application.Common;
-
-namespace AdminApi.Application.ScreenPilot.Dto;
-public sealed class ScreenPilotDto : BasePageDto
-{
-    public Guid Id { get; set; }
-    public string Name { get; set; } = default!;
-    public int Status { get; set; }
-    public DateTime CreatedUtc { get; set; }
-    public DateTime? UpdatedUtc { get; set; }
-
-    public ActionCtrlDto EditActionCtrl   { get; set; } = ActionCtrlDto.Disable("Edit");
-    public ActionCtrlDto DeleteActionCtrl { get; set; } = ActionCtrlDto.Disable("Delete");
-}
-csharp
-Copy code
-// Application/ScreenPilot/Dto/ScreenPilotListDto.cs
-using AdminApi.Application.Common;
-
-namespace AdminApi.Application.ScreenPilot.Dto;
-public sealed class ScreenPilotListDto : BasePageDto
-{
-    public required IReadOnlyList<ScreenPilotRowDto> Items { get; init; }
-    public required int TotalCount { get; init; }
-    public required int PageIndex { get; init; }
-    public required int PageSize  { get; init; }
+  }
 }
 
-public sealed class ScreenPilotRowDto
-{
-    public Guid Id { get; set; }
-    public string Name { get; set; } = default!;
-    public int Status { get; set; }
-    public DateTime CreatedUtc { get; set; }
 
-    public ActionCtrlDto EditActionCtrl   { get; set; } = ActionCtrlDto.Disable("Edit");
-    public ActionCtrlDto DeleteActionCtrl { get; set; } = ActionCtrlDto.Disable("Delete");
+Tools must be registered in package.json and also registered in code.
+
+7.4 Tool registration in extension.ts (example)
+import * as vscode from 'vscode';
+import { ExtractScreenSpecTool } from './tools/extractScreenSpec.tool';
+
+export function activate(ctx: vscode.ExtensionContext) {
+  ctx.subscriptions.push(
+    vscode.lm.registerTool('vb6ui_extractScreenSpec', new ExtractScreenSpecTool())
+  );
 }
-csharp
-Copy code
-// Application/Abstractions/IDbKeyCarrier.cs
-namespace AdminApi.Application.Abstractions;
-public interface IDbKeyCarrier { string? DbContextKey { get; } }
-csharp
-Copy code
-// Application/ScreenPilot/Requests/ScreenPilotListRequest.cs
-using AdminApi.Application.Abstractions;
 
-namespace AdminApi.Application.ScreenPilot.Requests;
-public sealed class ScreenPilotListRequest : IDbKeyCarrier
-{
-    public string? DbContextKey { get; init; } = "A";
-    public int PageIndex { get; init; } = 0;
-    public int PageSize  { get; init; } = 25;
-    public string? SortBy  { get; init; } = "Name";
-    public string  SortDir { get; init; } = "asc";
-    public string? Name { get; init; }
-}
-Application / ScreenPilot Rules (inline & simple)
-csharp
-Copy code
-// Application/ScreenPilot/Rules/ScreenPilotRules.cs
-using AdminApi.Application.Access;
-using AdminApi.Application.Common;
-using AdminApi.Application.ScreenPilot.Dto;
-using AdminApi.Domain.Entities;
 
-namespace AdminApi.Application.ScreenPilot.Rules;
-internal static class ScreenPilotRules
-{
-    public static void ApplyForQuery(ScreenPilot entity, AccessDecision d, ScreenPilotDto dto, DateTime nowUtc)
-    {
-        dto.Meta = dto.Meta with
-        {
-            PageEnabled = d.PageEnabled,
-            DisabledMessage = d.PageEnabled ? null : d.DisabledMessage
-        };
+VS Code exposes registerTool for registering LanguageModelTools.
 
-        var canEdit = d.PageEnabled && d.CanEdit;
-        dto.EditActionCtrl = canEdit
-            ? ActionCtrlDto.Enable("Edit", dto.Id.ToString())
-            : ActionCtrlDto.Disable("Edit", dto.Id.ToString(), d.DisabledMessage ?? "Edit not permitted.");
+7.5 Optional: Chat Participant (nice UX, not required)
 
-        var age = nowUtc - entity.CreatedUtc;
-        var canDelete = d.PageEnabled && d.CanDelete && age >= TimeSpan.FromDays(2);
-        var delMsg = age < TimeSpan.FromDays(2)
-            ? "Delete is blocked for the first 2 days after creation."
-            : d.DisabledMessage ?? "Delete not permitted.";
-        dto.DeleteActionCtrl = canDelete
-            ? ActionCtrlDto.Enable("Delete", dto.Id.ToString())
-            : ActionCtrlDto.Disable("Delete", dto.Id.ToString(), delMsg);
-    }
+A chat participant lets you provide a dedicated @yourParticipant in chat and orchestrate tool calls from there.
 
-    public static void EnsureEditAllowed(AccessDecision d)
-    {
-        if (!d.PageEnabled) throw new ReadOnlyByBusinessRuleException(d.DisabledMessage ?? "Read-only.");
-        if (!d.CanEdit)     throw new ReadOnlyByBusinessRuleException("Edit not permitted.");
-    }
+8) End-to-end execution flow (what happens when someone converts a VB form)
+Happy path (recommended)
 
-    public static void EnsureDeleteAllowed(ScreenPilot e, AccessDecision d, DateTime nowUtc)
-    {
-        if (!d.PageEnabled) throw new ReadOnlyByBusinessRuleException(d.DisabledMessage ?? "Read-only.");
-        if (!d.CanDelete)   throw new ReadOnlyByBusinessRuleException("Delete not permitted.");
-        if ((nowUtc - e.CreatedUtc) < TimeSpan.FromDays(2))
-            throw new ReadOnlyByBusinessRuleException("Delete is blocked for the first 2 days after creation.");
-    }
-}
-Application / ScreenPilot Queries
-csharp
-Copy code
-// Application/ScreenPilot/Queries/GetScreenPilotQuery.cs
-using AdminApi.Application.Abstractions;
-using AdminApi.Application.Access;
-using AdminApi.Application.ScreenPilot.Dto;
-using AdminApi.Application.ScreenPilot.Rules;
-using AdminApi.Infrastructure.Data;
-using MediatR;
-using Microsoft.EntityFrameworkCore;
+Developer selects Agent: “Angular UI Generator”
 
-namespace AdminApi.Application.ScreenPilot.Queries;
-public sealed record GetScreenPilotQuery(Guid Id) : IRequest<ScreenPilotDto>;
+They provide:
 
-public sealed class GetScreenPilotHandler(
-    IAppDbContextAccessor acc,
-    IAccessDecisionService access,
-    IHttpContextAccessor http) : IRequestHandler<GetScreenPilotQuery, ScreenPilotDto>
-{
-    public async Task<ScreenPilotDto> Handle(GetScreenPilotQuery q, CancellationToken ct)
-    {
-        var e = await acc.Db.ScreenPilots.AsNoTracking()
-                    .FirstOrDefaultAsync(x => x.Id == q.Id, ct)
-                ?? throw new KeyNotFoundException("Not found");
+.frm path (or drag file context)
 
-        var dto = new ScreenPilotDto
-        {
-            Id = e.Id, Name = e.Name, Status = e.Status,
-            CreatedUtc = e.CreatedUtc, UpdatedUtc = e.UpdatedUtc
-        };
+target feature path (apps/<app>/src/app/features/<feature> or equivalent)
 
-        var d = await access.EvaluateAsync("ScreenPilot", http.HttpContext!.User, ct);
-        ScreenPilotRules.ApplyForQuery(e, d, dto, DateTime.UtcNow);
-        return dto;
-    }
-}
-csharp
-Copy code
-// Application/ScreenPilot/Queries/SearchScreenPilotsQuery.cs
-using AdminApi.Application.ScreenPilot.Requests;
-using AdminApi.Application.ScreenPilot.Dto;
-using AdminApi.Application.Common;
-using AdminApi.Application.Access;
-using AdminApi.Infrastructure.Data;
-using MediatR;
-using Microsoft.EntityFrameworkCore;
+Agent calls tools in order:
 
-namespace AdminApi.Application.ScreenPilot.Queries;
-public sealed record SearchScreenPilotsQuery(ScreenPilotListRequest Req)
-    : IRequest<ScreenPilotListDto>;
+#tool:extractScreenSpec
 
-public sealed class SearchScreenPilotsHandler(
-    IAppDbContextAccessor acc,
-    IAccessDecisionService access,
-    IHttpContextAccessor http)
-    : IRequestHandler<SearchScreenPilotsQuery, ScreenPilotListDto>
-{
-    public async Task<ScreenPilotListDto> Handle(SearchScreenPilotsQuery q, CancellationToken ct)
-    {
-        var req = q.Req;
-        var d = await access.EvaluateAsync("ScreenPilot", http.HttpContext!.User, ct);
+#tool:refineScreenSpec (apply split strategy + mapping rules)
 
-        IQueryable<Domain.Entities.ScreenPilot> baseQ = acc.Db.ScreenPilots.AsNoTracking();
-        if (!string.IsNullOrWhiteSpace(req.Name)) baseQ = baseQ.Where(x => x.Name.Contains(req.Name));
+#tool:generateAngularUi (configs + thin wrappers)
 
-        baseQ = (req.SortBy, req.SortDir.ToLowerInvariant()) switch
-        {
-            ("Status", "desc")     => baseQ.OrderByDescending(x => x.Status),
-            ("Status", _)          => baseQ.OrderBy(x => x.Status),
-            ("CreatedUtc", "desc") => baseQ.OrderByDescending(x => x.CreatedUtc),
-            ("CreatedUtc", _)      => baseQ.OrderBy(x => x.CreatedUtc),
-            ("Name", "desc")       => baseQ.OrderByDescending(x => x.Name),
-            _                      => baseQ.OrderBy(x => x.Name)
-        };
+#tool:validateUiConfigs (schemas + forbidden patterns)
 
-        var total = await baseQ.CountAsync(ct);
-        var slice = await baseQ
-            .Skip(req.PageIndex * req.PageSize)
-            .Take(req.PageSize)
-            .Select(x => new { x.Id, x.Name, x.Status, x.CreatedUtc })
-            .ToListAsync(ct);
+#tool:runAngularGates (lint/build)
 
-        var now = DateTime.UtcNow;
-        var rows = slice.Select(r =>
-        {
-            var row = new ScreenPilotRowDto
-            {
-                Id = r.Id, Name = r.Name, Status = r.Status, CreatedUtc = r.CreatedUtc
-            };
+#tool:writeMigrationReport (TODOs, unsupported controls, next steps)
 
-            var canEdit = d.PageEnabled && d.CanEdit;
-            row.EditActionCtrl = canEdit
-                ? ActionCtrlDto.Enable("Edit", r.Id.ToString())
-                : ActionCtrlDto.Disable("Edit", r.Id.ToString(), d.DisabledMessage ?? "Edit not permitted.");
+This is exactly what custom agents + tool calling are meant to enable: consistent workflows with controlled tool access and handoffs.
 
-            var age = now - r.CreatedUtc;
-            var canDelete = d.PageEnabled && d.CanDelete && age >= TimeSpan.FromDays(2);
-            var delMsg = age < TimeSpan.FromDays(2)
-                ? "Delete is blocked for the first 2 days after creation."
-                : d.DisabledMessage ?? "Delete not permitted.";
-            row.DeleteActionCtrl = canDelete
-                ? ActionCtrlDto.Enable("Delete", r.Id.ToString())
-                : ActionCtrlDto.Disable("Delete", r.Id.ToString(), delMsg);
+If gates fail
 
-            return row;
-        }).ToList();
+The agent offers a handoff to “Fix & Stabilize”
 
-        return new ScreenPilotListDto
-        {
-            Items = rows,
-            TotalCount = total,
-            PageIndex = req.PageIndex,
-            PageSize = req.PageSize,
-            Meta = new PageMeta(PageEnabled: d.PageEnabled, DisabledMessage: d.PageEnabled ? null : d.DisabledMessage),
-            PageRequest = new PageRequest(req.PageIndex, req.PageSize)
-        };
-    }
-}
-Application / ScreenPilot Commands
-csharp
-Copy code
-// Application/ScreenPilot/Commands/UpdateScreenPilotCommand.cs
-using AdminApi.Application.Access;
-using AdminApi.Application.Common;
-using AdminApi.Application.ScreenPilot.Dto;
-using AdminApi.Application.ScreenPilot.Rules;
-using AdminApi.Infrastructure.Data;
-using MediatR;
-using Microsoft.EntityFrameworkCore;
+Fixer makes minimal edits + re-runs gates
 
-namespace AdminApi.Application.ScreenPilot.Commands;
-public sealed record UpdateScreenPilotCommand(Guid Id, string Name, int Status, string? DbContextKey)
-    : IRequest<ScreenPilotDto>, AdminApi.Application.Abstractions.IDbKeyCarrier;
+Gatekeeper confirms compliance + closes the loop
 
-public sealed class UpdateScreenPilotHandler(
-    IAppDbContextAccessor acc,
-    IAccessDecisionService access,
-    IHttpContextAccessor http) : IRequestHandler<UpdateScreenPilotCommand, ScreenPilotDto>
-{
-    public async Task<ScreenPilotDto> Handle(UpdateScreenPilotCommand cmd, CancellationToken ct)
-    {
-        var e = await acc.Db.ScreenPilots.FirstOrDefaultAsync(x => x.Id == cmd.Id, ct)
-                ?? throw new KeyNotFoundException("Not found");
+Handoffs are defined in agent frontmatter and appear as buttons after a response.
 
-        var d = await access.EvaluateAsync("ScreenPilot", http.HttpContext!.User, ct);
-        ScreenPilotRules.EnsureEditAllowed(d);
+9) Model / quota strategy (how to avoid burning premium models)
 
-        e.Name = cmd.Name;
-        e.Status = cmd.Status;
-        e.UpdatedUtc = DateTime.UtcNow;
-        await acc.Db.SaveChangesAsync(ct);
+VS Code supports switching models per chat; premium models may show a multiplier indicator.
 
-        var dto = new ScreenPilotDto
-        {
-            Id = e.Id, Name = e.Name, Status = e.Status,
-            CreatedUtc = e.CreatedUtc, UpdatedUtc = e.UpdatedUtc
-        };
-        ScreenPilotRules.ApplyForQuery(e, d, dto, DateTime.UtcNow);
-        return dto;
-    }
-}
-csharp
-Copy code
-// Application/ScreenPilot/Commands/DeleteScreenPilotCommand.cs
-using AdminApi.Application.Access;
-using AdminApi.Application.Common;
-using AdminApi.Application.ScreenPilot.Rules;
-using AdminApi.Infrastructure.Data;
-using MediatR;
-using Microsoft.EntityFrameworkCore;
+Practical policy
 
-namespace AdminApi.Application.ScreenPilot.Commands;
-public sealed record DeleteScreenPilotCommand(Guid Id, string? DbContextKey)
-    : IRequest<Unit>, AdminApi.Application.Abstractions.IDbKeyCarrier;
+Analyzer + Refiner: run on cheaper models (or no model, if deterministic parsing)
 
-public sealed class DeleteScreenPilotHandler(
-    IAppDbContextAccessor acc,
-    IAccessDecisionService access,
-    IHttpContextAccessor http) : IRequestHandler<DeleteScreenPilotCommand, Unit>
-{
-    public async Task<Unit> Handle(DeleteScreenPilotCommand cmd, CancellationToken ct)
-    {
-        var e = await acc.Db.ScreenPilots.FirstOrDefaultAsync(x => x.Id == cmd.Id, ct)
-                ?? throw new KeyNotFoundException("Not found");
+Generator: default model
 
-        var d = await access.EvaluateAsync("ScreenPilot", http.HttpContext!.User, ct);
-        ScreenPilotRules.EnsureDeleteAllowed(e, d, DateTime.UtcNow);
+Fixer: only escalate to premium after deterministic fixes fail and only for targeted diffs
 
-        acc.Db.Remove(e);
-        await acc.Db.SaveChangesAsync(ct);
-        return Unit.Value;
-    }
-}
-Web / Filters
-csharp
-Copy code
-// Web/Filters/DbKeyFromRequestFilter.cs
-using AdminApi.Application.Abstractions;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Mvc.Filters;
+Put this as a hard rule inside the Generator + Fixer agent instructions.
 
-namespace AdminApi.Web.Filters;
-public sealed class DbKeyFromRequestFilter : IAsyncActionFilter
-{
-    public async Task OnActionExecutionAsync(ActionExecutingContext ctx, ActionExecutionDelegate next)
-    {
-        string? dbKey = null;
+10) Cloud agent vs local agents (don’t mix these up)
 
-        var carrier = ctx.ActionArguments.Values.OfType<IDbKeyCarrier>().FirstOrDefault();
-        if (carrier is not null) dbKey = carrier.DbContextKey;
+Agents in VS Code are interactive and run with you in the editor.
 
-        dbKey ??= ctx.HttpContext.Request.Headers["X-Db-Context"].FirstOrDefault();
-        dbKey ??= ctx.HttpContext.Request.Query["db"].FirstOrDefault();
-        dbKey ??= "A";
+Copilot coding agent is a cloud agent that runs remotely and produces PRs; it can’t access VS Code runtime context/tools the same way local agents do.
 
-        if (dbKey is not ("A" or "B"))
-        {
-            ctx.Result = new BadRequestObjectResult(new { error = "Invalid DbContextKey. Expect 'A' or 'B'." });
-            return;
-        }
+Use cloud agent only for well-scoped background tasks (e.g., “convert 20 forms overnight”) once your pipeline is stable and reproducible.
 
-        ctx.HttpContext.Items["DbKey"] = dbKey;
-        await next();
-    }
-}
-csharp
-Copy code
-// Web/Filters/ApiExceptionFilter.cs
-using AdminApi.Application.Common;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Mvc.Filters;
+11) Reference templates you can drop in immediately
+11.1 angular-ui-generator.agent.md (tight, tool-driven)
 
-namespace AdminApi.Web.Filters;
-public sealed class ApiExceptionFilter : IExceptionFilter
-{
-    public void OnException(ExceptionContext ctx)
-    {
-        if (ctx.Exception is ReadOnlyByBusinessRuleException br)
-        {
-            ctx.Result = new ObjectResult(new ProblemDetails {
-                Title = "Forbidden", Detail = br.Message, Status = StatusCodes.Status403Forbidden
-            }) { StatusCode = StatusCodes.Status403Forbidden };
-            ctx.ExceptionHandled = true; return;
-        }
+Use the draft you already asked for (it follows the supported frontmatter fields and #tool: syntax). Custom agent files support tools lists and handoffs.
 
-        ctx.Result = new ObjectResult(new ProblemDetails {
-            Title = "Unexpected error", Status = StatusCodes.Status500InternalServerError
-        }) { StatusCode = StatusCodes.Status500InternalServerError };
-        ctx.ExceptionHandled = true;
-    }
-}
-csharp
-Copy code
-// Web/Filters/ValidateModelFilter.cs
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Mvc.Filters;
+11.2 vb6-angular-ui/SKILL.md (the real “playbook”)
 
-namespace AdminApi.Web.Filters;
-public sealed class ValidateModelFilter : IActionFilter
-{
-    public void OnActionExecuting(ActionExecutingContext ctx)
-    {
-        if (!ctx.ModelState.IsValid) ctx.Result = new BadRequestObjectResult(ctx.ModelState);
-    }
-    public void OnActionExecuted(ActionExecutedContext _) { }
-}
-csharp
-Copy code
-// Web/Filters/ResponseMetaFilter.cs
-using AdminApi.Application.Common;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Mvc.Filters;
+Make sure your skill follows the required name/description frontmatter and lives under .github/skills.
 
-namespace AdminApi.Web.Filters;
-public sealed class ResponseMetaFilter : IResultFilter
-{
-    private readonly IHttpContextAccessor _http;
-    public ResponseMetaFilter(IHttpContextAccessor http) => _http = http;
+12) What “done” looks like (acceptance criteria)
+Repo setup
 
-    public void OnResultExecuting(ResultExecutingContext ctx)
-    {
-        if (ctx.Result is not ObjectResult obj || obj.Value is not BasePageDto dto) return;
+.github/agents/*.agent.md exists and agents appear in VS Code agent dropdown
 
-        var http = _http.HttpContext!;
-        var corr = http.Items["X-Correlation-Id"]?.ToString() ?? Guid.NewGuid().ToString("n");
-        var user = http.User?.Identity?.Name ?? "anonymous";
+.github/skills/vb6-angular-ui/SKILL.md exists and skills are enabled via chat.useAgentSkills
 
-        int? total = dto.Meta.TotalCount;
-        total ??= obj.Value.GetType().GetProperty("TotalCount")?.GetValue(obj.Value) as int?;
+Always-on rules exist (copilot-instructions.md / .github/instructions/*)
 
-        dto.Meta = dto.Meta with
-        {
-            CorrelationId = string.IsNullOrEmpty(dto.Meta.CorrelationId) ? corr : dto.Meta.CorrelationId,
-            Username      = string.IsNullOrEmpty(dto.Meta.Username)      ? user : dto.Meta.Username,
-            TotalCount    = dto.Meta.TotalCount ?? total
-        };
+Extension setup
 
-        ctx.Result = new ObjectResult(dto) { StatusCode = obj.StatusCode };
-    }
+Tools declared in package.json + registered via vscode.lm.registerTool
 
-    public void OnResultExecuted(ResultExecutedContext _) { }
-}
-Controllers
-csharp
-Copy code
-// Controllers/ScreenPilotController.cs
-using AdminApi.Application.ScreenPilot.Commands;
-using AdminApi.Application.ScreenPilot.Dto;
-using AdminApi.Application.ScreenPilot.Queries;
-using AdminApi.Application.ScreenPilot.Requests;
-using AdminApi.Domain.Enums;
-using AdminApi.Infrastructure.Auth;
-using MediatR;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
+Tool schemas validate input and enforce deterministic behavior
 
-namespace AdminApi.Controllers;
+Generator produces:
 
-[ApiController]
-[Route("api/screenpilot")]
-[Authorize]
-[RequiresModulePermission("ScreenPilot", ModuleAction.Read)]
-public sealed class ScreenPilotController(IMediator mediator) : ControllerBase
-{
-    // POST /api/screenpilot/search
-    [HttpPost("search")]
-    public Task<ScreenPilotListDto> GetList([FromBody] ScreenPilotListRequest req, CancellationToken ct)
-        => mediator.Send(new SearchScreenPilotsQuery(req), ct);
+Parent component + child tab components
 
-    // GET /api/screenpilot/{id}
-    [HttpGet("{id:guid}")]
-    public Task<ScreenPilotDto> Get(Guid id, CancellationToken ct)
-        => mediator.Send(new GetScreenPilotQuery(id), ct);
+Config files for PageLayout/SharedTabGroup/FormBuilder/SharedMatTable
 
-    // PUT /api/screenpilot/{id}
-    [HttpPut("{id:guid}")]
-    [RequiresModulePermission("ScreenPilot", ModuleAction.Edit)]
-    public Task<ScreenPilotDto> Update(Guid id, [FromBody] UpdateScreenPilotCommand body, CancellationToken ct)
-        => mediator.Send(body with { Id = id }, ct);
+Migration report + TODO list
 
-    // DELETE /api/screenpilot/{id}
-    [HttpDelete("{id:guid}")]
-    [RequiresModulePermission("ScreenPilot", ModuleAction.Delete)]
-    public Task<Unit> Delete(Guid id, [FromQuery] string? db = null, CancellationToken ct)
-        => mediator.Send(new DeleteScreenPilotCommand(id, db), ct);
-}
-AdminApi.csproj (net9.0)
-xml
-Copy code
-<Project Sdk="Microsoft.NET.Sdk.Web">
-  <PropertyGroup>
-    <TargetFramework>net9.0</TargetFramework>
-    <Nullable>enable</Nullable>
-    <ImplicitUsings>enable</ImplicitUsings>
-  </PropertyGroup>
+Gatekeeper runs validations + lint/build and returns pass/fail
 
-  <ItemGroup>
-    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="9.0.0" />
-    <PackageReference Include="Oracle.EntityFrameworkCore" Version="9.0.0" />
-    <PackageReference Include="MediatR.Extensions.Microsoft.DependencyInjection" Version="12.2.0" />
-    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.6.2" />
-  </ItemGroup>
-</Project>
-Usage notes
-DbContext selection:
+13) Troubleshooting checklist
 
-Body DTOs (commands/requests) implement IDbKeyCarrier → send "dbContextKey":"A|B".
+Agent not showing up: confirm VS Code ≥ 1.106 and file is under .github/agents with .agent.md extension.
 
-Otherwise set header X-Db-Context: A|B, or ?db=A in query.
+Skill not loading: confirm chat.useAgentSkills enabled and skill exists under .github/skills/<skill>/SKILL.md with correct frontmatter.
 
-DbKeyFromRequestFilter normalizes it into HttpContext.Items["DbKey"].
+Tool listed but not working: tool must be both contributed in package.json and registered in code; otherwise it won’t be available.
 
-UI contract: every response inherits BasePageDto, so your UI can trust:
-meta.pageEnabled, meta.disabledMessage, meta.totalCount, and each row’s EditActionCtrl/DeleteActionCtrl.
+Tool ignored in agent: if the tool isn’t available in the current environment, VS Code ignores it.
 
-Business rules: add more in ScreenPilotRules (or per-module rule class) and reuse in both query (to set button states) and commands (to throw).
+14) What your extension dev should implement first (minimal viable pipeline)
 
-If you want, I can add a minimal seed script and a Swagger op filter to surface the X-Db-Context header in UI, but this skeleton is already production-grade and ready to extend.
+extractScreenSpec(frm) → writes generated/<screenId>/screen.spec.json
+
+generateAngularUi(spec, target) → creates configs + thin wrappers + folder structure
+
+validateUiConfigs(target) → schema + forbidden pattern scan
+
+runAngularGates() → lint/build
+
+Wire these into Agent: Angular UI Generator via tool names
+
+Once these are stable, add:
+
+split strategy refinements
+
+reuse extraction
+
+bulk conversion command
+
+cloud agent delegation (optional)
+
+If you want, I’ll also paste full concrete files for all 5 agents (.agent.md each) and a tight skill directory skeleton (mapping docs + example golden screens + config contract stubs) so your team can copy/paste into the repo and start immediately.
+
+yes go ahead
+Thought for 8s
+
+Below is a copy/paste-ready package: 5 full .agent.md files + a tight skill folder skeleton (with starter docs you can expand). Tool names are placeholders—keep them consistent with whatever your VS Code extension registers.
+
+0) Drop-in folder structure
+.github/
+├─ agents/
+│  ├─ vb6-ui-analyzer.agent.md
+│  ├─ screen-spec-refiner.agent.md
+│  ├─ angular-ui-generator.agent.md
+│  ├─ ui-kit-gatekeeper.agent.md
+│  └─ ui-fix-and-stabilize.agent.md
+│
+├─ skills/
+│  └─ vb6-angular-ui/
+│     ├─ SKILL.md
+│     ├─ mapping/
+│     │  ├─ vb-control-map.md
+│     │  ├─ split-strategy.md
+│     │  └─ rules.md
+│     ├─ templates/
+│     │  ├─ config-snippets.md
+│     │  ├─ naming-rules.md
+│     │  └─ report-template.md
+│     ├─ contracts/
+│     │  ├─ page-layout.contract.md
+│     │  ├─ shared-tab-group.contract.md
+│     │  ├─ form-builder.contract.md
+│     │  └─ shared-mat-table.contract.md
+│     └─ examples/
+│        └─ golden-screens/
+│           ├─ simple-form/
+│           │  └─ README.md
+│           ├─ tabbed-form/
+│           │  └─ README.md
+│           ├─ table-heavy/
+│           │  └─ README.md
+│           └─ mixed/
+│              └─ README.md
+│
+├─ copilot-instructions.md
+└─ instructions/
+   ├─ angular-ui.instructions.md
+   └─ forbidden-patterns.instructions.md
+
+1) Always-on rules (recommended)
+.github/copilot-instructions.md
+# Global Copilot Instructions (VB6 → Angular UI Migration)
+
+## Hard rules
+- Generated Angular screens must be **config-driven** and use our shared primitives:
+  - PageLayout/Container
+  - SharedTabGroup
+  - FormBuilder
+  - SharedMatTable
+- Do not generate raw Angular Material components (no mat-tab-group/mat-table as the primary implementation).
+- Screen components must be thin wrappers:
+  - wiring + handler stubs only
+  - no custom reactive form templates
+  - no bespoke table logic
+- Prefer deterministic tool-calling workflow:
+  - Parse → ScreenSpec → Generate configs → Generate wrappers → Validate → Gates → Report
+
+## Output hygiene
+- Keep diffs minimal.
+- Keep naming stable and predictable.
+- Any unsupported VB control must be listed in a migration report with TODO actions.
+
+.github/instructions/angular-ui.instructions.md
+---
+applyTo: "**/*.ts, **/*.html, **/*.scss"
+---
+
+# Angular UI standards
+
+- Use Angular 21 patterns (standalone/components if that’s your repo standard).
+- Use our BaseComponent/BasePageComponent and shared services if applicable.
+- Prefer inputs/outputs for parent-child component interaction (tabs/sections).
+- Keep templates minimal: shared components only with configs.
+
+.github/instructions/forbidden-patterns.instructions.md
+---
+applyTo: "**/*"
+---
+
+# Forbidden patterns
+
+- Do not generate screens that directly implement:
+  - mat-table (as the main table)
+  - mat-tab-group (as the main tab system)
+  - hand-crafted form markup for data entry (must use FormBuilder)
+- Do not introduce new shared components.
+- Do not modify shared libs unless explicitly requested.
+
+2) Custom Agents (5 full files)
+
+Put these under .github/agents/.
+
+2.1 vb6-ui-analyzer.agent.md
+---
+name: VB6 UI Analyzer
+description: Parse VB6 .frm and produce an initial ScreenSpec IR (screen.spec.json) + parse diagnostics. Read-only, deterministic.
+target: vscode
+tools:
+  - extractScreenSpec
+  - readFile
+  - findInFiles
+  - usages
+  - terminal
+handoffs:
+  - label: Refine ScreenSpec
+    agent: screen-spec-refiner
+    prompt: "Refine the ScreenSpec: normalize naming, apply split strategy, improve mapping clarity, and mark unsupported controls."
+    send: false
+---
+
+# VB6 UI Analyzer — Rules
+
+## What you do
+- Convert VB6 `.frm` (and optional `.bas/.cls` scan) into:
+  - `generated/<screenId>/screen.spec.json`
+  - Optional debug output: parse-model, control tree, event list
+
+## What you do NOT do
+- Do not generate Angular code.
+- Do not decide UI patterns beyond what mapping rules prescribe.
+- Do not modify application source files.
+
+## Workflow
+1) Gather inputs:
+   - frmPath (required)
+   - optional: related bas/cls paths
+2) Call `#tool:extractScreenSpec` with frmPath.
+3) Return:
+   - screenId, title, detected tabs/frames/grids
+   - list of events discovered
+   - list of unsupported/unknown controls
+4) Offer handoff to ScreenSpec Refiner.
+
+2.2 screen-spec-refiner.agent.md
+---
+name: ScreenSpec Refiner
+description: Normalize and enrich ScreenSpec for Angular UI generation (naming, component split, mapping consistency). Produces a generation-ready spec.
+target: vscode
+tools:
+  - readFile
+  - writeFile
+  - refineScreenSpec
+  - validateUiConfigs
+  - findInFiles
+handoffs:
+  - label: Generate Angular UI
+    agent: angular-ui-generator
+    prompt: "Generate Angular UI from the refined ScreenSpec using shared primitives. Create parent + child tab components + config files."
+    send: false
+---
+
+# ScreenSpec Refiner — Rules
+
+## Objective
+Turn an “initial” ScreenSpec into a “generation-ready” ScreenSpec.
+
+## Hard rules
+- Apply deterministic naming rules (stable camelCase, predictable ids).
+- Apply split strategy:
+  - each tab becomes a child component by default
+- Ensure mapping aligns with shared primitives:
+  - tabs → SharedTabGroup
+  - forms → FormBuilder
+  - grids → SharedMatTable
+  - layout → PageLayout/Container
+- Unsupported VB controls must be captured in `unsupported[]` and not silently dropped.
+
+## Workflow
+1) Input:
+   - screenSpecPath (required)
+2) Call `#tool:refineScreenSpec`:
+   - apply naming normalization
+   - apply split strategy
+   - enforce mapping rules
+3) Optionally call `#tool:validateUiConfigs` in “spec-only” mode (if supported).
+4) Save updated spec back to the same location (or a `screen.refined.spec.json`).
+5) Summarize what changed:
+   - renamed ids
+   - created component boundaries
+   - unsupported list
+6) Offer handoff to Angular UI Generator.
+
+2.3 angular-ui-generator.agent.md
+---
+name: Angular UI Generator
+description: Generate Angular 21 screens from ScreenSpec using shared primitives (PageLayout, SharedTabGroup, FormBuilder, SharedMatTable). Produces config-driven UI + thin wrappers.
+target: vscode
+tools:
+  - readFile
+  - generateAngularUi
+  - applyWorkspaceEdits
+  - validateUiConfigs
+  - runAngularGates
+  - writeMigrationReport
+handoffs:
+  - label: Run Gatekeeper Review
+    agent: ui-kit-gatekeeper
+    prompt: "Validate compliance (shared primitives only), run gates, and confirm the screen is production-ready. If failures exist, propose minimal fixes."
+    send: false
+---
+
+# Angular UI Generator — Rules
+
+## Hard guardrails
+1) Shared primitives only:
+   - PageLayout/Container
+   - SharedTabGroup
+   - FormBuilder
+   - SharedMatTable
+2) Config-driven UI:
+   - Fields via FormBuilder config
+   - Tables via SharedMatTable config
+   - Tabs via SharedTabGroup config
+   - Layout via PageLayout config
+3) Thin wrappers:
+   - minimal TS + minimal HTML
+   - handler stubs allowed
+4) No raw Angular Material tabs/tables/forms as main implementation.
+
+## Inputs required
+- screenSpecPath (preferred)
+- targetFeaturePath (required)
+Optional:
+- targetRoutingFile / nav config path (if your tool supports it)
+- costProfile (economy|balanced|premium) — enforced by tool router
+
+## Workflow
+1) Read ScreenSpec.
+2) Call `#tool:generateAngularUi` (spec + target path).
+3) Apply edits:
+   - either tool writes directly
+   - or call `#tool:applyWorkspaceEdits` if your generator returns a plan
+4) Call `#tool:validateUiConfigs`:
+   - schema validation
+   - forbidden patterns scan
+5) Call `#tool:runAngularGates` (lint/build).
+6) Call `#tool:writeMigrationReport`:
+   - generated files list
+   - TODOs / unsupported controls
+   - gate results
+7) Offer handoff to Gatekeeper.
+
+2.4 ui-kit-gatekeeper.agent.md
+---
+name: UI Kit Gatekeeper
+description: Enforce shared UI kit compliance and quality gates (schema validation + forbidden patterns + lint/build). Read-only unless explicitly fixing.
+target: vscode
+tools:
+  - validateUiConfigs
+  - runAngularGates
+  - readFile
+  - findInFiles
+handoffs:
+  - label: Fix & Stabilize
+    agent: ui-fix-and-stabilize
+    prompt: "Fix lint/build failures with minimal diffs, keep shared-kit compliance, and rerun gates until pass."
+    send: false
+---
+
+# UI Kit Gatekeeper — Rules
+
+## What you validate
+- Config schema validity (PageLayout/TabGroup/FormBuilder/MatTable configs)
+- Forbidden patterns scan:
+  - no mat-tab-group / mat-table as primary
+  - no custom reactive form templates
+- Quality gates:
+  - lint (required)
+  - build (recommended)
+  - tests (optional)
+
+## Output
+- PASS: confirm compliance + list what was checked
+- FAIL: list violations with file paths and actionable fixes
+
+## Workflow
+1) Call `#tool:validateUiConfigs` on the target feature path or screen folder.
+2) Call `#tool:runAngularGates`.
+3) Summarize results:
+   - compliance violations (if any)
+   - gate failures (if any)
+4) If failures exist, offer handoff to Fix & Stabilize.
+
+2.5 ui-fix-and-stabilize.agent.md
+---
+name: Fix & Stabilize
+description: Apply minimal diffs to fix lint/build failures while preserving shared-kit patterns. No refactors. No pattern changes.
+target: vscode
+tools:
+  - patchAngularUi
+  - validateUiConfigs
+  - runAngularGates
+  - readFile
+  - writeFile
+  - applyWorkspaceEdits
+---
+
+# Fix & Stabilize — Rules
+
+## Hard guardrails
+- Make minimal diffs only.
+- Do not refactor architecture or introduce new patterns.
+- Do not replace shared primitives with raw Material.
+- Do not change shared libs unless explicitly asked.
+
+## Workflow
+1) Input:
+   - targetScreenPath (screen folder)
+   - gate error logs (from previous run) if available
+2) Call `#tool:patchAngularUi` with the errors + target path.
+3) Call `#tool:validateUiConfigs` again.
+4) Call `#tool:runAngularGates` again.
+5) Repeat once if needed; if still failing, stop and return a precise “manual TODO list” with file/line guidance.
+
+3) Skill package (vb6-angular-ui)
+
+Put these under .github/skills/vb6-angular-ui/.
+
+3.1 SKILL.md
+---
+name: vb6-angular-ui
+description: Playbook for converting VB6 .frm UIs into Angular 21 config-driven screens using PageLayout, SharedTabGroup, FormBuilder, and SharedMatTable. Includes mapping rules, split strategy, naming rules, and golden screen patterns.
+---
+
+# VB6 → Angular UI Skill (Shared UI Kit)
+
+## Purpose
+Teach how to convert VB6 forms into Angular UI using our shared primitives:
+- PageLayout/Container
+- SharedTabGroup
+- FormBuilder
+- SharedMatTable
+
+This skill is used by agents during:
+- ScreenSpec refinement
+- Angular UI generation
+- Compliance checking
+
+## Hard rules (must follow)
+- Config-driven UI only (FormBuilder/Table/TabGroup/Layout configs)
+- Thin wrapper components only
+- No raw Material tabs/tables/forms as primary implementation
+- Golden screens define the canonical patterns
+
+## Where to look
+- Mapping: `mapping/vb-control-map.md`, `mapping/rules.md`
+- Split strategy: `mapping/split-strategy.md`
+- Naming: `templates/naming-rules.md`
+- Starter config snippets: `templates/config-snippets.md`
+- Contracts (high-level): `contracts/*.contract.md`
+- Golden patterns: `examples/golden-screens/*`
+
+## Output expectations
+A generated screen should have:
+- Parent screen component + template
+- Child components (one per tab by default)
+- `<screenId>.config.ts` with PageLayout + TabGroup + FormBuilder + MatTable configs
+- Migration report listing TODOs + unsupported mappings
+
+3.2 Mapping docs
+mapping/vb-control-map.md
+# VB6 Control → Shared UI Primitive Map
+
+Use this mapping deterministically. Do not invent new primitives.
+
+| VB6 Control / Pattern | Detect Hint | Angular Shared Primitive | Notes |
+|---|---|---|---|
+| SSTab / TabStrip | multiple tab pages | SharedTabGroup | each tab becomes a child component by default |
+| Frame / grouping | VB Frame, PictureBox grouping | PageLayout section/card | preserve heading/caption |
+| TextBox | plain input | FormBuilder.Text | use maxLength if present |
+| Masked edit | mask formatting | FormBuilder.MaskedText | preserve mask pattern |
+| ComboBox | dropdown | FormBuilder.Select | lookup-backed if Tag/DataSource suggests |
+| CheckBox | boolean | FormBuilder.Checkbox | |
+| OptionButton | radio | FormBuilder.RadioGroup | |
+| MSFlexGrid / ListView | grid/rows/columns | SharedMatTable | columns inferred; actions from buttons/events |
+| CommandButton | action | PageLayout actions | Save/Cancel etc. map to header actions |
+
+## Unsupported controls
+If a VB6 control cannot be mapped:
+- Add it to `unsupported[]` in ScreenSpec
+- Generate TODO placeholder in the screen/child component
+- Record in migration report
+
+mapping/split-strategy.md
+# Split Strategy (VB6 single .frm → Angular components)
+
+## Default
+- Parent screen component:
+  - PageLayout + SharedTabGroup (if tabs exist)
+  - top-level actions (Save/Cancel)
+  - orchestration (load/save) per BaseComponent pattern
+
+- Child components:
+  - 1 per tab (Borrower/Loan/Booking)
+  - Each child renders shared primitives via config
+
+## Threshold-based splitting (optional)
+Split a tab into section components if:
+- > 15 fields in one section
+- multiple independent sections with separate logic
+- reuse is expected across screens
+
+## Reuse rule (optional)
+If a section appears identical across screens:
+- mark as reusable in ScreenSpec
+- generate into a shared feature library instead of the screen folder
+
+mapping/rules.md
+# Shared UI Kit Rules
+
+## Required patterns
+- Tabs => SharedTabGroup config
+- Forms => FormBuilder config
+- Tables => SharedMatTable config
+- Layout => PageLayout config
+
+## Forbidden patterns
+- No mat-tab-group/mat-table as primary
+- No bespoke form markup for data entry
+- No custom table logic in screen components
+
+## Event handling
+- Parent owns cross-tab rules
+- Child emits events (changed/validity/action) to parent
+- Parent decides save orchestration
+
+3.3 Templates
+templates/naming-rules.md
+# Naming Rules
+
+## Screen identifiers
+- screenId: PascalCase in spec, kebab-case or folder-case in file paths (follow repo standard)
+- folder: `<screenId>/` (use normalized lowercase or kebab-case if your repo standard)
+
+## Files
+- parent component: `<screenId>.component.ts/html/scss`
+- config: `<screenId>.config.ts`
+- child tab: `<screenId>-<tabId>.component.*` OR `<tabId>.component.*` (pick one convention and stick to it)
+
+## Control name normalization
+- VB: txtBorrowerName → borrowerName
+- VB: cboStatus → status
+- Preserve original VB control name in a comment if needed:
+  `// VB: txtBorrowerName`
+
+templates/config-snippets.md
+# Config Snippets (starter shapes)
+
+## PageLayout (example)
+```ts
+export const layoutConfig = {
+  title: 'Borrower',
+  container: 'FullWidth',
+  headerActions: ['Save', 'Cancel'],
+  sections: [
+    { id: 'borrowerInfo', title: 'Borrower Info', layout: 'TwoColumn' }
+  ]
+} as const;
+
+SharedTabGroup (example)
+export const tabGroupConfig = {
+  strategy: 'lazy',
+  tabs: [
+    { id: 'borrower', label: 'Borrower', component: 'BorrowerTabComponent' },
+    { id: 'loan', label: 'Loan', component: 'LoanTabComponent' }
+  ]
+} as const;
+
+FormBuilder (example)
+export const borrowerFormConfig = {
+  formKey: 'borrowerForm',
+  fields: [
+    { name: 'firstName', type: 'Text', label: 'First Name', validators: ['required'] },
+    { name: 'ssn', type: 'MaskedText', label: 'SSN', mask: '###-##-####' }
+  ]
+} as const;
+
+SharedMatTable (example)
+export const employmentTableConfig = {
+  dataKey: 'employmentRows',
+  idKey: 'id',
+  columns: [
+    { key: 'employer', header: 'Employer', cell: 'text' },
+    { key: 'startDate', header: 'Start Date', cell: 'date' }
+  ],
+  rowActions: ['Add', 'Edit', 'Delete']
+} as const;
+
+
+#### `templates/report-template.md`
+```md
+# Migration Report Template
+
+## Screen
+- screenId:
+- source frm:
+- target path:
+
+## Generated files
+- ...
+
+## Mapping summary
+- Tabs:
+- Forms:
+- Tables:
+
+## Unsupported / TODO
+- ...
+
+## Gates
+- lint:
+- build:
+- test (optional):
+
+3.4 Contracts (high-level placeholders)
+
+Replace these with real contracts or link to your ui-kit-catalog interfaces/schemas.
+
+contracts/page-layout.contract.md
+# PageLayout Contract (high level)
+
+## Required
+- title
+- container type
+- header actions
+- sections/cards
+
+## Notes
+- Layout must be declarative and driven by config.
+
+contracts/shared-tab-group.contract.md
+# SharedTabGroup Contract (high level)
+
+## Required
+- strategy: lazy/eager
+- tabs: [{ id, label, componentRef/configRef }]
+
+## Notes
+- Default: each tab maps to a child component.
+
+contracts/form-builder.contract.md
+# FormBuilder Contract (high level)
+
+## Required
+- formKey
+- fields[] with:
+  - name
+  - type
+  - label
+  - validators (optional)
+  - mask (optional)
+  - dto binding key (if applicable)
+
+## Notes
+- No bespoke form templates in screen components.
+
+contracts/shared-mat-table.contract.md
+# SharedMatTable Contract (high level)
+
+## Required
+- dataKey
+- idKey
+- columns[] with cell type
+- row actions (optional)
+
+## Notes
+- Avoid custom table logic outside config unless a known exception.
+
+3.5 Golden screen READMEs (placeholders)
+examples/golden-screens/simple-form/README.md
+# Golden Screen: Simple Form
+
+Purpose: baseline for FormBuilder-only pages.
+Includes:
+- layoutConfig + formConfig
+- thin wrapper component/template
+Rules:
+- no raw material form markup
+- config-driven fields only
+
+examples/golden-screens/tabbed-form/README.md
+# Golden Screen: Tabbed Form
+
+Purpose: SharedTabGroup + multiple child tab components.
+Includes:
+- parent page + tabGroupConfig
+- one child component per tab
+- each tab uses FormBuilder configs
+
+examples/golden-screens/table-heavy/README.md
+# Golden Screen: Table Heavy
+
+Purpose: SharedMatTable patterns (readonly + row actions).
+Includes:
+- tableConfig variants
+- optional row editor patterns (dialog or inline) per your shared kit
+
+examples/golden-screens/mixed/README.md
+# Golden Screen: Mixed
+
+Purpose: Tabs + FormBuilder + MatTable + dialogs.
+Includes:
+- parent orchestrating events across tabs
+- child components emitting events
+- config-driven UI everywhere
+
+4) VS Code settings note (skills)
+
+To use skills, devs typically need to enable:
+
+chat.useAgentSkills (preview feature; depends on VS Code/Copilot setup)
+
+(Your extension can work even without skills; skills just make agents consistent.)
+
+5) What your extension must expose as tools (minimum)
+
+Your agents assume these tools exist:
+
+extractScreenSpec(frmPath)
+
+refineScreenSpec(screenSpecPath, options)
+
+generateAngularUi(screenSpecPath, targetFeaturePath)
+
+validateUiConfigs(targetPathOrSpecPath)
+
+runAngularGates(appOrWorkspace)
+
+patchAngularUi(targetPath, errors)
+
+writeMigrationReport(screenId|paths, results)
+
+plus basic readFile/writeFile/findInFiles equivalents (if not built-in)
+
+If your tool names differ, rename them consistently in all agent files.
+
+If you paste your actual tool IDs / toolReferenceName values from the extension package.json, I’ll rewrite the agent files to match them exactly (so nothing silently fails at runtime).
